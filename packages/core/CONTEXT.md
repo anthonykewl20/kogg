@@ -13,7 +13,9 @@ An external inference service used by the Agent Runtime without taking ownership
 _Avoid_: Agent, runtime
 
 **OpenAI Codex Provider**:
-A public Model Provider authenticated through Codex access granted by a ChatGPT account or workspace.
+A proposed, currently unsupported public Model Provider concept for using
+Codex access granted by a ChatGPT account or workspace. It is not an available
+integration.
 _Avoid_: GPT Codex Pro provider, Pro provider
 
 **Provider Session**:
