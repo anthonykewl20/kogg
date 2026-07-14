@@ -1,0 +1,11 @@
+# OpenAI Codex provider issue dispositions
+
+[ADR 0002](../adr/0002-do-not-implement-codex-subscription-provider.md)
+preserves Qwen Code as the Agent Runtime and records that no supported public
+contract currently permits the proposed ChatGPT-subscription Model Provider.
+The issues below therefore have a **not planned** disposition, without claiming
+that their requested deliverables were produced.
+
+| Issue                                                                                          | Disposition evidence                                                                                                                                                                                              |
+| ---------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| [Define the secure Provider Session lifecycle](https://github.com/anthonykewl20/kogg/issues/7) | ADR 0002 adds no provider identity, credential namespace, token lifecycle, entitlement catalog, or persisted state. A Codex Provider Session therefore has no supported subject whose lifecycle can be specified. |
