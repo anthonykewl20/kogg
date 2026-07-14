@@ -315,3 +315,17 @@ Other working artifacts live under `.qwen/` (git-ignored):
 | `.qwen/pr-reviews/`     | PR review notes                      |
 | `.qwen/investigations/` | Structured debugging journals        |
 | `.qwen/scripts/`        | Utility scripts                      |
+
+## Agent skills
+
+### Issue tracker
+
+Project work is tracked in GitHub Issues at `anthonykewl20/kogg`, independently of the current Git remote. See `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+Use the five canonical triage labels. See `docs/agents/triage-labels.md`.
+
+### Domain docs
+
+This monorepo uses a multi-context domain layout rooted at `CONTEXT-MAP.md`. See `docs/agents/domain.md`.
