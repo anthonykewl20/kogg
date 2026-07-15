@@ -63,3 +63,7 @@ _Avoid_: modification time, last write wins, token timestamp
 **Compatibility Scenario**:
 A versioned, deterministic description of ChatGPT auth, identity, entitlement, model, limit, Responses, tool, compaction, and fault behavior used by the fake compatibility service. It rejects unexpected calls, ordering, and fields except for explicit nondeterministic matchers, and produces a sanitized request transcript without replaying captured private traffic.
 _Avoid_: mock response, recorded session, golden private payload
+
+**Bundled-CLI Acceptance Fixture**:
+A disposable user environment that runs the actual bundled `kogg` executable through a PTY against a Compatibility Scenario. It owns process, filesystem, restart, concurrency, artifact, permission, and cleanup mechanics while tests state user behavior and assertions explicitly.
+_Avoid_: source-mode test rig, mocked CLI, product-flow DSL
