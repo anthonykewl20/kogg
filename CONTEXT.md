@@ -24,6 +24,10 @@ _Avoid_: ChatGPT subscription, included Codex access
 A conversation durably associated with the ChatGPT Codex Account identity and selected entitled model that created it. It cannot continue under a different account identity.
 _Avoid_: portable conversation, cross-account session
 
+**Responses Conversation**:
+An Account-bound Conversation whose authoritative state remains in the provider-native Responses protocol through streaming, tool use, retry, compaction, and durable recovery. Generic Kogg history is a derived projection created only from durable completed state.
+_Avoid_: Gemini chat, generic transcript, converted response history
+
 **Identity Epoch**:
 The generation of the active ChatGPT Codex Account identity. Account replacement or logout advances it so account-bound state from an earlier identity cannot remain active.
 _Avoid_: session ID, credential version
