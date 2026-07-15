@@ -43,3 +43,7 @@ _Avoid_: pending account, temporary login state, active account switch
 **Credential Custody Boundary**:
 The security boundary that keeps ChatGPT subscription credentials outside every path available to model tools, sandboxes, UI surfaces, and ordinary provider code. Only the privileged account credential broker may locate or mutate them; keychain and explicitly accepted file storage are implementation details behind this boundary.
 _Avoid_: credentials directory, token file, provider settings
+
+**Credential Revision**:
+A monotonic version paired with account identity for compare-and-swap credential mutations. Refresh, switch, logout, and deletion reject a stale identity or revision instead of overwriting newer authoritative state.
+_Avoid_: modification time, last write wins, token timestamp
