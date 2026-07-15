@@ -1,206 +1,318 @@
-# Kogg ChatGPT Codex Harness E2E Plan
+# ChatGPT Subscription Bundled-CLI E2E Plan
 
 Date: 2026-07-15
 
-## Purpose
+## Purpose and authority
 
-Prove through public seams that Kogg can safely drive a human ChatGPT Codex
-subscription while retaining and extending the Qwen Code harness. Tests mock
-only external identity/backend/keychain/browser boundaries; they do not replace
-Kogg account, persistence, conversation, approval, or tool orchestration logic.
+The release authority for the Experimental ChatGPT connection is the actual
+bundled `kogg` executable driven through a PTY in a disposable home, runtime,
+and workspace. It uses the production ChatGPT compatibility HTTP client against
+a strict loopback fake service. The test may inject loopback endpoints and
+browser/keychain test dependencies, but it must not replace Account,
+Credential Custody, Connection Catalog, conversation orchestration, Responses
+Conversation, journal, diagnostics, approval, or tool execution modules.
 
-All feature slices follow red -> green -> refactor. Each slice must include a
-process restart where durable behavior is part of the contract.
+In-memory protocol adapters are allowed only for focused module tests whose
+races or hostile inputs cannot be forced reliably through a process and HTTP
+boundary. They never count as the bundled user-level proof.
 
-## Deterministic external boundary
+The first gated tracer is deliberately narrow: catalog, login and custody,
+identity and readiness with dynamic models, first native Responses prompt,
+incident diagnostics, restart-safe execution of one harmless local tool, and
+ordinary and destructive logout.
 
-Build one loopback fake ChatGPT service that scripts:
+## Acceptance Fixture
 
-- Authorization redirect, exact PKCE callback, device start/poll, token exchange,
-  refresh, revocation, identity and entitlement claims.
-- Dynamic model responses, ETag changes, malformed refreshes, and model removal.
-- Streamed Responses text, reasoning, local calls, unknown/hosted items, usage,
-  missing terminal events, errors, and retry boundaries.
-- Native V2 compaction and legacy compact responses.
-- Full dynamic usage snapshots, additional unknown groups, sparse headers/events,
-  credits, active-limit errors, and staleness.
+For each scenario the fixture:
 
-Tests inject loopback endpoints through explicit dependencies. Production code
-must reject arbitrary insecure endpoints, redirect URIs, or proxy downgrades.
+- Creates isolated home, runtime, workspace, credential, keychain-test, and
+  artifact locations with known ownership and permissions.
+- Starts a strict loopback Compatibility Scenario service and configures the
+  production compatibility HTTP client through an explicit test-only seam.
+- Runs the bundled executable through a real PTY with controlled stdin,
+  terminal size, clock, randomness, browser launcher, and process environment.
+- Captures user-visible terminal events, stdout, stderr, exit state, process
+  tree, safe filesystem manifest, incident IDs, and the fake service's sanitized
+  request transcript.
+- Supports process restart, two concurrent Kogg processes, callback-port
+  occupation, network interruption, crash injection at durable boundaries, and
+  child-process cleanup.
+- Sanitizes every artifact while capturing it. Raw secrets are never first
+  collected and then redacted later.
+- Runs an independent secret scan before retaining a failed-run bundle. If any
+  credential, cookie, raw identity, prompt, tool payload, authorization query,
+  or unapproved content is detected, it deletes the bundle and reports that
+  retention was suppressed.
+- Deletes successful-run artifacts unless explicitly requested and proven safe.
 
-The fake contract is versioned against official `openai/codex` revision
-`f90e7deea6a715bbd153044af6f475eefa749177`. Fixtures assert exact outbound URL,
-method, required headers, and payload for:
+Product scenarios and assertions remain explicit in tests. The fixture hides
+process and environment mechanics, not user behavior behind a large DSL.
 
-- `https://auth.openai.com`, observed client ID
-  `app_EMoamEEZ73f0CkXaXp7hrann`, callback ports `1455`/`1457`, callback path
-  `/auth/callback`, scopes `openid`, `profile`, `email`, `offline_access`,
-  `api.connectors.read`, and `api.connectors.invoke`, plus exact PKCE,
-  simplified-flow, and ID-token-organization parameters.
-- Device start `/api/accounts/deviceauth/usercode`, poll
-  `/api/accounts/deviceauth/token`, verification `/codex/device`, `403`/`404`
-  pending responses, and the 15-minute expiry.
-- `https://chatgpt.com/backend-api/codex`,
-  `/backend-api/codex/responses`,
-  `/backend-api/codex/models?client_version=<adapter-version>`, and
-  `https://chatgpt.com/backend-api/wham/usage`.
-- Bearer authorization, `ChatGPT-Account-ID`, Kogg user agent, ETag and
-  `X-Models-Etag`, encrypted reasoning inclusion, and
-  `x-codex-beta-features: remote_compaction_v2`.
-- Primary `codex` usage, ordered `additional_rate_limits`, dynamic sparse
-  `x-<group>-*` fields, `codex.rate_limits`, credits, and active-limit metadata.
+## Strict Compatibility Scenario service
 
-Fixtures reject Codex CLI impersonation and any unapproved paid Platform API
-fallback. Contract drift must produce an explicit compatibility failure.
+The fake is a versioned semantic HTTP service for:
 
-## Tracer slices
+- Browser PKCE authorization, callback, token exchange, refresh, and revoke.
+- Device start, pending, slowdown, success, denial, expiry, cancellation, and
+  malformed outcomes.
+- Validated issuer, audience, account, workspace, plan, entitlement, and
+  identity changes.
+- Dynamic model catalogs, defaults, capabilities, ETags, TTLs, unchanged
+  results, malformed bodies, removal, delay, and outage.
+- Limit snapshots, active exhaustion, reset data, unknown groups, malformed
+  values, delay, and outage.
+- Responses streaming, reasoning, unknown items, local tool requests, result
+  continuation, ambiguous sends, connection resets, malformed event sequences,
+  and terminal completion.
+- Compatibility drift, timing, cancellation, and deterministic fault injection
+  before and after every durable boundary.
 
-### 1. Public identity
+Every scenario declares its complete expected request sequence. Unexpected
+endpoint, host, method, order, required field, extra field where strict, or
+extra call fails the test. Matchers for generated IDs, PKCE values, and times
+must be explicit. The service has no catch-all success response and never uses
+captured private traffic.
 
-- Pack/install the npm tarball and invoke `kogg --version` and `kogg --help`.
-- Install the Homebrew formula and signed standalone archive and invoke their
-  `kogg` binaries.
-- Assert the package/bin/repository/image metadata and `KOGG_`, `~/.kogg`,
-  `.kogg/`, `KOGG.md`, `.koggignore`, and `kogg-extension.json` paths.
-- Scan release artifacts with an allowlist so upstream attribution remains but
-  no accidental public Qwen product identity is exposed.
+## Tracer happy paths
 
-### 2. Account and text response
+### Catalog and disclosure
 
-- Use `kogg auth login` for browser PKCE and device login; headless startup never
-  launches a browser.
-- Verify exact callback path/method/state, one-shot consumption, timeout, bounded
-  inputs, entitlement validation, redaction, and cancel behavior.
-- Exercise keychain-first storage, warned atomic `0600` fallback, strict-mode
-  refusal, refresh rotation, logout/revocation, and complete cache cleanup.
-- Return an arbitrary entitled plan string and assert `kogg auth status`
-  preserves and displays it without a fixed plan-name allowlist.
-- Replace the single active account with explicit confirmation. Assert the
-  identity epoch advances and all model, limit, and conversation access caches
-  for the old identity are cleared.
-- Fetch the dynamic model catalog, start a fresh conversation with its default,
-  stream text through the public CLI, and persist the completed response.
+- First run displays `ChatGPT / Codex subscription` first with the Experimental
+  badge and “Sign in with ChatGPT and use your included Codex plan”.
+- `OpenAI API` is second and states “Usage billed separately through OpenAI
+  Platform.” Existing API-key providers follow without reordering.
+- First run, `/auth`, and direct login use the same descriptor data and actions.
+- The private-contract disclosure appears exactly once before the first
+  production authorization and is not treated as consent to file fallback.
+- The option is absent when the feature compatibility/security gate is not
+  satisfied.
 
-### 3. Restart-safe local tool turn
+### Browser and device login
 
-- Advertise one harmless local function tool.
-- Receive a provider `call_id`, commit the full terminal response and durable
-  `prepared` mapping, dispatch once, persist its result, submit that result, and
-  finish the assistant response.
-- Restart after each transaction state. Prove that completed states resume and
-  a crash in ambiguous `dispatched` state blocks reconciliation without
-  re-executing the tool.
-- Corrupt/truncate journal frames, race two writers, replace the account during
-  refresh, and attempt stale compare-and-swap writes. Recover only a valid
-  truncated tail; refuse ambiguous state and cross-identity access.
+- Selecting ChatGPT offers browser, device, and cancel before either flow
+  starts. Browser is recommended and does not launch until selected.
+- Browser login validates PKCE, issuer, audience, callback method/path/state,
+  one-shot consumption, bounded inputs, identity, workspace, and entitlement.
+- Device login handles the displayed code and verification URL, bounded polling,
+  slowdown, and successful exchange.
+- Browser and device flows each produce the same stable Account Identity Key,
+  a fresh Identity Epoch, immutable first Credential Revision, and safe masked
+  status for the same service identity.
 
-### 4. Protocol validation and unknown tools
+### Custody, readiness, and first prompt
 
-- Assert `store: false`, streaming, encrypted reasoning inclusion, stable cache
-  key, exact `call_id`, full request-window continuation, and normalized usage.
-- Preserve reasoning, phase, compaction, and unknown raw items across restart.
-- Reject malformed known events and missing `response.completed`.
-- Return a terminal response containing an unsupported hosted/unknown item and
-  a later local call. Prove the turn fails before the local side effect.
-- Verify `/tools` reports source, availability, approval class, requirements,
-  fallback, and degraded reason and never claims an unimplemented hosted tool.
+- A real platform-keychain integration test installs and retrieves the secret
+  through the custody module without making it visible to the Kogg home,
+  workspace, process environment, output, tool process, or fake transcript.
+- Where a platform keychain is deliberately unavailable, the user must
+  explicitly accept a symlink-safe owner-only fallback; strict mode refuses it.
+- Successful identity, entitlement, and authoritative unexpired model catalog
+  produce Ready and an opaque host-pinned Account Session.
+- A fresh conversation selects only the returned default or a model explicitly
+  selected from the Entitled Model Catalog.
+- The first prompt streams transient text, receives a complete valid terminal
+  response, commits provider-native state, then creates the durable generic
+  read-only projection.
+- A restart silently refreshes only when identity remains the same, reacquires
+  readiness, and resumes under the original Account Identity Key and model.
 
-### 5. Native compaction
+### Restart-safe harmless tool
 
-- Trigger V2 through a final `compaction_trigger`; require one terminal event and
-  exactly one completed compaction item.
-- Atomically install the provider-native replacement window and resume after a
-  process restart while retaining the immutable human transcript.
-- Fall back to legacy native compact only on an explicit unsupported response.
-- Treat malformed, partial, duplicate, or missing compaction items as fatal.
-- Assert no Qwen/local semantic summary request is made by `/compress`, auto
-  compression, or context rescue for `CHATGPT_CODEX`.
-- With both native protocols unavailable, apply deterministic structural savings
-  and block before overflow.
+- The model requests one harmless fixture tool. Kogg persists tool preparation
+  and approval, dispatch intent, dispatch outcome, result, continuation Sampling
+  Attempt, and resulting terminal response.
+- The complete terminal response containing the tool request is validated and
+  durably committed before approval can lead to local dispatch.
+- A successful turn dispatches the tool once, records the result before sending
+  it, and marks the Tool Transaction submitted only after the next terminal
+  response is validated and committed.
+- Restart from every unambiguous phase resumes without duplicate execution or
+  duplicate provider continuation.
 
-### 6. Models, Fast mode, and limits
+### Diagnostics and logout
 
-- Atomically replace only ChatGPT Codex models and retain raw unknown capability
-  fields, ETag, TTL, and account-scoped last-known-good data.
-- Assert `/models` renders every authoritative model and its returned reasoning,
-  context, modality, tool, and service-tier capabilities.
-- Keep an active conversation on its recorded model. If it disappears, block
-  for an explicit selection instead of silently switching.
-- Verify `/fast on|off|status`: off by default, `priority` only when advertised,
-  omitted when off, persisted across restart, and visibly disabled when support
-  disappears.
-- Return a primary limit plus multiple known and unknown additional groups.
-  Assert `/limits` renders every group in returned order and preserves raw
-  fields; SDK, ACP, and Serve return the same ordered groups and raw fields.
-- Assert the compact footer selects the most constrained returned group without
-  hard-coded group names.
-- Test sparse header/event merges, dynamic group names, authoritative full-fetch
-  replacement, stale/partial/unavailable/no-groups states, and a cancellable
-  poller that does not hold the process open.
-- Prove `/stats`, prompt-cache efficiency, context occupancy, and account quota
-  remain distinct values.
+- Every injected account or Responses failure shows an incident ID.
+- `kogg diagnostics <id>` displays only the redacted summary and owner-only
+  record location; debug detail adds only allowlisted safe protocol state.
+- Confirmed export produces a secret-scanned redacted bundle. Cancelled export
+  produces none. Clear removes all incident records.
+- Ordinary logout first fences the identity and removes local active access,
+  credentials, models, and limits, then attempts bounded revocation. It retains
+  history and permitted incidents.
+- Logging back into the same validated identity restores its histories for
+  continuation under a new epoch. Another identity sees them read-only.
+- Confirmed destructive logout removes all histories, journals, projections,
+  caches, and incidents for the Account Identity Key.
 
-### 7. Tool and approval expansion
+## User and protocol sad paths
 
-- Run inherited Qwen tools, Kogg-native tools, and MCP/plugin tools through the
-  unified catalog and approval path.
-- Add hosted tool adapters one at a time with contract fixtures and explicit
-  availability. Exercise only declared fallbacks and show the actual source.
-- Verify YOLO still asks hard confirmation for credentials, purchases,
-  publishing, permissions, and destructive external operations.
-- Verify no silent paid Platform API fallback is possible.
+### Authorization
 
-### 8. Surface and packaging parity
+- Browser launch failure offers Retry browser, Use device code, and Cancel and
+  never switches automatically.
+- Occupy the preferred and fallback callback ports independently and together.
+  The attended flow offers the permitted recovery; unattended startup neither
+  launches a browser nor hangs.
+- Reject wrong callback method, path, state, duplicate/replayed state, missing
+  code, oversized inputs, malformed encoding, unsolicited callback, timeout,
+  and callback after cancellation.
+- Reject token exchange failure, invalid issuer or audience, missing identity,
+  workspace mismatch, identity disagreement on refresh, malformed success,
+  and private-contract drift with an explicit compatibility result.
+- Exercise device pending, slowdown, denial, expiry, malformed success,
+  cancellation, timeout, and process termination while polling.
+- A pre-byte unauthorized response refreshes and retries at most once. Any
+  response byte or uncertain send prevents automatic replay.
+- Startup refresh failure or identity change requires reconnect and never opens
+  a browser automatically.
 
-- Exercise interactive CLI, headless JSON/NDJSON, TypeScript/Python SDKs, ACP,
-  and Serve against the same fake service and durable account/conversation data.
-- Cover stdout/stderr separation, exit codes, Serve REST/SSE reconnect, ACP
-  authentication and permissions, SDK typed account/model/limit/Fast/tool-source
-  results, and Docker device login.
-- Run install/smoke coverage for Linux x64/arm64, macOS Intel/Apple Silicon, and
-  WSL2. Mark native Windows experimental rather than claiming parity.
-- Confirm telemetry is off by default and its opt-in payload excludes prompts,
-  code, paths, tool inputs/results, credentials, and account identifiers.
-- Inspect owner-only local state and a redacted doctor bundle.
+### Authentication and readiness
 
-## Adversarial matrix
+- Initial authenticated login without entitlement commits ConnectedBlocked
+  with Switch account and Logout, not Ready and not API fallback.
+- Initial authenticated login with catalog unavailable or malformed commits
+  ConnectedBlocked with Retry, Switch account, and Logout.
+- A Ready account remains authoritative while a switch candidate authenticates.
+  Candidate cancellation, no entitlement, catalog failure, storage failure, or
+  compatibility failure leaves the old account and session untouched.
+- Only a fully Ready switch candidate may atomically replace a Ready account.
+- Catalog refresh failure inside the last-known-good TTL warns while Ready.
+  At expiry it becomes ConnectedBlocked and no new inference is issued.
+- Empty, malformed, cross-identity, wrong-version, or expired catalogs never
+  become Ready. Model removal blocks an existing conversation for explicit
+  selection and never silently changes it.
+- Limit endpoint outage, malformed limits, or no returned groups does not block
+  otherwise-ready inference. An authoritative active-exhaustion response blocks
+  only the affected operation, shows reset data, and offers an explicit provider
+  change with the API billing warning.
 
-| Case | Required outcome |
-| --- | --- |
-| Refresh races account replacement | Stale writer loses CAS; no token crosses identity |
-| Pre-stream 401 | Refresh once and retry once |
-| 401/error after stream bytes | No automatic replay |
-| Crash after tool dispatch | Block reconciliation; never auto re-execute |
-| Concurrent conversation writers | Lease/fence and revision reject one writer |
-| Truncated final journal frame | Recover valid prior frames only |
-| Checksum/order/schema failure | Refuse resume with actionable corruption error |
-| Unknown/hosted output before local call | Persist raw terminal output; no local dispatch |
-| Model removed from catalog | Existing conversation blocks explicit choice |
-| Malformed catalog refresh | Keep account-scoped LKG and show stale state |
-| New unknown limit group | Preserve and display dynamically |
-| Partial/malformed compaction | Fatal; no semantic-summary fallback |
-| Keychain unavailable in strict mode | Refuse login/storage |
-| Logout revocation fails | Still delete all Kogg-owned local account state |
+### Identity fencing and history
 
-## Verification commands
+- Replace or logout during preflight, streaming, approval, dispatch,
+  tool-result submission, projection, and commit. Every network, tool,
+  submission, and durable boundary revalidates the epoch and refuses stale work.
+- Run concurrent refresh, switch, ordinary logout, and destructive logout in
+  two processes. Stale identity/revision writes lose compare-and-swap and cannot
+  resurrect a tombstoned account.
+- Verify histories bind the stable Account Identity Key rather than the epoch:
+  same-account return restores continuation, another account receives read-only
+  access, and destructive deletion removes only the selected identity's data.
+- Corrupt or substitute a raw identity and prove it cannot collide with the
+  pseudonymous key or make another identity's history writable.
 
-Focused commands are added beside each implementation slice. The release gate
-also runs from the exact candidate commit:
+## Credential adversarial matrix
 
-- `npm run format`
-- `npm run lint`
-- `npm run typecheck`
-- `npm run build`
-- `npm run test:ci`
-- `npm run test:release`
-- package/install and platform smoke workflows
-- `git diff --check`
+- Keychain unavailable, locked, denied, corrupt, slow, or returning the wrong
+  entry; explicit fallback accepted, rejected, or forbidden by strict mode.
+- Real keychain integration on every supported release OS, including create,
+  retrieve, rotate, tombstone/logout, delete, and cleanup after test failure.
+- Immutable-entry crash before and after active-pointer compare-and-swap;
+  partial write; disk full; permission change; symlink/hardlink substitution;
+  corrupt pointer; stale lock; lock contention; tombstone race; orphan cleanup.
+- Stale refresh after normal or destructive logout, stale switch after another
+  switch, and concurrent rotations for the same identity. No last-write-wins and
+  no orphan may become active.
+- Revocation delay, timeout, and failure after local invalidation. Local access
+  remains fenced and credentials remain unavailable.
+- Adversarial tools attempt to locate credentials through home, runtime,
+  workspace, artifacts, environment, arguments, stdout/stderr, inherited file
+  descriptors, process inspection, broker endpoints, sockets, and direct
+  keychain commands or APIs.
+- If any execution mode cannot deny those paths and capabilities, assert that
+  Kogg refuses the connection or disables subscription tool execution with the
+  documented reason. File mode alone must not satisfy the test.
+- Scan process tables, child environments, open descriptors, captured output,
+  core/crash artifacts where controllable, and retained test evidence for
+  credentials and raw identities.
 
-## Protected live probe
+## Responses, sampling, and tool adversarial matrix
 
-A manual, opt-in release check uses a real entitled ChatGPT account to verify
-browser/device login, refresh, model discovery, all returned limit groups, Fast
-mode, streaming, local tool continuation, native compaction, restart, and logout.
-It runs with fresh disposable Kogg state, reports only redacted assertions, and
-never exports credentials or transcripts. Failure blocks release and is reported
-as a private-contract compatibility problem, not repaired with API-key billing.
+- Malformed JSON or SSE, duplicate or missing terminal event, connection reset,
+  delay, truncation, invalid event ordering, malformed known item, unknown
+  non-actionable item, unsupported actionable item, and partial terminal state.
+- Transient text may appear during streaming but never becomes a durable generic
+  turn when the terminal response fails validation.
+- Unknown actionable or hosted items fail before a later local tool dispatch.
+- Journal final-frame truncation recovers only to a valid prior checksum.
+  Checksum, sequence, schema, migration, identity, epoch, model, or request-window
+  ambiguity refuses continuation.
+- Concurrent conversation writers exercise leases, fencing, and revision
+  compare-and-swap.
+- Crash before send, during send, after send before bytes, during streaming, and
+  after terminal receipt before commit. Uncertain Sampling Attempts reconcile
+  only through declared provider idempotency/status; otherwise they block and
+  do not replay.
+- Tool approval accepted, denied, cancelled, and process crash while approval is
+  pending. Denial and cancellation are durable and dispatch nothing.
+- Crash before dispatch intent, after intent but before known dispatch, during
+  local execution, after execution before result persistence, after result,
+  during result submission, during next stream, and after next terminal before
+  commit.
+- Ambiguous local dispatch blocks unless that tool's verified status or
+  idempotency protocol proves the outcome. Ambiguous result submission or next
+  response is owned by the Sampling Attempt and never marked submitted merely
+  because request bytes left the process.
+- Account replacement or logout at every phase proves no old-epoch request,
+  dispatch, submission, projection, or commit proceeds.
+
+## Diagnostics and artifact adversarial matrix
+
+- Attempt to inject access and refresh tokens, cookies, authorization headers,
+  callback query values, raw identities, emails, prompts, responses, tool
+  arguments/results, source paths, URLs, ANSI/control/bidirectional text,
+  binary, oversized values, cyclic objects, and throwing accessors into every
+  incident input and product error.
+- Verify the Incident Diagnostics interface rejects non-allowlisted shapes
+  before persistence, and account pseudonyms remain stable without revealing
+  raw identity.
+- Exercise concurrent record and prune, seven-day expiry, 100 MiB global cap,
+  oldest-first removal, unknown/pruned IDs, corrupt record/index, index rebuild,
+  permission loss, disk full, export cancellation/failure, clear, ordinary
+  logout retention, and destructive account deletion.
+- Incident Store failure preserves the original product outcome and adds
+  diagnostics unavailable without recursion or a legacy-log fallback.
+- Static dependency tests prohibit subscription Account, compatibility,
+  Responses, journal, and diagnostics code from importing or calling the legacy
+  arbitrary debug logger. Runtime tests make the legacy logger throw and prove
+  subscription error handling is unchanged.
+- Seed unique canary secrets into every source before a failing run. Assert they
+  never reach capture buffers. Run a second independent scan before artifact
+  retention and suppress retention on any match or scanner failure.
+
+## Focused lower-level proof
+
+Focused tests complement, but do not replace, bundled E2E for:
+
+- Inter-process active-pointer compare-and-swap, tombstones, fencing, and orphan
+  cleanup at schedules too fine-grained for PTY control.
+- Platform keychain adapters against a real isolated keychain plus explicit
+  unavailable/locked test adapters.
+- Host pinning and proof that the opaque Account Session cannot expose bearer
+  material or authorize an arbitrary host.
+- Framing, checksums, corrupt indexes, retention concurrency, hostile redaction
+  values, and pseudonymous Account Identity Key collision/domain separation.
+- Static dependency boundaries around legacy logging, generic content
+  generation, and provider refresh paths.
+
+## Protected live compatibility probes
+
+Browser and device modes are separate opt-in commands and separate release
+results. Each uses the bundled executable and production adapter with fresh
+disposable Kogg state, requires explicit confirmation, performs login,
+identity/entitlement and model readiness, one harmless prompt, the harmless
+local tool, restart, redacted diagnostics check, logout, and state deletion.
+
+The probes never run in ordinary CI and never retain tokens, raw identity,
+prompts, responses, tool payloads, headers, or protocol bodies. Both must pass
+for an Experimental feature release candidate. A failure disables or withholds
+only the ChatGPT connection and reports private compatibility drift; it does
+not block unrelated Kogg releases.
+
+## Gate result
+
+The top option may be surfaced only when the full tracer passes with both auth
+modes against the strict fake, all secret scans pass, tool isolation is proven
+for the enabled execution mode, the focused security tests pass, and the two
+protected live probes pass for the release candidate. Broader rebrand, hosted
+tools, and secondary-surface parity are tracked as later slices rather than
+being implied by this gate.

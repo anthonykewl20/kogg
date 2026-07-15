@@ -21,7 +21,7 @@ A Provider Connection configured with independently billed provider credentials.
 _Avoid_: ChatGPT subscription, included Codex access
 
 **Account-bound Conversation**:
-A conversation durably associated with the ChatGPT Codex Account identity and selected entitled model that created it. It cannot continue under a different account identity.
+A conversation durably associated with the stable Account Identity Key and selected entitled model that created it. It becomes read-only under another identity, becomes continuable again when its original identity returns, and is removed only by confirmed destructive account deletion.
 _Avoid_: portable conversation, cross-account session
 
 **Responses Conversation**:
@@ -29,36 +29,48 @@ An Account-bound Conversation whose authoritative state remains in the provider-
 _Avoid_: Gemini chat, generic transcript, converted response history
 
 **Tool Transaction**:
-The durable, Responses-internal lifecycle of one model-requested tool effect: `prepared`, `dispatched`, `result recorded`, then `submitted`. Each phase is persisted before the next side-effect boundary so recovery cannot silently duplicate or lose tool work.
+The durable, Responses-internal lifecycle of one model-requested tool effect. It records preparation, approval, denial or cancellation, dispatch intent, successful or ambiguous local dispatch, the result, and the Sampling Attempt that acknowledges the result. A tool is submitted only when the resulting terminal response is committed.
 _Avoid_: tool message, function call pair, generic tool event
 
+**Sampling Attempt**:
+The durable lifecycle of one provider sampling request, including a tool-result continuation. It records request intent before sending, distinguishes an uncertain send or interrupted stream from a terminal validated response, and requires reconciliation before retry unless provider idempotency or status proves the outcome.
+_Avoid_: retry flag, HTTP attempt, tool submission
+
+**Account Identity Key**:
+A stable, local, pseudonymous key derived from the validated issuer, account, and workspace identity. It binds histories and account-scoped data across logout and later return without exposing or persisting a raw identity in user-facing state.
+_Avoid_: account ID, email, Identity Epoch
+
 **Identity Epoch**:
-The generation of the active ChatGPT Codex Account identity. Account replacement or logout advances it so account-bound state from an earlier identity cannot remain active.
+The local fencing generation of the active ChatGPT Codex Account. Account activation, replacement, logout, or local invalidation advances it so work authorized under an earlier generation cannot cross another network, tool, submission, or durable-commit boundary.
 _Avoid_: session ID, credential version
 
 **Entitled Model Catalog**:
-The authoritative, account-scoped set of Codex models and capabilities currently available to a ChatGPT Codex Account.
+The authoritative, account-scoped set of Codex models and capabilities currently available to a ChatGPT Codex Account. A last-known-good catalog remains ready only within its declared TTL; refresh failure warns while it is valid and blocks readiness after expiry.
 _Avoid_: bundled model list, guessed models
 
 **Account Session**:
-An identity-bound authorization context available only when a ChatGPT Codex Account has validated identity, usable entitlement, and a ready Entitled Model Catalog. It permits inference without exposing credentials to callers.
+An identity-bound authorization capability available only when a ChatGPT Codex Account has validated identity, usable entitlement, and a ready Entitled Model Catalog. It exposes an opaque host-pinned authorized transport rather than a bearer credential, and every privileged boundary revalidates its Identity Epoch.
 _Avoid_: access token, auth configuration, provider credentials
 
 **Account Status Snapshot**:
-An immutable, credential-free value describing a ChatGPT Codex Account as `Disconnected`, `ConnectedBlocked(reason)`, or `Ready`. Callers render this value rather than interpreting expected conditions as exceptions; authorization and switching progress belong to an Account Transition.
+An immutable, credential-free value describing a ChatGPT Codex Account as `Disconnected`, `ConnectedBlocked(category, actions)`, or `Ready`. Authentication and readiness are separate: an authenticated account can be committed but blocked by missing entitlement, unavailable or expired models, compatibility, credential, or isolation policy. Callers render its category and allowed recovery actions rather than interpreting expected conditions as exceptions; authorization and switching progress belong to an Account Transition.
 _Avoid_: auth error, provider exception, token status
 
 **Account Transition**:
-A cancellable attempt to establish or switch to a ChatGPT Codex Account. It remains separate from the active Account Status Snapshot until the candidate account is fully ready, so failure or cancellation cannot displace a working account.
+A cancellable attempt to establish or switch to a ChatGPT Codex Account. An initial authenticated login may commit as ConnectedBlocked, but a switch candidate remains separate from an existing Ready snapshot until the candidate itself is Ready, so failure or cancellation cannot displace a working account.
 _Avoid_: pending account, temporary login state, active account switch
 
 **Credential Custody Boundary**:
-The security boundary that keeps ChatGPT subscription credentials outside every path available to model tools, sandboxes, UI surfaces, and ordinary provider code. Only the privileged account credential broker may locate or mutate them; keychain and explicitly accepted file storage are implementation details behind this boundary.
+The enforceable security boundary that keeps ChatGPT subscription credentials and credential capabilities outside every path, environment variable, process argument, output stream, inherited file descriptor, broker endpoint, and keychain interface available to model tools or sandboxes. Only the privileged Account module may use the custody interface. If this isolation cannot be proven, Kogg refuses the connection or disables subscription tool execution rather than relying on file permissions.
 _Avoid_: credentials directory, token file, provider settings
 
 **Credential Revision**:
 A monotonic version paired with account identity for compare-and-swap credential mutations. Refresh, switch, logout, and deletion reject a stale identity or revision instead of overwriting newer authoritative state.
 _Avoid_: modification time, last write wins, token timestamp
+
+**Credential Secret Entry**:
+An immutable, revisioned secret record installed before an atomic compare-and-swap of the active credential pointer. Logout first fences locally and writes a tombstone, preventing stale writers from resurrecting access; bounded best-effort remote revocation and orphan cleanup follow without weakening the local result.
+_Avoid_: mutable token file, active token blob, best-effort delete
 
 **Compatibility Scenario**:
 A versioned, deterministic description of ChatGPT auth, identity, entitlement, model, limit, Responses, tool, compaction, and fault behavior used by the fake compatibility service. It rejects unexpected calls, ordering, and fields except for explicit nondeterministic matchers, and produces a sanitized request transcript without replaying captured private traffic.
