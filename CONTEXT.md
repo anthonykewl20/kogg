@@ -61,5 +61,5 @@ A monotonic version paired with account identity for compare-and-swap credential
 _Avoid_: modification time, last write wins, token timestamp
 
 **Compatibility Scenario**:
-A versioned, deterministic description of ChatGPT auth, identity, entitlement, model, limit, Responses, tool, compaction, and fault behavior used by the fake compatibility service. It produces a sanitized request transcript without replaying captured private traffic.
+A versioned, deterministic description of ChatGPT auth, identity, entitlement, model, limit, Responses, tool, compaction, and fault behavior used by the fake compatibility service. It rejects unexpected calls, ordering, and fields except for explicit nondeterministic matchers, and produces a sanitized request transcript without replaying captured private traffic.
 _Avoid_: mock response, recorded session, golden private payload
