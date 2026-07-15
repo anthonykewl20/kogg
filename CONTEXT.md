@@ -12,6 +12,10 @@ _Avoid_: OpenAI API account, provider configuration, token
 A user-selected way for Kogg to obtain model access, either through a ChatGPT Codex Account or through a separately billed API-key provider.
 _Avoid_: auth type, credential
 
+**Connection Catalog**:
+The authoritative, ordered set of Provider Connections Kogg may present, including labels, disclosures, availability, and actionable disabled reasons. It places the Experimental ChatGPT subscription connection first and adapts the existing provider registry only for API-key connections.
+_Avoid_: provider registry, auth menu, model provider list
+
 **API-key Provider**:
 A Provider Connection configured with independently billed provider credentials. It is never an automatic fallback for a ChatGPT Codex Account.
 _Avoid_: ChatGPT subscription, included Codex access
