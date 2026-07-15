@@ -67,3 +67,7 @@ _Avoid_: mock response, recorded session, golden private payload
 **Bundled-CLI Acceptance Fixture**:
 A disposable user environment that runs the actual bundled `kogg` executable through a PTY against a Compatibility Scenario. It owns process, filesystem, restart, concurrency, permission, and cleanup mechanics while tests state user behavior and assertions explicitly; failures retain a sanitized evidence bundle and successful runs remove artifacts unless retention was requested.
 _Avoid_: source-mode test rig, mocked CLI, product-flow DSL
+
+**Incident Record**:
+A minimal, structured, redacted account or conversation failure record addressed by an incident ID. Its interface accepts only allowlisted operational fields and cannot accept prompts, tool content, credentials, headers, raw bodies, arbitrary objects, or free-form exception dumps.
+_Avoid_: debug log entry, raw error dump, telemetry event
