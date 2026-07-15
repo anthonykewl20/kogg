@@ -56,6 +56,10 @@ _Avoid_: access token, auth configuration, provider credentials
 An immutable, credential-free value describing a ChatGPT Codex Account as `Disconnected`, `ConnectedBlocked(category, actions)`, or `Ready`. Authentication and readiness are separate: an authenticated account can be committed but blocked by missing entitlement, unavailable or expired models, compatibility, credentials, or failure to isolate credential storage or authorized transport. Tool-process isolation is reported separately as Tool Availability and does not demote an otherwise Ready chat connection. Callers render expected states rather than interpreting them as exceptions; authorization and switching progress belong to an Account Transition.
 _Avoid_: auth error, provider exception, token status
 
+**Safe Display Value**:
+The single credential-free projection of any untrusted service plan, workspace, model, or status string. The Account/compatibility boundary preserves display semantics rather than raw bytes: it applies consistent Unicode NFC normalization, grapheme- and encoded-byte ceilings, visible escaping or removal of ANSI/C0/C1 controls and newlines, rejection or neutralization of invalid and bidirectional formatting sequences, and suppression or masking of values matching validated raw identity claims. TUI, headless output, incidents, and retained artifacts consume this same projection; raw service display strings never reach them.
+_Avoid_: raw service label, sanitized later, terminal-safe string
+
 **Tool Availability**:
 A credential-free capability value reported independently from Account Status as `Enabled` or `Disabled(reason)`. Failure to prove tool-process isolation disables subscription tools while chat may remain Ready; it does not excuse unsafe storage or authorized transport.
 _Avoid_: account blocked, tool permission prompt, provider readiness
@@ -81,12 +85,16 @@ A versioned, deterministic description of ChatGPT auth, identity, entitlement, m
 _Avoid_: mock response, recorded session, golden private payload
 
 **Compatibility Profile**:
-A versioned, evidence-backed appendix and fixture that pins the observed official source revision and exact required and declared-optional OAuth, device, backend, streaming, model, limit, and compaction wire contract. Production and fake adapters implement this profile; undocumented required-field guesses are prohibited and unknown response fields are preserved.
+A versioned, evidence-backed appendix and fixture that pins the observed official source revision and exact required and declared-optional OAuth, device, backend, streaming, model, limit, and compaction wire contract. It declares per-endpoint pre-parse response ceilings for headers, bodies, structured fields and nesting, SSE events, and stream duration. Production and fake adapters implement this profile; undocumented required-field guesses are prohibited and unknown response fields are preserved within those ceilings.
 _Avoid_: loose OpenAI compatibility, best-effort wire shape, captured account traffic
 
 **Probe-stage Candidate**:
 The hidden ChatGPT connection descriptor available only to the dedicated protected probe command in disposable state before release enablement. It cannot appear in the ordinary catalog or be enabled or persisted by an environment or user flag; both live modes must pass before a release-build manifest may surface the normal descriptor.
 _Avoid_: feature flag, hidden menu option, developer bypass
+
+**Probe Attestation**:
+A protected live-probe result bound to the cryptographic digest of the exact bundled release artifact and the digest of its Compatibility Profile. A release manifest may enable the descriptor only when current browser and device attestations match both current digests; stale, mismatched, or rebuilt inputs remain withheld.
+_Avoid_: latest probe result, branch-level approval, mutable enable flag
 
 **Bundled-CLI Acceptance Fixture**:
 A disposable user environment that runs the actual bundled `kogg` executable through a PTY against a Compatibility Scenario. It owns process, filesystem, restart, concurrency, permission, and cleanup mechanics while tests state user behavior and assertions explicitly; failures retain a sanitized evidence bundle and successful runs remove artifacts unless retention was requested.

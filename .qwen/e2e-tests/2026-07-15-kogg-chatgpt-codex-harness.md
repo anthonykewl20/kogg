@@ -80,6 +80,8 @@ The fake is a versioned semantic HTTP service for:
 - Responses streaming, reasoning, unknown items, local tool requests, result
   continuation, ambiguous sends, connection resets, malformed event sequences,
   and terminal completion.
+- Per-endpoint over-limit headers, bodies, strings, arrays, objects, nesting,
+  SSE event size/count, total duration, idle duration, and cancellation.
 - Compatibility drift, timing, cancellation, and deterministic fault injection
   before and after every durable boundary.
 
@@ -105,12 +107,19 @@ extra-field policy, and never uses captured private traffic.
   production authorization and is not treated as consent to file fallback.
 - The option is absent when the feature compatibility/security gate is not
   satisfied.
-- Status preserves arbitrary plan and workspace display strings and shows a
-  stable masked identifier. It contains no raw account/workspace ID, email,
-  subject claim, token, or reversible identity value.
+- Status preserves service-provided plan and workspace display semantics through
+  the shared Safe Display Value projection and shows a stable masked identifier.
+  It contains no raw account/workspace ID, email, subject claim, token, raw
+  service string, or reversible identity value.
 - Selecting ChatGPT while already connected renders status plus Continue,
   Switch account, and Logout. The fake transcript records zero authorization
   requests, and the controlled browser launcher records zero launches.
+- Return plan, workspace, model, and status strings containing ANSI sequences,
+  every C0/C1 class, embedded newlines, invalid UTF encodings, bidi formatting
+  and overrides, oversized byte and grapheme sequences, and validated raw IDs,
+  email, and subject claims. TUI and headless output use the same normalized,
+  bounded, readable Safe Display Values without terminal effects or identity
+  leakage.
 
 ### Browser and device login
 
@@ -298,6 +307,23 @@ extra-field policy, and never uses captured private traffic.
   Attempts, Tool Transactions, projections, and commits carry the current epoch
   and reject an old writer after an atomic same-identity rebind.
 
+## External-response resource ceilings
+
+- For each profile endpoint, send headers and bodies exactly at and one unit
+  beyond declared byte/count bounds.
+- Exercise string bytes, array elements, object field count, and JSON nesting at
+  and beyond their pre-parse ceilings. Prove over-limit input never reaches a
+  general parser or journal writer.
+- Exercise SSE events and event counts at and beyond their ceilings, an idle
+  stream, and a never-ending active stream. Advance the controlled clock through
+  idle and total duration limits.
+- Each violation produces the typed bounded-resource incident, cancels and
+  closes within the profile's deadline, leaves no durable partial terminal
+  state, and prevents any later local tool effect.
+- Cancellation races process exit, logout, account switch, and server data
+  arriving at the limit. No process, socket, timer, or partial journal frame is
+  leaked.
+
 ## First-gate context behavior
 
 - `/compress` is unavailable for a Responses Conversation before native
@@ -334,6 +360,11 @@ extra-field policy, and never uses captured private traffic.
 - Seed unique canary secrets into every source before a failing run. Assert they
   never reach capture buffers. Run a second independent scan before artifact
   retention and suppress retention on any match or scanner failure.
+- Seed hostile raw service display strings separately from the expected Safe
+  Display Values. Assert TUI, headless output, Incident Records, request
+  transcripts, state manifests, and retained artifacts contain only the same
+  bounded projection and never the raw byte sequence or validated identity
+  claim.
 
 ## Focused lower-level proof
 
@@ -374,7 +405,12 @@ not block unrelated Kogg releases.
 After both protected live modes pass, a release build manifest—not mutable user
 state—enables the normal top catalog descriptor. Tests compare probe-stage and
 enabled manifests and prove that ordinary catalog visibility changes only with
-the release artifact.
+the release artifact. Each browser and device result attests the cryptographic
+digest of that exact bundled artifact and the Compatibility Profile digest.
+The manifest enables only when both results match both current digests. Reuse a
+stale result, alter the profile, mismatch one mode, or rebuild the artifact and
+assert the descriptor remains withheld until both probes rerun for the new
+digest pair.
 
 ## Gate result
 
@@ -382,7 +418,8 @@ The top option may be surfaced only when the minimal bundled `kogg` prerequisite
 and Compatibility Profile exist; the full tracer passes with both auth modes
 against the strict fake; all secret scans pass; storage and transport isolation
 pass; at least one supported tool-enabled mode proves tool-process isolation;
-the focused security tests pass; and both protected live probes pass for the
-release candidate. Broad dynamic limits and native compaction retain their own
+the focused security tests pass; and both protected live probe attestations
+match the exact release artifact and Compatibility Profile digests. Broad
+dynamic limits and native compaction retain their own
 later required gates. Broader rebrand, hosted tools, and secondary-surface
 parity are separately sequenced rather than being implied by this gate.

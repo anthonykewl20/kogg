@@ -95,12 +95,31 @@ When already connected, the descriptor offers continue, switch account, and
 logout. Limit exhaustion may offer change provider, but choosing OpenAI API
 repeats the separate-billing warning and requires an explicit user action.
 
-Safe status preserves the arbitrary plan and workspace display names returned
-by the service and adds a masked identifier derived from the Account Identity
-Key. It never exposes raw account or workspace IDs, subject claims, email
-addresses, tokens, or a reversible identity value. Selecting ChatGPT while
-already connected renders this status plus Continue, Switch account, and Logout
-without starting authorization, making an auth request, or launching a browser.
+Safe status preserves service-provided plan and workspace display semantics
+through the Safe Display Value projection and adds a masked identifier derived
+from the Account Identity Key. It never exposes raw account or workspace IDs,
+subject claims, email addresses, tokens, or a reversible identity value.
+Selecting ChatGPT while already connected renders this status plus Continue,
+Switch account, and Logout without starting authorization, making an auth
+request, or launching a browser.
+
+### Safe service display projection
+
+All service-provided plan, workspace, model, and status strings are untrusted.
+The Account/compatibility boundary converts them once into credential-free Safe
+Display Values. It decodes strictly, applies Unicode NFC consistently, enforces
+both encoded-byte and grapheme ceilings without splitting a grapheme, and marks
+truncation visibly. ANSI escape sequences are removed; remaining C0/C1 controls
+and newlines are visibly escaped. Invalid sequences and bidirectional
+formatting or override characters are rejected or replaced by an explicit safe
+placeholder. A value equal to or containing a validated raw account ID,
+workspace ID, subject, or email is suppressed or replaced with the approved
+masked identifier.
+
+This projection preserves readable service meaning, not raw bytes. The same
+projected value object is used by TUI, headless output, Incident Records, and
+retained artifacts. Those sinks cannot accept a raw service display string, so
+later redaction is not the safety boundary.
 
 ## Account identity, authentication, and readiness
 
@@ -211,7 +230,9 @@ the tombstone. Orphan cleanup never promotes an entry.
 The account-scoped model response is authoritative. A successful refresh
 atomically installs an immutable Entitled Model Catalog with its compatibility
 version, ETag, revision, TTL, returned default, capabilities, and preserved
-unknown fields. Kogg does not guess entitlement from bundled model names.
+unknown fields. User-visible model labels are Safe Display Values; raw labels
+remain confined to bounded native protocol state and never reach output or
+diagnostic sinks. Kogg does not guess entitlement from bundled model names.
 
 A last-known-good catalog keeps the account Ready only while it is within its
 authoritative TTL. A refresh failure during that period produces a visible
@@ -332,6 +353,13 @@ response optionality while preserving every unknown response field. “Extra
 fields where strict” is not a policy: any permitted request variation must be
 named in the profile.
 
+For every endpoint, the profile also declares pre-parse ceilings for total
+header bytes and header count, body bytes, string bytes, array elements, object
+field count, JSON nesting depth, SSE event bytes and event count, and total and
+idle stream duration. It declares the safe cancellation and connection-close
+behavior for each request class. These are compatibility and resource limits,
+not post-parse validation hints.
+
 ## Versioned compatibility seam
 
 The Account and Responses modules depend on narrow protocol ports implemented
@@ -340,6 +368,15 @@ redirect policy, service hosts, TLS policy, request fields, supported event
 grammar, and adapter version. Required drift produces a compatibility incident;
 there is no heuristic repair, official-client impersonation, credential replay,
 or paid API fallback.
+
+The production client enforces the Compatibility Profile's resource ceilings
+before allocation where possible and incrementally while reading headers,
+bodies, structured fields, and SSE. No oversized or over-deep value is handed
+to a general parser or journal writer. Event count, total duration, and idle
+duration remain bounded throughout streaming. A violation or never-ending
+stream produces a typed Incident Record, safely cancels and closes within the
+declared bound, commits no partial terminal state, and permits no later local
+tool effect.
 
 The deterministic fake is a real loopback HTTP service implementing versioned
 Compatibility Scenarios for browser and device authorization, token exchange,
@@ -365,6 +402,10 @@ state, adapter version, and account-scoped pseudonym. It cannot accept arbitrary
 objects or strings, raw exceptions, credentials, cookies, headers, callback
 queries, URLs containing secrets, prompts, tool arguments or results, raw
 bodies, or user content.
+
+Any service label included in an incident is the already-created Safe Display
+Value used by product output. Incident and artifact code cannot independently
+re-project or accept the raw service string.
 
 Each failure displays an incident ID. The diagnostics command shows a redacted
 summary and owner-only local record location. Debug detail adds only safe
@@ -407,9 +448,13 @@ no environment variable, user setting, or general feature flag that bypasses
 the hidden state. Separate browser and device probes run the same bundled path
 and production adapter with explicit user confirmation, a harmless prompt/tool,
 redacted reporting, and automatic local logout and deletion. After both modes
-pass, the release build manifest enables the normal catalog descriptor. A live
-compatibility failure withholds it but does not block unrelated Kogg release
-work.
+pass, each Probe Attestation records a cryptographic digest of the exact bundled
+release artifact and the digest of its Compatibility Profile. The release build
+manifest enables the normal catalog descriptor only when both mode attestations
+match both digests for that exact release candidate. A stale result, profile
+change, artifact mismatch, or rebuild changes a digest and leaves the descriptor
+withheld. A live compatibility failure likewise withholds it but does not block
+unrelated Kogg release work.
 
 The harmless-tool gate additionally requires proof of at least one supported
 execution mode in which Tool Availability is Enabled and tool-process isolation
