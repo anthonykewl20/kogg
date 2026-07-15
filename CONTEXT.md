@@ -25,7 +25,7 @@ A conversation durably associated with the ChatGPT Codex Account identity and se
 _Avoid_: portable conversation, cross-account session
 
 **Responses Conversation**:
-An Account-bound Conversation whose authoritative state remains in the provider-native Responses protocol through streaming, tool use, retry, compaction, and durable recovery. Generic Kogg history is a derived projection created only from durable completed state.
+An Account-bound Conversation whose authoritative state remains in the provider-native Responses protocol through streaming, tool use, retry, compaction, and durable recovery. Generic Kogg history is a replaceable, read-only projection created only from durable completed state and is never used to reconstruct or mutate the conversation.
 _Avoid_: Gemini chat, generic transcript, converted response history
 
 **Identity Epoch**:
