@@ -31,3 +31,7 @@ _Avoid_: bundled model list, guessed models
 **Account Session**:
 An identity-bound authorization context available only when a ChatGPT Codex Account has validated identity, usable entitlement, and a ready Entitled Model Catalog. It permits inference without exposing credentials to callers.
 _Avoid_: access token, auth configuration, provider credentials
+
+**Account Status Snapshot**:
+An immutable, credential-free value describing the expected lifecycle condition of a ChatGPT Codex Account and any user-actionable blocker. Callers render this value rather than interpreting expected conditions as exceptions.
+_Avoid_: auth error, provider exception, token status
