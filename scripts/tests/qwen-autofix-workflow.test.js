@@ -200,13 +200,11 @@ describe('qwen-autofix workflow', () => {
     expect(workflow).toContain('.[0:10] | map(. + {autofixTier: 1})');
   });
 
-  it('runs scheduled autofix as a 10-minute single-target worker', () => {
-    expect(workflow).toContain("cron: '*/10 * * * *'");
-    expect(workflow).not.toContain("cron: '0 0,12 * * *'");
-    expect(workflow).not.toContain("cron: '0 4,8,16,20 * * *'");
-    expect(workflow).toContain(
-      "pull_request_review:\n    types:\n      - 'submitted'",
-    );
+  it('keeps manual autofix as a bounded single-target worker', () => {
+    expect(workflow).toContain('workflow_dispatch:');
+    expect(workflow).not.toContain("cron: '*/10 * * * *'");
+    expect(workflow).toContain('phase:');
+    expect(workflow).toContain('dry_run:');
     expect(workflow).toContain(
       'AUTOFIX_BOT: "${{ vars.AUTOFIX_BOT_LOGIN || \'qwen-code-dev-bot\' }}"',
     );
@@ -270,9 +268,7 @@ describe('qwen-autofix workflow', () => {
     );
   });
 
-  it('keeps label-triggered issue routing guarded and diagnosable', () => {
-    expect(workflow).toContain("issues:\n    types:\n      - 'labeled'");
-    expect(workflow).toContain("      - 'assigned'");
+  it('keeps dormant label routing guarded and diagnosable', () => {
     expect(workflow).toContain(
       "ISSUE_LABELS_JSON: '${{ toJSON(github.event.issue.labels.*.name) }}'",
     );

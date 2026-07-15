@@ -1,25 +1,13 @@
 name: 'Qwen Issue Follow-up Bot'
 
-# Required for automatic runs:
-# - Repository variable QWEN_ISSUE_FOLLOWUP_BOT_ENABLED=true.
-# - Optional repository variable QWEN_ISSUE_FOLLOWUP_BOT_ISSUES_DRY_RUN=false
-#   enables real writes for newly opened issues.
-# - Optional repository variable QWEN_ISSUE_FOLLOWUP_BOT_SCHEDULE_DRY_RUN=false
-#   enables real writes for scheduled batch runs.
-# - Legacy repository variable QWEN_ISSUE_FOLLOWUP_BOT_DRY_RUN is still used as
-#   a fallback for both automatic paths.
-# - Secret QWEN_CODE_BOT_TOKEN is preferred; CI_BOT_PAT is a fallback.
+# Inherited Qwen follow-up is manual-only in Kogg. The dispatch defaults to a
+# dry run; QWEN_CODE_BOT_TOKEN is preferred and CI_BOT_PAT is a fallback.
 
 on:
-  issues:
-    types:
-      - 'opened'
-  schedule:
-    - cron: '5 */6 * * *'
   workflow_dispatch:
     inputs:
       issue_number:
-        description: 'Optional issue number. Leave empty to let Qwen select scheduled candidates.'
+        description: 'Optional issue number. Leave empty to let Qwen select candidates.'
         required: false
         type: 'number'
       dry_run:
@@ -28,7 +16,7 @@ on:
         default: true
         type: 'boolean'
       scheduled_limit:
-        description: 'Maximum number of candidate issues to consider during scheduled follow-up.'
+        description: 'Maximum number of candidate issues to consider during batch follow-up.'
         required: false
         default: '10'
         type: 'string'

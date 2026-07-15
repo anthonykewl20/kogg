@@ -5,28 +5,13 @@ name: 'Qwen Autofix'
 #   issue → locate → fix → open PR        (issue phase)
 #   open PR → review → triage → fix → push (review phase)
 #
-# The lifecycle is asynchronous — a PR is opened in one run and its review is
-# addressed in a later run once a reviewer has weighed in — so each scheduled
-# tick runs only the phase(s) that make sense, decided by the `route` job:
-#   • every 10m            → review phase; issue phase only if no PR needs work
-#   • issues:labeled        → issue phase when ready label, state, and sender match
-#   • pull_request_review   → review phase for submitted feedback on bot PRs
-#   • workflow_dispatch     → force a phase, an issue, or a PR
+# The inherited lifecycle remains available only through an explicit manual
+# dispatch in Kogg. Its internal routing is retained for upstream portability.
 #
 # Every GitHub write (issue/PR comments, labels, branch push, PR create) goes
 # through CI_DEV_BOT_PAT so the bot acts as the configured autofix identity.
-# PAT label writes can emit issues:labeled events; the route guards below make
-# those runs exit unless the label, issue state, and ready label all match.
+# PAT label writes cannot start this workflow in Kogg.
 on:
-  issues:
-    types:
-      - 'labeled'
-      - 'assigned'
-  pull_request_review:
-    types:
-      - 'submitted'
-  schedule:
-    - cron: '*/10 * * * *' # Review first; issue fallback only when no PR needs work
   workflow_dispatch:
     inputs:
       phase:
@@ -35,7 +20,7 @@ on:
         default: 'auto'
         type: 'choice'
         options:
-          - 'auto' # review always; issue on schedule or ready-for-agent label
+          - 'auto' # choose work from the current issue/review backlog
           - 'issue' # locate + fix one bug only
           - 'review' # address review on open PRs only
           - 'both' # issue and review

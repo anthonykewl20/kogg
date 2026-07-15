@@ -1,13 +1,7 @@
 name: 'Qwen Automated Issue Triage'
 
 on:
-  issues:
-    types:
-      - 'opened'
-      - 'reopened'
-  issue_comment:
-    types:
-      - 'created'
+  # Inherited Qwen automation is manual-only in Kogg.
   workflow_dispatch:
     inputs:
       issue_number:
@@ -187,7 +181,7 @@ jobs:
       - name: 'Post Issue Analysis Failure Comment'
         if: |-
           ${{ failure() && steps.qwen_issue_analysis.outcome == 'failure' }}
-        uses: 'actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3'  # v9.0.0
+        uses: 'actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3' # v9.0.0
         env:
           ISSUE_NUMBER: '${{ github.event.issue.number }}'
           REPOSITORY: '${{ github.repository }}'

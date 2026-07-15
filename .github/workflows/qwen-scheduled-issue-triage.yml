@@ -1,8 +1,7 @@
 name: 'Qwen Scheduled Issue Triage'
 
 on:
-  schedule:
-    - cron: '0 * * * *' # Runs every hour
+  # Inherited scheduled triage is manual-only in Kogg.
   workflow_dispatch:
 
 concurrency:

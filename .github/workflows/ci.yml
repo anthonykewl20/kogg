@@ -10,6 +10,7 @@ on:
   pull_request:
     branches:
       - 'main'
+      - 'development'
       - 'release/**'
   merge_group:
   workflow_dispatch:
@@ -51,11 +52,10 @@ jobs:
   classify_pr:
     name: 'Classify PR'
     if: "${{ github.event_name == 'pull_request' || github.event_name == 'merge_group' || github.event_name == 'workflow_dispatch' }}"
-    # Gate runs on ECS for in-repo PRs and for the merge queue (which runs in the
-    # base-repo context), else a busy hosted pool delays it and blocks the
-    # ECS-bound jobs. The kill-switch is read here, so flipping it reverts
-    # everything to hosted.
-    runs-on: '${{ (vars.MAINTAINER_ECS_RUNNER_DISABLED != ''true'' && (github.event.pull_request.head.repo.full_name == github.repository || github.event_name == ''merge_group'')) && fromJSON(''["self-hosted", "linux", "x64", "ecs-qwen"]'') || fromJSON(''["ubuntu-latest"]'') }}'
+    # Only the canonical upstream repository can select its ECS runner. Kogg and
+    # other forks always use GitHub-hosted Ubuntu.
+    runs-on: '${{ (github.repository == ''QwenLM/qwen-code'' && vars.MAINTAINER_ECS_RUNNER_DISABLED != ''true'' && (github.event.pull_request.head.repo.full_name == github.repository || github.event_name == ''merge_group'')) && fromJSON(''["self-hosted", "linux", "x64", "ecs-qwen"]'') || fromJSON(''["ubuntu-latest"]'') }}'
+    timeout-minutes: 5
     continue-on-error: true
     outputs:
       skip_ci: '${{ steps.release_sync.outputs.skip_ci }}'
@@ -97,12 +97,12 @@ jobs:
           echo "skip_ci=${skip_ci}" >> "${GITHUB_OUTPUT}"
           echo "skip_ci=${skip_ci}"
 
-      # In-repo PR (head branch in this repo => author has write access) and the
-      # merge queue (base-repo context) run the Linux jobs on ECS; fork PRs stay
-      # hosted. Disable via repo var MAINTAINER_ECS_RUNNER_DISABLED=true.
+      # Canonical in-repo PRs and its merge queue may use ECS. Every fork stays
+      # hosted, even when a dispatch requests self-hosted.
       - name: 'Select Linux runner'
         id: 'pick_runner'
         env:
+          IS_CANONICAL: "${{ github.repository == 'QwenLM/qwen-code' }}"
           SAME_REPO: '${{ github.event.pull_request.head.repo.full_name == github.repository }}'
           ECS_DISABLED: '${{ vars.MAINTAINER_ECS_RUNNER_DISABLED }}'
           EVENT_NAME: '${{ github.event_name }}'
@@ -110,10 +110,10 @@ jobs:
         run: |-
           ubuntu_runner='["ubuntu-latest"]'
           if [[ "${EVENT_NAME}" == "workflow_dispatch" ]]; then
-            if [[ "${ECS_DISABLED}" != "true" && "${DISPATCH_LINUX_RUNNER}" == "self-hosted" ]]; then
+            if [[ "${IS_CANONICAL}" == "true" && "${ECS_DISABLED}" != "true" && "${DISPATCH_LINUX_RUNNER}" == "self-hosted" ]]; then
               ubuntu_runner='["self-hosted", "linux", "x64", "ecs-qwen"]'
             fi
-          elif [[ "${ECS_DISABLED}" != "true" && ( "${SAME_REPO}" == "true" || "${EVENT_NAME}" == "merge_group" ) ]]; then
+          elif [[ "${IS_CANONICAL}" == "true" && "${ECS_DISABLED}" != "true" && ( "${SAME_REPO}" == "true" || "${EVENT_NAME}" == "merge_group" ) ]]; then
             ubuntu_runner='["self-hosted", "linux", "x64", "ecs-qwen"]'
           fi
           echo "ubuntu_runner=${ubuntu_runner}" >> "${GITHUB_OUTPUT}"
@@ -131,7 +131,7 @@ jobs:
     # post-merge re-run on `main` would be redundant.
     if: "${{ !cancelled() && github.event_name != 'push' }}"
     runs-on: '${{ fromJSON(needs.classify_pr.outputs.ubuntu_runner || ''["ubuntu-latest"]'') }}'
-    timeout-minutes: 60
+    timeout-minutes: 30
     outputs:
       ci_profile: '${{ steps.ci_profile.outputs.ci_profile }}'
     permissions:
@@ -386,6 +386,7 @@ jobs:
     if: |-
       ${{
         !cancelled() &&
+        github.repository == 'QwenLM/qwen-code' &&
         (github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch') &&
         needs.classify_pr.outputs.skip_ci != 'true' &&
         needs.test.outputs.ci_profile == 'full'
@@ -482,10 +483,8 @@ jobs:
             packages/web-shell/client/e2e/playwright-report
           if-no-files-found: 'ignore'
 
-  # macOS/Windows: slowest/costliest runners, rare platform regressions — run
-  # only in the merge queue. Skipped on PR (ubuntu is the fast PR signal) and on
-  # push (the queue already tested the merged tree, so a post-merge re-run is
-  # redundant). Two named jobs, not a matrix: a skipped matrix job reports one
+  # macOS/Windows are canonical-upstream merge-queue checks. Private forks skip
+  # these costlier runners. Two named jobs, not a matrix: a skipped matrix job reports one
   # collapsed check name, never the per-OS required contexts, so PRs would sit
   # "Expected" forever and never enter the queue. A skipped named job reports
   # under its exact name and satisfies the required check (same as the
@@ -493,7 +492,7 @@ jobs:
   test_macos:
     name: 'Test (macos-latest, Node 22.x)'
     needs: 'classify_pr'
-    if: "${{ !cancelled() && github.event_name == 'merge_group' }}"
+    if: "${{ !cancelled() && github.repository == 'QwenLM/qwen-code' && github.event_name == 'merge_group' }}"
     runs-on: 'macos-latest'
     permissions:
       contents: 'read'
@@ -550,7 +549,7 @@ jobs:
   test_windows:
     name: 'Test (windows-latest, Node 22.x)'
     needs: 'classify_pr'
-    if: "${{ !cancelled() && github.event_name == 'merge_group' }}"
+    if: "${{ !cancelled() && github.repository == 'QwenLM/qwen-code' && github.event_name == 'merge_group' }}"
     runs-on: 'windows-2022'
     permissions:
       contents: 'read'
@@ -609,6 +608,7 @@ jobs:
     if: |-
       ${{
         !cancelled() &&
+        github.repository == 'QwenLM/qwen-code' &&
         needs.classify_pr.outputs.skip_ci != 'true' &&
         needs.test.outputs.ci_profile == 'full' &&
         github.event_name == 'pull_request' &&
@@ -646,7 +646,8 @@ jobs:
           os: '${{ matrix.os }}'
           github_token: '${{ secrets.GITHUB_TOKEN }}'
 
-  # Integration tests run only in the merge queue, not on every PR push.
+  # Integration tests run only in the canonical upstream merge queue, not on
+  # private forks or every PR push.
   # They are the suite that previously ran *only* in the nightly Release
   # pipeline (`release.yml`), so regressions stayed hidden until release
   # time. Gating them on `merge_group` catches the failure before the PR
@@ -664,7 +665,7 @@ jobs:
     # in the base-repo context, so use the self-hosted ECS pool and keep the
     # scarce hosted Linux runners free. Falls back to hosted if classify_pr is
     # skipped or the ECS kill-switch is set.
-    if: "${{ !cancelled() && github.event_name == 'merge_group' }}"
+    if: "${{ !cancelled() && github.repository == 'QwenLM/qwen-code' && github.event_name == 'merge_group' }}"
     runs-on: '${{ fromJSON(needs.classify_pr.outputs.ubuntu_runner || ''["ubuntu-latest"]'') }}'
     permissions:
       contents: 'read'

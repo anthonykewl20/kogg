@@ -1,18 +1,9 @@
 name: 'Comment Attachment Guard'
 
 on:
-  issue_comment:
-    types:
-      - 'created'
-      - 'edited'
-  pull_request_review_comment:
-    types:
-      - 'created'
-      - 'edited'
-  pull_request_review:
-    types:
-      - 'submitted'
-      - 'edited'
+  # Disabled in Kogg; dispatch is not a supported operational path because no
+  # comment or review event payload is available.
+  workflow_dispatch:
 
 permissions:
   contents: 'read'

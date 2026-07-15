@@ -1,20 +1,7 @@
 name: '🧐 Qwen Pull Request Review'
 
 on:
-  pull_request_target:
-    types:
-      - 'opened'
-      - 'synchronize'
-      - 'reopened'
-      - 'ready_for_review'
-      - 'review_requested'
-      - 'closed'
-  issue_comment:
-    types: ['created']
-  pull_request_review_comment:
-    types: ['created']
-  pull_request_review:
-    types: ['submitted']
+  # Inherited Qwen review automation is manual-only in Kogg.
   workflow_dispatch:
     inputs:
       pr_number:
@@ -387,7 +374,7 @@ jobs:
 
       # SECURITY: checkout trusted base code; /review fetches PR diff context.
       - name: 'Checkout base branch'
-        uses: 'actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10'  # v6.0.3
+        uses: 'actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10' # v6.0.3
         with:
           ref: '${{ github.event.repository.default_branch }}'
           fetch-depth: 0
@@ -895,7 +882,7 @@ jobs:
           echo "pr_number=${pr_number}" >> "$GITHUB_OUTPUT"
 
       - name: 'Checkout base branch'
-        uses: 'actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10'  # v6.0.3
+        uses: 'actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10' # v6.0.3
         with:
           ref: '${{ github.event.repository.default_branch }}'
           fetch-depth: 0

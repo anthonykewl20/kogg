@@ -108,9 +108,9 @@ describe('comment attachment guard workflow', () => {
     );
   });
 
-  it('listens for PR review summaries', () => {
-    expect(workflow).toContain('pull_request_review:\n    types:');
-    expect(workflow).toContain("- 'submitted'");
+  it('retains the PR review summary handler for upstream portability', () => {
+    expect(workflow).toContain("eventName === 'pull_request_review'");
+    expect(workflow).toContain('minimizeComment(input:');
   });
 
   it('checks URL paths instead of country-code TLD hosts', () => {

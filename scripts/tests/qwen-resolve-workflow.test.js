@@ -119,7 +119,7 @@ describe('qwen resolve workflow', () => {
         path.join(repoRoot, '.github/workflows/qwen-fix-conflicts.yml'),
       ),
     ).toBe(false);
-    expect(workflow).toContain('issue_comment:');
+    expect(workflow).toContain('workflow_dispatch:');
     expect(workflow).toContain("github.event.inputs.command == 'resolve'");
     expect(workflow).toContain('github.event.issue.pull_request');
     expect(workflow).toContain("github.event.issue.state == 'open'");
@@ -133,14 +133,13 @@ describe('qwen resolve workflow', () => {
     );
   });
 
-  it('cancels in-flight lifecycle reviews when the PR closes', () => {
+  it('retains defensive lifecycle cancellation for upstream portability', () => {
     const concurrencyStart = workflow.indexOf('\nconcurrency:');
     const concurrency = workflow.slice(
       concurrencyStart,
       workflow.indexOf('\njobs:', concurrencyStart),
     );
 
-    expect(workflow).toContain("- 'closed'");
     expect(concurrency).toContain("github.event.action == 'closed'");
     expect(concurrency).toContain(
       "format('qwen-pr-review-pr-{0}', github.event.pull_request.number)",

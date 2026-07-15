@@ -1,11 +1,8 @@
 name: 'Release'
 
 on:
-  schedule:
-    # Runs every day at midnight UTC for the nightly release.
-    - cron: '0 0 * * *'
-    # Runs every Tuesday at 23:59 UTC for the preview release.
-    - cron: '59 23 * * 2'
+  # Releases are explicit in this private fork; unattended nightly and preview
+  # releases are intentionally disabled.
   workflow_dispatch:
     inputs:
       version:
@@ -57,7 +54,7 @@ jobs:
 
     steps:
       - name: 'Checkout'
-        uses: 'actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10'  # v6.0.3
+        uses: 'actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10' # v6.0.3
         with:
           ref: '${{ github.event.inputs.ref || github.sha }}'
           fetch-depth: 0
@@ -154,7 +151,7 @@ jobs:
 
     steps:
       - name: 'Checkout'
-        uses: 'actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10'  # v6.0.3
+        uses: 'actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10' # v6.0.3
         with:
           ref: '${{ github.event.inputs.ref || github.sha }}'
           fetch-depth: 0
@@ -212,7 +209,7 @@ jobs:
 
     steps:
       - name: 'Checkout'
-        uses: 'actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10'  # v6.0.3
+        uses: 'actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10' # v6.0.3
         with:
           ref: '${{ github.event.inputs.ref || github.sha }}'
           fetch-depth: 0
@@ -259,7 +256,7 @@ jobs:
 
     steps:
       - name: 'Checkout'
-        uses: 'actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10'  # v6.0.3
+        uses: 'actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10' # v6.0.3
         with:
           ref: '${{ github.event.inputs.ref || github.sha }}'
           fetch-depth: 0
@@ -347,7 +344,7 @@ jobs:
 
     steps:
       - name: 'Checkout'
-        uses: 'actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10'  # v6.0.3
+        uses: 'actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10' # v6.0.3
         with:
           # Persist the bot PAT for release-branch pushes so downstream CI
           # workflows are triggered.

@@ -1,40 +1,55 @@
 name: 'E2E Tests'
 
 on:
-  # E2E is slow and currently flaky, so it is NOT in the merge queue (gating the
-  # serial queue on it would stall every merge). It runs post-merge on `main`,
-  # plus a nightly full regression and on-demand. Promote it to `merge_group` +
-  # required once a stable subset is carved out.
-  push:
-    branches:
-      - 'main'
-      - 'feat/e2e/**'
-  schedule:
-    - cron: '0 4 * * *' # nightly full regression (~04:00 UTC), guaranteed signal
+  # Private-fork E2E is manual. Smoke verifies the shipped bundle cheaply;
+  # full runs the platform, sandbox, and browser regression suites on demand.
   workflow_dispatch:
+    inputs:
+      profile:
+        description: 'E2E coverage profile'
+        required: true
+        default: 'smoke'
+        type: 'choice'
+        options:
+          - 'smoke'
+          - 'full'
 
 concurrency:
-  # Scope the group by event so back-to-back pushes to `main` cancel superseded
-  # runs (no pile-up when PRs merge in quick succession), without ever cancelling
-  # the nightly schedule or a manual dispatch — they share the ref but not the
-  # event. feat/e2e/** pushes still cancel their own superseded runs.
-  group: |-
-    ${{ github.workflow }}-${{ github.event_name }}-${{ github.head_ref || github.ref_name }}
-  # Cancel superseded pushes (main included now — only the latest tree matters,
-  # and it covers every merged change). The nightly run always finishes, so a
-  # busy merge window that keeps cancelling the push run still gets a signal.
-  cancel-in-progress: |-
-    ${{ github.event_name == 'push' }}
+  group: '${{ github.workflow }}-${{ inputs.profile }}'
+  cancel-in-progress: true
 
 jobs:
+  smoke:
+    name: 'Bundled CLI Smoke'
+    runs-on: 'ubuntu-latest'
+    timeout-minutes: 15
+    steps:
+      - name: 'Checkout'
+        uses: 'actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10' # v6.0.3
+
+      - name: 'Set up Node.js'
+        uses: 'actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e' # v6.4.0
+        with:
+          node-version-file: '.nvmrc'
+          cache: 'npm'
+          cache-dependency-path: 'package-lock.json'
+
+      - name: 'Install dependencies'
+        run: 'npm ci --prefer-offline --no-audit --progress=false'
+
+      - name: 'Build and bundle CLI'
+        run: |-
+          npm run build
+          npm run bundle
+
+      - name: 'Verify bundled CLI'
+        run: 'node dist/cli.js --version'
+
   e2e-test-linux:
     name: 'E2E Test (Linux) - ${{ matrix.sandbox }}'
     runs-on: 'ubuntu-latest'
-    # Skip on fork PRs: forks have no access to repository secrets
-    # (OPENAI_*, DOCKERHUB_*), so the matrix would fail unconditionally
-    # and show misleading red status. Same-repo PRs run normally.
-    if: |-
-      ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+    if: "${{ inputs.profile == 'full' }}"
+    timeout-minutes: 30
     strategy:
       matrix:
         sandbox:
@@ -44,10 +59,10 @@ jobs:
           - '22.x'
     steps:
       - name: 'Checkout'
-        uses: 'actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10'  # v6.0.3
+        uses: 'actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10' # v6.0.3
 
       - name: 'Set up Node.js ${{ matrix.node-version }}'
-        uses: 'actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e'  # v6.4.0
+        uses: 'actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e' # v6.4.0
         with:
           node-version: '${{ matrix.node-version }}'
           cache: 'npm'
@@ -104,15 +119,14 @@ jobs:
   e2e-test-macos:
     name: 'E2E Test - macOS'
     runs-on: 'macos-latest'
-    # Skip on fork PRs (no secrets) — see e2e-test-linux above.
-    if: |-
-      ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+    if: "${{ inputs.profile == 'full' }}"
+    timeout-minutes: 20
     steps:
       - name: 'Checkout'
-        uses: 'actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10'  # v6.0.3
+        uses: 'actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10' # v6.0.3
 
       - name: 'Set up Node.js'
-        uses: 'actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e'  # v6.4.0
+        uses: 'actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e' # v6.4.0
         with:
           node-version-file: '.nvmrc'
           cache: 'npm'
@@ -148,8 +162,8 @@ jobs:
   web-shell-browser-regression:
     name: 'web-shell Browser Regression'
     runs-on: 'ubuntu-latest'
-    if: |-
-      ${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' }}
+    if: "${{ inputs.profile == 'full' }}"
+    timeout-minutes: 15
     steps:
       - name: 'Checkout'
         uses: 'actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd' # v6.0.2
