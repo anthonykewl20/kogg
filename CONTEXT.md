@@ -27,3 +27,7 @@ _Avoid_: session ID, credential version
 **Entitled Model Catalog**:
 The authoritative, account-scoped set of Codex models and capabilities currently available to a ChatGPT Codex Account.
 _Avoid_: bundled model list, guessed models
+
+**Account Session**:
+An identity-bound authorization context available only when a ChatGPT Codex Account has validated identity, usable entitlement, and a ready Entitled Model Catalog. It permits inference without exposing credentials to callers.
+_Avoid_: access token, auth configuration, provider credentials
