@@ -59,3 +59,7 @@ _Avoid_: credentials directory, token file, provider settings
 **Credential Revision**:
 A monotonic version paired with account identity for compare-and-swap credential mutations. Refresh, switch, logout, and deletion reject a stale identity or revision instead of overwriting newer authoritative state.
 _Avoid_: modification time, last write wins, token timestamp
+
+**Compatibility Scenario**:
+A versioned, deterministic description of ChatGPT auth, identity, entitlement, model, limit, Responses, tool, compaction, and fault behavior used by the fake compatibility service. It produces a sanitized request transcript without replaying captured private traffic.
+_Avoid_: mock response, recorded session, golden private payload
