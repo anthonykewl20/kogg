@@ -28,6 +28,10 @@ _Avoid_: portable conversation, cross-account session
 An Account-bound Conversation whose authoritative state remains in the provider-native Responses protocol through streaming, tool use, retry, compaction, and durable recovery. Generic Kogg history is a replaceable, read-only projection created only from durable completed state and is never used to reconstruct or mutate the conversation.
 _Avoid_: Gemini chat, generic transcript, converted response history
 
+**Tool Transaction**:
+The durable, Responses-internal lifecycle of one model-requested tool effect: `prepared`, `dispatched`, `result recorded`, then `submitted`. Each phase is persisted before the next side-effect boundary so recovery cannot silently duplicate or lose tool work.
+_Avoid_: tool message, function call pair, generic tool event
+
 **Identity Epoch**:
 The generation of the active ChatGPT Codex Account identity. Account replacement or logout advances it so account-bound state from an earlier identity cannot remain active.
 _Avoid_: session ID, credential version
