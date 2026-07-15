@@ -33,7 +33,7 @@ An identity-bound authorization context available only when a ChatGPT Codex Acco
 _Avoid_: access token, auth configuration, provider credentials
 
 **Account Status Snapshot**:
-An immutable, credential-free value describing the expected lifecycle condition of a ChatGPT Codex Account and any user-actionable blocker. Callers render this value rather than interpreting expected conditions as exceptions.
+An immutable, credential-free value describing a ChatGPT Codex Account as `Disconnected`, `ConnectedBlocked(reason)`, or `Ready`. Callers render this value rather than interpreting expected conditions as exceptions; authorization and switching progress belong to an Account Transition.
 _Avoid_: auth error, provider exception, token status
 
 **Account Transition**:
