@@ -65,5 +65,5 @@ A versioned, deterministic description of ChatGPT auth, identity, entitlement, m
 _Avoid_: mock response, recorded session, golden private payload
 
 **Bundled-CLI Acceptance Fixture**:
-A disposable user environment that runs the actual bundled `kogg` executable through a PTY against a Compatibility Scenario. It owns process, filesystem, restart, concurrency, artifact, permission, and cleanup mechanics while tests state user behavior and assertions explicitly.
+A disposable user environment that runs the actual bundled `kogg` executable through a PTY against a Compatibility Scenario. It owns process, filesystem, restart, concurrency, permission, and cleanup mechanics while tests state user behavior and assertions explicitly; failures retain a sanitized evidence bundle and successful runs remove artifacts unless retention was requested.
 _Avoid_: source-mode test rig, mocked CLI, product-flow DSL
