@@ -39,3 +39,7 @@ _Avoid_: auth error, provider exception, token status
 **Account Transition**:
 A cancellable attempt to establish or switch to a ChatGPT Codex Account. It remains separate from the active Account Status Snapshot until the candidate account is fully ready, so failure or cancellation cannot displace a working account.
 _Avoid_: pending account, temporary login state, active account switch
+
+**Credential Custody Boundary**:
+The security boundary that keeps ChatGPT subscription credentials outside every path available to model tools, sandboxes, UI surfaces, and ordinary provider code. Only the privileged account credential broker may locate or mutate them; keychain and explicitly accepted file storage are implementation details behind this boundary.
+_Avoid_: credentials directory, token file, provider settings
