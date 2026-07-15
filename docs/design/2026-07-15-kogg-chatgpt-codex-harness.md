@@ -26,6 +26,20 @@ The ChatGPT backend and OAuth client are private compatibility contracts. Kogg
 must identify drift explicitly, fail closed, and withhold this Experimental
 feature without blocking unrelated Kogg releases.
 
+## Blocking prerequisites
+
+The acceptance seam requires a minimal real Kogg distribution foundation before
+feature implementation begins: a package whose declared executable is `kogg`,
+which builds into the bundled executable that a user actually invokes. The
+fixture never substitutes the upstream `qwen` executable or a source entry
+point. This prerequisite is intentionally smaller than the separately sequenced
+repository-wide rebrand, installer, packaging, and release work.
+
+A compatibility-profile investigation is also blocking before either the
+production ChatGPT client or fake service is implemented. It produces the
+versioned evidence and fixture described below; implementation cannot start
+from remembered or guessed private protocol behavior.
+
 ## Module map
 
 The design uses deep modules with narrow, enforceable interfaces:
@@ -81,6 +95,13 @@ When already connected, the descriptor offers continue, switch account, and
 logout. Limit exhaustion may offer change provider, but choosing OpenAI API
 repeats the separate-billing warning and requires an explicit user action.
 
+Safe status preserves the arbitrary plan and workspace display names returned
+by the service and adds a masked identifier derived from the Account Identity
+Key. It never exposes raw account or workspace IDs, subject claims, email
+addresses, tokens, or a reversible identity value. Selecting ChatGPT while
+already connected renders this status plus Continue, Switch account, and Logout
+without starting authorization, making an auth request, or launching a browser.
+
 ## Account identity, authentication, and readiness
 
 The Account module separates four concepts that must not collapse into one
@@ -104,11 +125,11 @@ The immutable credential-free Account Status Snapshot is exactly one of:
 
 Blocked categories are stable and descriptive. They include no entitlement,
 catalog unavailable, catalog expired, private-contract incompatibility,
-credentials requiring reconnect, and security isolation unavailable. Each
-category carries only valid recovery actions such as retry catalog, reconnect,
-switch account, logout, or review the isolation requirement. Expected states
-are values; exceptions are reserved for corrupt persistence or violated
-invariants.
+credentials requiring reconnect, credential-storage isolation unavailable, and
+authorized-transport isolation unavailable. Each category carries only valid
+recovery actions such as retry catalog, reconnect, switch account, logout, or
+review the isolation requirement. Expected states are values; exceptions are
+reserved for corrupt persistence or violated invariants.
 
 Initial login may durably commit a validated identity and credentials as
 ConnectedBlocked when entitlement is absent or the model catalog is not ready.
@@ -155,11 +176,15 @@ descriptors; broker sockets; IPC handles; or usable keychain interfaces.
 Tool-child environments and OS isolation must deny both direct secret storage
 and the privileged account broker.
 
-If Kogg cannot prove that boundary on a platform or execution mode, it must
-either refuse the ChatGPT connection or disable model-requested tool execution
-for subscription conversations with an explicit reason. Owner-only file mode
-is necessary for a fallback file but does not establish isolation from
-same-user tools.
+Credential storage and the opaque authorized transport are account-readiness
+requirements. If either can be reached outside the privileged Account module,
+status is ConnectedBlocked and no inference is issued. Tool-process isolation
+is a separate capability: if storage and transport are safe but a tool child
+cannot be prevented from reaching credential capabilities, the account remains
+Ready for chat while Tool Availability is `Disabled(reason)`. No subscription
+tool is advertised or dispatched in that mode. Owner-only file mode is
+necessary for a fallback file but does not establish isolation from same-user
+tools.
 
 The custody module exposes only semantic transactions to the Account module:
 read the active immutable entry, install a new immutable revision, atomically
@@ -225,10 +250,31 @@ replaceable read-only projection and is never used to reconstruct, retry,
 compact, or mutate native continuation.
 
 The journal is framed, checksummed, versioned, size-bounded, and protected by
-single-writer fencing plus revision compare-and-swap. Its bindings include
-issuer, Account Identity Key, Identity Epoch, workspace, and model. Valid final
-truncation may recover to the preceding frame; checksum, ordering, schema,
-migration, or identity ambiguity refuses continuation.
+single-writer fencing plus revision compare-and-swap. Immutable ownership binds
+issuer, workspace, Account Identity Key, and model, but not Identity Epoch. The
+current writer lease, each Sampling Attempt, each Tool Transaction, and every
+commit carry and revalidate the active epoch. Valid final truncation may recover
+to the preceding frame; checksum, ordering, schema, migration, or identity
+ambiguity refuses continuation.
+
+When the same validated identity returns under a fresh epoch, continuation
+performs an atomic epoch rebind under an exclusive writer lease. It verifies
+immutable ownership and that no unresolved old-epoch attempt or tool effect can
+be resumed, writes and flushes the new lease generation, then permits new work.
+A crash before installation leaves the old epoch fenced; a crash after
+installation leaves the new epoch authoritative. An old writer can no longer
+append, project, dispatch, submit, or commit.
+
+## First-gate context behavior
+
+Before native compaction is implemented, Responses Conversation disables every
+inherited semantic-summary path: the `/compress` command, automatic
+compression, hard-rescue compression, and side-query summary generation. It
+may apply deterministic structural savings that do not reinterpret provider
+state. If those savings cannot keep the next request within context, the turn
+blocks before overflow with an actionable Incident Record. No semantic-summary
+request is sent. Provider-native compaction remains a required later slice of
+this parent design.
 
 ## Sampling Attempts and Tool Transactions
 
@@ -266,6 +312,26 @@ actionable items are preserved in native state and fail closed before any later
 local effect. A shared cross-provider Tool Transaction abstraction is deferred
 until a second implementation demonstrates the same contract.
 
+## Compatibility Profile investigation
+
+The blocking investigation records a versioned Compatibility Profile backed by
+the observed official source revision. Its appendix and machine-readable
+fixture pin the exact OAuth issuer, client ID, callback allowlist, scopes, and
+authorization parameters; device start and poll endpoints, pending and terminal
+statuses, interval changes, and expiry; backend hosts, routes, query fields,
+headers, and payloads; Responses SSE event grammar and terminal requirements;
+model and limit request/response contracts; and the observed native compaction
+contract for its later slice.
+
+The initial investigation starts from the previously observed `openai/codex`
+revision `f90e7deea6a715bbd153044af6f475eefa749177` and must either confirm it or
+record the newer revision actually used. The profile distinguishes exact
+required request fields from explicitly declared optional fields and declares
+the matcher for each nondeterministic value. It also declares permitted known
+response optionality while preserving every unknown response field. “Extra
+fields where strict” is not a policy: any permitted request variation must be
+named in the profile.
+
 ## Versioned compatibility seam
 
 The Account and Responses modules depend on narrow protocol ports implemented
@@ -279,9 +345,11 @@ The deterministic fake is a real loopback HTTP service implementing versioned
 Compatibility Scenarios for browser and device authorization, token exchange,
 refresh, revocation, identity, entitlement, models, limits, Responses streams,
 tools, compaction, timing, and injected faults. It rejects unexpected endpoints,
-ordering, required fields, and extra calls. Only declared matchers permit
-nondeterministic timestamps or IDs, and request transcripts are sanitized as
-they are captured. Captured private production traffic is never replayed.
+ordering, required fields, and extra calls. Request fields must match the exact
+required fields plus only the optional fields declared by the Compatibility
+Profile; nondeterministic timestamps or IDs use only profile-declared matchers.
+Unknown response fields are preserved. Request transcripts are sanitized as
+they are captured, and captured private production traffic is never replayed.
 
 Bundled acceptance tests configure the production compatibility HTTP client to
 connect to the loopback fake through explicit test-only endpoint injection.
@@ -331,13 +399,31 @@ the scan cannot prove safety, artifacts are deleted and the failure reports
 that evidence retention was suppressed. Successful-run artifacts are deleted
 unless explicit safe retention was requested.
 
-The fake-service and security gate controls only whether the ChatGPT option may
-be surfaced. Separate protected live browser and device probes run the same
-bundled path and production adapter with disposable state, explicit user
-confirmation, a harmless prompt/tool, redacted reporting, and automatic local
-logout and deletion. Both modes are required for a feature release candidate.
-A live compatibility failure withholds the Experimental connection but does not
-block unrelated Kogg release work.
+The fake-service and security gate controls only this connection. During the
+probe stage the ordinary catalog contains no ChatGPT descriptor. A dedicated
+protected probe command may invoke a hidden Probe-stage Candidate only inside
+fresh disposable state; it cannot enable or persist that descriptor. There is
+no environment variable, user setting, or general feature flag that bypasses
+the hidden state. Separate browser and device probes run the same bundled path
+and production adapter with explicit user confirmation, a harmless prompt/tool,
+redacted reporting, and automatic local logout and deletion. After both modes
+pass, the release build manifest enables the normal catalog descriptor. A live
+compatibility failure withholds it but does not block unrelated Kogg release
+work.
+
+The harmless-tool gate additionally requires proof of at least one supported
+execution mode in which Tool Availability is Enabled and tool-process isolation
+passes. Chat-only Ready modes may ship only alongside that proven safe
+tool-enabled mode; disabling tools everywhere cannot satisfy the first tracer.
+
+## Later required slices in this parent design
+
+Dynamic presentation of the complete immutable primary and additional limit
+groups, including unknown groups and fields, remains required after the first
+tracer. Provider-native compaction, its strict terminal contract, restart
+behavior, and fail-closed recovery also remain required. They are later blocked
+slices, not rejected features or substitutes for the first gate's limits and
+context behavior.
 
 ## Out of scope for this slice
 
@@ -345,10 +431,11 @@ block unrelated Kogg release work.
 - Combining subscription and OpenAI Platform credentials.
 - Multiple simultaneously active ChatGPT accounts.
 - Generic hosted tools or an expanded cross-source tool catalog.
-- Repository-wide rebrand and package, installer, or release automation work.
+- Repository-wide rebrand and installer or release automation work beyond the
+  minimal blocking `kogg` package/bin/executable foundation.
 - Full parity across Web Shell, IDE, SDK, ACP, Serve, and native Windows.
-- Fast mode, broad limits UI, and native compaction beyond what the first prompt
-  and restart-safe tool tracer require.
+- Fast mode, broad limits UI, and native compaction implementation in the first
+  tracer; dynamic limits and native compaction remain later parent requirements.
 - A generic cross-provider transaction framework.
 - Dependence on Codex App Server or claims that the private contract is public
   or supported for third-party use.

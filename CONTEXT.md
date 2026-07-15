@@ -53,15 +53,19 @@ An identity-bound authorization capability available only when a ChatGPT Codex A
 _Avoid_: access token, auth configuration, provider credentials
 
 **Account Status Snapshot**:
-An immutable, credential-free value describing a ChatGPT Codex Account as `Disconnected`, `ConnectedBlocked(category, actions)`, or `Ready`. Authentication and readiness are separate: an authenticated account can be committed but blocked by missing entitlement, unavailable or expired models, compatibility, credential, or isolation policy. Callers render its category and allowed recovery actions rather than interpreting expected conditions as exceptions; authorization and switching progress belong to an Account Transition.
+An immutable, credential-free value describing a ChatGPT Codex Account as `Disconnected`, `ConnectedBlocked(category, actions)`, or `Ready`. Authentication and readiness are separate: an authenticated account can be committed but blocked by missing entitlement, unavailable or expired models, compatibility, credentials, or failure to isolate credential storage or authorized transport. Tool-process isolation is reported separately as Tool Availability and does not demote an otherwise Ready chat connection. Callers render expected states rather than interpreting them as exceptions; authorization and switching progress belong to an Account Transition.
 _Avoid_: auth error, provider exception, token status
+
+**Tool Availability**:
+A credential-free capability value reported independently from Account Status as `Enabled` or `Disabled(reason)`. Failure to prove tool-process isolation disables subscription tools while chat may remain Ready; it does not excuse unsafe storage or authorized transport.
+_Avoid_: account blocked, tool permission prompt, provider readiness
 
 **Account Transition**:
 A cancellable attempt to establish or switch to a ChatGPT Codex Account. An initial authenticated login may commit as ConnectedBlocked, but a switch candidate remains separate from an existing Ready snapshot until the candidate itself is Ready, so failure or cancellation cannot displace a working account.
 _Avoid_: pending account, temporary login state, active account switch
 
 **Credential Custody Boundary**:
-The enforceable security boundary that keeps ChatGPT subscription credentials and credential capabilities outside every path, environment variable, process argument, output stream, inherited file descriptor, broker endpoint, and keychain interface available to model tools or sandboxes. Only the privileged Account module may use the custody interface. If this isolation cannot be proven, Kogg refuses the connection or disables subscription tool execution rather than relying on file permissions.
+The enforceable security boundary that keeps ChatGPT subscription credentials and authorized transport within the privileged Account module and keeps credential capabilities outside every path, environment variable, process argument, output stream, inherited file descriptor, broker endpoint, and keychain interface available to model tools or sandboxes. Failure to isolate storage or authorized transport makes the account ConnectedBlocked; failure limited to a tool process makes Tool Availability disabled. File permissions alone do not prove either boundary.
 _Avoid_: credentials directory, token file, provider settings
 
 **Credential Revision**:
@@ -75,6 +79,14 @@ _Avoid_: mutable token file, active token blob, best-effort delete
 **Compatibility Scenario**:
 A versioned, deterministic description of ChatGPT auth, identity, entitlement, model, limit, Responses, tool, compaction, and fault behavior used by the fake compatibility service. It rejects unexpected calls, ordering, and fields except for explicit nondeterministic matchers, and produces a sanitized request transcript without replaying captured private traffic.
 _Avoid_: mock response, recorded session, golden private payload
+
+**Compatibility Profile**:
+A versioned, evidence-backed appendix and fixture that pins the observed official source revision and exact required and declared-optional OAuth, device, backend, streaming, model, limit, and compaction wire contract. Production and fake adapters implement this profile; undocumented required-field guesses are prohibited and unknown response fields are preserved.
+_Avoid_: loose OpenAI compatibility, best-effort wire shape, captured account traffic
+
+**Probe-stage Candidate**:
+The hidden ChatGPT connection descriptor available only to the dedicated protected probe command in disposable state before release enablement. It cannot appear in the ordinary catalog or be enabled or persisted by an environment or user flag; both live modes must pass before a release-build manifest may surface the normal descriptor.
+_Avoid_: feature flag, hidden menu option, developer bypass
 
 **Bundled-CLI Acceptance Fixture**:
 A disposable user environment that runs the actual bundled `kogg` executable through a PTY against a Compatibility Scenario. It owns process, filesystem, restart, concurrency, permission, and cleanup mechanics while tests state user behavior and assertions explicitly; failures retain a sanitized evidence bundle and successful runs remove artifacts unless retention was requested.

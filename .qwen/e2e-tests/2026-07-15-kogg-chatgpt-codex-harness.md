@@ -21,6 +21,22 @@ identity and readiness with dynamic models, first native Responses prompt,
 incident diagnostics, restart-safe execution of one harmless local tool, and
 ordinary and destructive logout.
 
+## Blocking test prerequisites
+
+Before this plan can run, the repository must build a minimal package with a
+declared `kogg` bin and the actual bundled `kogg` executable. Every acceptance
+scenario invokes that artifact. The upstream `qwen` executable and a source-mode
+entry point are forbidden substitutes. Broader public rebranding and release
+packaging remain later work.
+
+Before production-client or fake-service implementation, a compatibility
+investigation must commit a versioned profile appendix and fixture recording the
+observed official source revision and exact OAuth issuer, client, callbacks,
+scopes, parameters, device endpoints/statuses/timing, backend
+routes/headers/query/payload, Responses SSE grammar, models, limits, and native
+compaction contract. The test suite consumes that profile rather than embedding
+remembered wire behavior.
+
 ## Acceptance Fixture
 
 For each scenario the fixture:
@@ -68,10 +84,13 @@ The fake is a versioned semantic HTTP service for:
   before and after every durable boundary.
 
 Every scenario declares its complete expected request sequence. Unexpected
-endpoint, host, method, order, required field, extra field where strict, or
-extra call fails the test. Matchers for generated IDs, PKCE values, and times
-must be explicit. The service has no catch-all success response and never uses
-captured private traffic.
+endpoint, host, method, order, required field, undeclared optional request
+field, or extra call fails the test. Required fields and permitted optional
+fields come only from the versioned Compatibility Profile. Matchers for
+generated IDs, PKCE values, and times are profile-declared and explicit.
+Unknown response fields are preserved through production parsing and native
+persistence. The service has no catch-all success response, no vague
+extra-field policy, and never uses captured private traffic.
 
 ## Tracer happy paths
 
@@ -86,6 +105,12 @@ captured private traffic.
   production authorization and is not treated as consent to file fallback.
 - The option is absent when the feature compatibility/security gate is not
   satisfied.
+- Status preserves arbitrary plan and workspace display strings and shows a
+  stable masked identifier. It contains no raw account/workspace ID, email,
+  subject claim, token, or reversible identity value.
+- Selecting ChatGPT while already connected renders status plus Continue,
+  Switch account, and Logout. The fake transcript records zero authorization
+  requests, and the controlled browser launcher records zero launches.
 
 ### Browser and device login
 
@@ -108,6 +133,10 @@ captured private traffic.
   explicitly accept a symlink-safe owner-only fallback; strict mode refuses it.
 - Successful identity, entitlement, and authoritative unexpired model catalog
   produce Ready and an opaque host-pinned Account Session.
+- Failure to isolate credential storage or authorized transport produces
+  ConnectedBlocked and no inference. Failure limited to tool-process isolation
+  leaves chat Ready but reports Tool Availability Disabled with a reason and
+  advertises no subscription tools.
 - A fresh conversation selects only the returned default or a model explicitly
   selected from the Entitled Model Catalog.
 - The first prompt streams transient text, receives a complete valid terminal
@@ -115,6 +144,9 @@ captured private traffic.
   read-only projection.
 - A restart silently refreshes only when identity remains the same, reacquires
   readiness, and resumes under the original Account Identity Key and model.
+- Same-identity restart atomically rebinds the writer lease to the new epoch;
+  immutable journal ownership remains issuer, workspace, Account Identity Key,
+  and model.
 
 ### Restart-safe harmless tool
 
@@ -128,6 +160,9 @@ captured private traffic.
   response is validated and committed.
 - Restart from every unambiguous phase resumes without duplicate execution or
   duplicate provider continuation.
+- The release gate runs this path in at least one supported execution mode with
+  Tool Availability Enabled and proven tool-process isolation. A build that
+  disables subscription tools in every mode fails the harmless-tool gate.
 
 ### Diagnostics and logout
 
@@ -199,6 +234,10 @@ captured private traffic.
   access, and destructive deletion removes only the selected identity's data.
 - Corrupt or substitute a raw identity and prove it cannot collide with the
   pseudonymous key or make another identity's history writable.
+- Crash immediately before and after atomic same-identity epoch rebind. Before
+  installation the old epoch stays fenced; after installation the new epoch is
+  authoritative. A retained old writer fails lease, Sampling Attempt, Tool
+  Transaction, projection, and commit checks.
 
 ## Credential adversarial matrix
 
@@ -218,9 +257,10 @@ captured private traffic.
   workspace, artifacts, environment, arguments, stdout/stderr, inherited file
   descriptors, process inspection, broker endpoints, sockets, and direct
   keychain commands or APIs.
-- If any execution mode cannot deny those paths and capabilities, assert that
-  Kogg refuses the connection or disables subscription tool execution with the
-  documented reason. File mode alone must not satisfy the test.
+- If storage or authorized-transport isolation fails, assert ConnectedBlocked.
+  If only the tool child cannot deny credential paths or capabilities, assert
+  Ready chat plus Tool Availability Disabled, no advertised tool, and no tool
+  dispatch. File mode alone must not satisfy either isolation test.
 - Scan process tables, child environments, open descriptors, captured output,
   core/crash artifacts where controllable, and retained test evidence for
   credentials and raw identities.
@@ -234,8 +274,8 @@ captured private traffic.
   turn when the terminal response fails validation.
 - Unknown actionable or hosted items fail before a later local tool dispatch.
 - Journal final-frame truncation recovers only to a valid prior checksum.
-  Checksum, sequence, schema, migration, identity, epoch, model, or request-window
-  ambiguity refuses continuation.
+  Checksum, sequence, schema, migration, immutable ownership, current
+  lease-epoch, model, or request-window ambiguity refuses continuation.
 - Concurrent conversation writers exercise leases, fencing, and revision
   compare-and-swap.
 - Crash before send, during send, after send before bytes, during streaming, and
@@ -254,6 +294,22 @@ captured private traffic.
   because request bytes left the process.
 - Account replacement or logout at every phase proves no old-epoch request,
   dispatch, submission, projection, or commit proceeds.
+- Prove immutable journal ownership excludes epoch. Writer leases, Sampling
+  Attempts, Tool Transactions, projections, and commits carry the current epoch
+  and reject an old writer after an atomic same-identity rebind.
+
+## First-gate context behavior
+
+- `/compress` is unavailable for a Responses Conversation before native
+  compaction ships.
+- Automatic compression, hard-rescue compression, and summary side queries are
+  disabled on every ordinary, overflow, restart, and recovery path.
+- The strict fake fails the scenario if any semantic-summary request occurs.
+- Deterministic structural savings may reduce request structure without
+  rewriting provider state. If still over budget, Kogg blocks before sending,
+  displays an actionable incident ID, and preserves the native conversation.
+- Native compaction is tested in its later required slice, not simulated by a
+  local semantic summary in the first gate.
 
 ## Diagnostics and artifact adversarial matrix
 
@@ -294,7 +350,14 @@ Focused tests complement, but do not replace, bundled E2E for:
 - Static dependency boundaries around legacy logging, generic content
   generation, and provider refresh paths.
 
-## Protected live compatibility probes
+## Protected live compatibility probes and bootstrap
+
+In probe-stage builds, ordinary first run, `/auth`, direct login, headless
+output, and restart never render or persist the ChatGPT descriptor. A dedicated
+protected probe command alone may invoke the hidden Probe-stage Candidate, and
+it always creates disposable state. Environment variables, user configuration,
+and general feature flags cannot expose or persist it. Tests attempt every such
+bypass and assert the catalog remains unchanged.
 
 Browser and device modes are separate opt-in commands and separate release
 results. Each uses the bundled executable and production adapter with fresh
@@ -308,11 +371,18 @@ for an Experimental feature release candidate. A failure disables or withholds
 only the ChatGPT connection and reports private compatibility drift; it does
 not block unrelated Kogg releases.
 
+After both protected live modes pass, a release build manifest—not mutable user
+state—enables the normal top catalog descriptor. Tests compare probe-stage and
+enabled manifests and prove that ordinary catalog visibility changes only with
+the release artifact.
+
 ## Gate result
 
-The top option may be surfaced only when the full tracer passes with both auth
-modes against the strict fake, all secret scans pass, tool isolation is proven
-for the enabled execution mode, the focused security tests pass, and the two
-protected live probes pass for the release candidate. Broader rebrand, hosted
-tools, and secondary-surface parity are tracked as later slices rather than
-being implied by this gate.
+The top option may be surfaced only when the minimal bundled `kogg` prerequisite
+and Compatibility Profile exist; the full tracer passes with both auth modes
+against the strict fake; all secret scans pass; storage and transport isolation
+pass; at least one supported tool-enabled mode proves tool-process isolation;
+the focused security tests pass; and both protected live probes pass for the
+release candidate. Broad dynamic limits and native compaction retain their own
+later required gates. Broader rebrand, hosted tools, and secondary-surface
+parity are separately sequenced rather than being implied by this gate.
