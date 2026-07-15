@@ -71,3 +71,7 @@ _Avoid_: source-mode test rig, mocked CLI, product-flow DSL
 **Incident Record**:
 A minimal, structured, redacted account or conversation failure record addressed by an incident ID. Its interface accepts only allowlisted operational fields and cannot accept prompts, tool content, credentials, headers, raw bodies, arbitrary objects, or free-form exception dumps.
 _Avoid_: debug log entry, raw error dump, telemetry event
+
+**Incident Store**:
+The owner-only local repository for Incident Records. It enforces the seven-day and 100 MiB global limits with oldest-first pruning, supports account-scoped destructive deletion and explicit clearing/export, and never replaces a primary product outcome when storage itself fails.
+_Avoid_: debug log file, crash dump directory, conversation history
