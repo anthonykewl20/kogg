@@ -291,11 +291,22 @@ append, project, dispatch, submit, or commit.
 Before native compaction is implemented, Responses Conversation disables every
 inherited semantic-summary path: the `/compress` command, automatic
 compression, hard-rescue compression, and side-query summary generation. It
-may apply deterministic structural savings that do not reinterpret provider
-state. If those savings cannot keep the next request within context, the turn
-blocks before overflow with an actionable Incident Record. No semantic-summary
-request is sent. Provider-native compaction remains a required later slice of
-this parent design.
+uses one authoritative Context Budget Contract before every request. The
+selected Entitled Model Catalog entry supplies the current context window and
+capabilities. The Compatibility Profile pins the exact accounting/tokenization
+algorithm and version, the complete serialized provider-native components to
+count—including instructions, native request window, encrypted/opaque items,
+tool definitions, tool results, and response allowance—and the mandatory safety
+margin.
+
+Deterministic structural savings that do not reinterpret provider state use the
+same calculator and are followed by a full recalculation. If the model budget,
+catalog freshness, accounting version, serialized component rule, or safety
+margin is unavailable, stale, changed without reconciliation, or unknown, no
+request is sent. If the result exceeds the safe budget, the turn blocks before
+overflow with an actionable Incident Record. No semantic-summary or
+over-budget request is sent. Provider-native compaction remains a required later
+slice of this parent design.
 
 ## Sampling Attempts and Tool Transactions
 
@@ -343,6 +354,11 @@ statuses, interval changes, and expiry; backend hosts, routes, query fields,
 headers, and payloads; Responses SSE event grammar and terminal requirements;
 model and limit request/response contracts; and the observed native compaction
 contract for its later slice.
+
+For each model-capability shape, the profile pins the Context Budget Contract's
+exact accounting/tokenization algorithm and version, canonical serialized
+request inputs, output allowance, and safety margin. A model catalog value alone
+is insufficient without a matching supported accounting contract.
 
 The initial investigation starts from the previously observed `openai/codex`
 revision `f90e7deea6a715bbd153044af6f475eefa749177` and must either confirm it or
@@ -447,14 +463,23 @@ fresh disposable state; it cannot enable or persist that descriptor. There is
 no environment variable, user setting, or general feature flag that bypasses
 the hidden state. Separate browser and device probes run the same bundled path
 and production adapter with explicit user confirmation, a harmless prompt/tool,
-redacted reporting, and automatic local logout and deletion. After both modes
-pass, each Probe Attestation records a cryptographic digest of the exact bundled
-release artifact and the digest of its Compatibility Profile. The release build
-manifest enables the normal catalog descriptor only when both mode attestations
-match both digests for that exact release candidate. A stale result, profile
-change, artifact mismatch, or rebuild changes a digest and leaves the descriptor
-withheld. A live compatibility failure likewise withholds it but does not block
-unrelated Kogg release work.
+redacted reporting, and automatic local logout and deletion.
+
+The release pipeline first builds one immutable content-addressed Candidate
+Payload. Its canonical digest covers the executable, code, and assets and
+explicitly excludes the Detached Enablement Manifest. Browser and device Probe
+Attestations bind that payload digest and the Compatibility Profile digest. Only
+after both pass may the trusted release pipeline emit an authenticated or signed
+detached manifest referencing the same digest pair and both attestations.
+Adding or replacing this detached file does not mutate the Candidate Payload.
+
+At runtime, Kogg verifies manifest provenance or signature, both attestations,
+and the current payload and profile digests before surfacing the descriptor.
+Missing, invalid, stale, mismatched, or rebuilt inputs keep it hidden. An enabled
+distribution therefore executes the exact payload that both modes probed. The
+blocking compatibility/release-foundation investigation selects the canonical
+digest boundary, digest algorithm, signature scheme, and trusted provenance;
+the non-circular boundary above is mandatory.
 
 The harmless-tool gate additionally requires proof of at least one supported
 execution mode in which Tool Availability is Enabled and tool-process isolation
@@ -470,6 +495,12 @@ behavior, and fail-closed recovery also remain required. They are later blocked
 slices, not rejected features or substitutes for the first gate's limits and
 context behavior.
 
+Secondary-surface Connection Catalog parity is also a later required slice.
+The same authoritative catalog remains the only source of order, copy, actions,
+availability, and disabled reasons. Each shipped IDE, Web, or other surface must
+pass that contract before claiming ChatGPT connection support. Full surface
+parity does not widen or block the first CLI tracer.
+
 ## Out of scope for this slice
 
 - Automatic or implicit fallback to any API-key provider.
@@ -478,7 +509,9 @@ context behavior.
 - Generic hosted tools or an expanded cross-source tool catalog.
 - Repository-wide rebrand and installer or release automation work beyond the
   minimal blocking `kogg` package/bin/executable foundation.
-- Full parity across Web Shell, IDE, SDK, ACP, Serve, and native Windows.
+- Full parity across Web Shell, IDE, SDK, ACP, Serve, and native Windows in the
+  first tracer; each later shipped surface must pass the catalog contract before
+  claiming support.
 - Fast mode, broad limits UI, and native compaction implementation in the first
   tracer; dynamic limits and native compaction remain later parent requirements.
 - A generic cross-provider transaction framework.

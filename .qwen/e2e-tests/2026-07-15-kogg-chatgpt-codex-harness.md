@@ -331,9 +331,20 @@ extra-field policy, and never uses captured private traffic.
 - Automatic compression, hard-rescue compression, and summary side queries are
   disabled on every ordinary, overflow, restart, and recovery path.
 - The strict fake fails the scenario if any semantic-summary request occurs.
+- Use the authoritative model catalog window/capabilities and the Compatibility
+  Profile's exact accounting/tokenization algorithm/version, serialized native
+  component list, output allowance, and safety margin. Test requests one unit
+  below, exactly at, and one unit above the safe budget; the strict fake records
+  zero over-budget requests.
+- Repeat with large encrypted/opaque native items, request windows, instructions,
+  tool definitions, and tool results so every serialized component is counted.
+- Expire or change the model catalog budget, remove the accounting version,
+  return an unknown capability shape, and make a serialization input unknown.
+  Each case blocks before network activity with an actionable incident.
 - Deterministic structural savings may reduce request structure without
-  rewriting provider state. If still over budget, Kogg blocks before sending,
-  displays an actionable incident ID, and preserves the native conversation.
+  rewriting provider state, but must use the same calculator and recalculate the
+  complete request. If still over budget, Kogg blocks before sending, displays
+  an actionable incident ID, and preserves the native conversation.
 - Native compaction is tested in its later required slice, not simulated by a
   local semantic summary in the first gate.
 
@@ -402,15 +413,20 @@ for an Experimental feature release candidate. A failure disables or withholds
 only the ChatGPT connection and reports private compatibility drift; it does
 not block unrelated Kogg releases.
 
-After both protected live modes pass, a release build manifest—not mutable user
-state—enables the normal top catalog descriptor. Tests compare probe-stage and
-enabled manifests and prove that ordinary catalog visibility changes only with
-the release artifact. Each browser and device result attests the cryptographic
-digest of that exact bundled artifact and the Compatibility Profile digest.
-The manifest enables only when both results match both current digests. Reuse a
-stale result, alter the profile, mismatch one mode, or rebuild the artifact and
-assert the descriptor remains withheld until both probes rerun for the new
-digest pair.
+Build one immutable content-addressed Candidate Payload whose canonical digest
+covers executable, code, and assets but excludes the Detached Enablement
+Manifest. Both probe results attest that payload digest and the Compatibility
+Profile digest. After both pass, the trusted release pipeline emits an
+authenticated or signed detached manifest referencing the same digests and both
+attestations. Adding or replacing that manifest does not change the payload
+digest.
+
+Runtime contract tests verify manifest provenance/signature, current payload
+and profile digests, and both matching mode attestations. Remove the manifest,
+tamper its content or signature, swap the payload, alter the profile, mismatch
+one mode, reuse a stale result, and rebuild an asset or executable; every case
+keeps the descriptor hidden. The enabled distribution executes and hashes the
+exact payload probed by both modes.
 
 ## Gate result
 
@@ -419,7 +435,16 @@ and Compatibility Profile exist; the full tracer passes with both auth modes
 against the strict fake; all secret scans pass; storage and transport isolation
 pass; at least one supported tool-enabled mode proves tool-process isolation;
 the focused security tests pass; and both protected live probe attestations
-match the exact release artifact and Compatibility Profile digests. Broad
-dynamic limits and native compaction retain their own
-later required gates. Broader rebrand, hosted tools, and secondary-surface
-parity are separately sequenced rather than being implied by this gate.
+match the exact Candidate Payload and Compatibility Profile digests through a
+valid detached manifest. Broad dynamic limits and native compaction retain
+their own later required gates. Broader rebrand, hosted tools, and
+secondary-surface parity are separately sequenced rather than being implied by
+this gate.
+
+## Later secondary-surface catalog contract
+
+When an IDE, Web, or other connection surface is separately shipped, run it
+against the same authoritative Connection Catalog scenarios. Before that
+surface claims support, assert identical order, copy, badges, billing
+disclosures, availability, disabled reasons, and typed action behavior. This
+later requirement does not enter the first bundled-CLI tracer gate.

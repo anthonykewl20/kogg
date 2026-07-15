@@ -48,6 +48,10 @@ _Avoid_: session ID, credential version
 The authoritative, account-scoped set of Codex models and capabilities currently available to a ChatGPT Codex Account. A last-known-good catalog remains ready only within its declared TTL; refresh failure warns while it is valid and blocks readiness after expiry.
 _Avoid_: bundled model list, guessed models
 
+**Context Budget Contract**:
+The authoritative pre-send calculation for a selected entitled model. The Entitled Model Catalog supplies the context window and capabilities; the Compatibility Profile pins the accounting/tokenization algorithm and version, every serialized provider-native request component counted, and the safety margin. Missing, stale, changed, or unknown budget input blocks before network dispatch with an actionable incident.
+_Avoid_: character count, approximate token check, post-error overflow handling
+
 **Account Session**:
 An identity-bound authorization capability available only when a ChatGPT Codex Account has validated identity, usable entitlement, and a ready Entitled Model Catalog. It exposes an opaque host-pinned authorized transport rather than a bearer credential, and every privileged boundary revalidates its Identity Epoch.
 _Avoid_: access token, auth configuration, provider credentials
@@ -89,12 +93,16 @@ A versioned, evidence-backed appendix and fixture that pins the observed officia
 _Avoid_: loose OpenAI compatibility, best-effort wire shape, captured account traffic
 
 **Probe-stage Candidate**:
-The hidden ChatGPT connection descriptor available only to the dedicated protected probe command in disposable state before release enablement. It cannot appear in the ordinary catalog or be enabled or persisted by an environment or user flag; both live modes must pass before a release-build manifest may surface the normal descriptor.
+The hidden ChatGPT connection descriptor available only to the dedicated protected probe command in disposable state before release enablement. It cannot appear in the ordinary catalog or be enabled or persisted by an environment or user flag; both live modes must pass before a valid Detached Enablement Manifest may surface the normal descriptor.
 _Avoid_: feature flag, hidden menu option, developer bypass
 
 **Probe Attestation**:
-A protected live-probe result bound to the cryptographic digest of the exact bundled release artifact and the digest of its Compatibility Profile. A release manifest may enable the descriptor only when current browser and device attestations match both current digests; stale, mismatched, or rebuilt inputs remain withheld.
+A protected live-probe result bound to the canonical digest of one immutable Candidate Payload and the digest of its Compatibility Profile. The Candidate Payload covers executable code and assets but excludes the detached enablement manifest, so adding that manifest cannot change what was probed.
 _Avoid_: latest probe result, branch-level approval, mutable enable flag
+
+**Detached Enablement Manifest**:
+An authenticated or signed release-pipeline artifact outside the Candidate Payload. It references the current payload and Compatibility Profile digests plus both matching Probe Attestations. Runtime verifies its provenance or signature and current digests before surfacing the descriptor; missing, invalid, stale, or mismatched input keeps it hidden.
+_Avoid_: bundled feature flag, mutable user setting, self-modifying release artifact
 
 **Bundled-CLI Acceptance Fixture**:
 A disposable user environment that runs the actual bundled `kogg` executable through a PTY against a Compatibility Scenario. It owns process, filesystem, restart, concurrency, permission, and cleanup mechanics while tests state user behavior and assertions explicitly; failures retain a sanitized evidence bundle and successful runs remove artifacts unless retention was requested.
