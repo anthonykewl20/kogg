@@ -24,6 +24,10 @@ function readPackageJson() {
   return JSON.parse(readFileSync(path.join(root, 'package.json'), 'utf8'));
 }
 
+function readPackageLock() {
+  return JSON.parse(readFileSync(path.join(root, 'package-lock.json'), 'utf8'));
+}
+
 function readWorkflow(relativePath) {
   return readFileSync(path.join(root, relativePath), 'utf8');
 }
@@ -57,6 +61,17 @@ function getWorkflowStep(job, stepName) {
 }
 
 describe('package scripts', () => {
+  it('exposes qwen from source and kogg from the bundled dist', () => {
+    const packageJson = readPackageJson();
+    const packageLock = readPackageLock();
+
+    expect(packageJson.bin).toEqual({
+      qwen: 'scripts/cli-entry.js',
+      kogg: 'dist/cli-entry.js',
+    });
+    expect(packageLock.packages[''].bin).toEqual(packageJson.bin);
+  });
+
   it('keeps the serve fast-path bundle check outside unit test scripts', () => {
     const packageJson = readPackageJson();
 

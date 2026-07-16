@@ -11,6 +11,7 @@ import {
   readFileSync,
   readdirSync,
   rmSync,
+  statSync,
   truncateSync,
   writeFileSync,
 } from 'node:fs';
@@ -58,6 +59,18 @@ describe('package asset scripts', () => {
         path.join(rootDir, 'dist', 'examples', 'mcp-server', 'keep.test.js'),
       ),
     ).toBe(true);
+  });
+
+  it('copies an executable CLI wrapper into the bundled runtime dist', () => {
+    const rootDir = createFixtureRoot();
+    stubConsole();
+
+    copyBundleAssets({ root: rootDir });
+
+    const sourcePath = path.join(rootDir, 'scripts', 'cli-entry.js');
+    const bundledPath = path.join(rootDir, 'dist', 'cli-entry.js');
+    expect(readFileSync(bundledPath)).toEqual(readFileSync(sourcePath));
+    expect(statSync(bundledPath).mode & 0o111).toBe(0o111);
   });
 
   it('copies bundled skill scripts and references into the runtime dist', () => {
@@ -240,6 +253,25 @@ describe('package asset scripts', () => {
         path.join(rootDir, 'dist', 'examples', 'mcp-server', 'package.json'),
       ),
     ).toBe(true);
+  });
+
+  it('prepares qwen and kogg as aliases for the executable CLI wrapper', () => {
+    const rootDir = createFixtureRoot();
+    createBundleArtifacts(rootDir);
+    stubConsole();
+
+    preparePackage({ rootDir, requireNativeAudioCapture: false });
+
+    const distPackageJson = JSON.parse(
+      readFileSync(path.join(rootDir, 'dist', 'package.json'), 'utf8'),
+    );
+    expect(distPackageJson.bin).toEqual({
+      qwen: 'cli-entry.js',
+      kogg: 'cli-entry.js',
+    });
+    expect(
+      statSync(path.join(rootDir, 'dist', 'cli-entry.js')).mode & 0o111,
+    ).toBe(0o111);
   });
 
   it('omits browser MCP install hooks and deps from the prepared dist package', () => {
@@ -553,6 +585,7 @@ describe('package asset scripts', () => {
 
     writeFile(rootDir, 'README.md', '# Qwen Code\n');
     writeFile(rootDir, 'LICENSE', 'Apache-2.0\n');
+    writeFile(rootDir, 'scripts/cli-entry.js', '#!/usr/bin/env node\n');
     writeFile(
       rootDir,
       'package.json',

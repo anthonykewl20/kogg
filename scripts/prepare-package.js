@@ -282,6 +282,7 @@ function writeDistPackageJson(rootDir, distDir) {
     main: 'cli.js',
     bin: {
       qwen: 'cli-entry.js',
+      kogg: 'cli-entry.js',
     },
     files: [
       'cli-entry.js',

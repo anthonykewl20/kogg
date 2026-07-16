@@ -37,6 +37,10 @@ export function copyBundleAssets({ root = defaultRoot } = {}) {
     mkdirSync(distDir);
   }
 
+  const cliEntryPath = join(distDir, 'cli-entry.js');
+  copyFileSync(join(root, 'scripts', 'cli-entry.js'), cliEntryPath);
+  fs.chmodSync(cliEntryPath, 0o755);
+
   // Find and copy all .sb files from packages to the root of the dist directory
   const sbFiles = glob.sync('packages/**/*.sb', { cwd: root });
   for (const file of sbFiles) {
