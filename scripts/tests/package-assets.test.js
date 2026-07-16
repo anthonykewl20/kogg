@@ -70,7 +70,9 @@ describe('package asset scripts', () => {
     const sourcePath = path.join(rootDir, 'scripts', 'cli-entry.js');
     const bundledPath = path.join(rootDir, 'dist', 'cli-entry.js');
     expect(readFileSync(bundledPath)).toEqual(readFileSync(sourcePath));
-    expect(statSync(bundledPath).mode & 0o111).toBe(0o111);
+    if (process.platform !== 'win32') {
+      expect(statSync(bundledPath).mode & 0o111).toBe(0o111);
+    }
   });
 
   it('copies bundled skill scripts and references into the runtime dist', () => {
@@ -269,9 +271,11 @@ describe('package asset scripts', () => {
       qwen: 'cli-entry.js',
       kogg: 'cli-entry.js',
     });
-    expect(
-      statSync(path.join(rootDir, 'dist', 'cli-entry.js')).mode & 0o111,
-    ).toBe(0o111);
+    if (process.platform !== 'win32') {
+      expect(
+        statSync(path.join(rootDir, 'dist', 'cli-entry.js')).mode & 0o111,
+      ).toBe(0o111);
+    }
   });
 
   it('omits browser MCP install hooks and deps from the prepared dist package', () => {

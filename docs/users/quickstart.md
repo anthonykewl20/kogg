@@ -52,6 +52,10 @@ npm install -g @qwen-code/qwen-code@latest
 brew install qwen-code
 ```
 
+> [!note]
+>
+> Builds and prepared packages produced from Kogg expose `kogg` as the bundled executable. They also retain the existing `qwen` command for compatibility. The upstream Qwen Code installation channels above are unchanged.
+
 ## Step 2: Set up authentication
 
 When you start an interactive session with the `qwen` command, you'll be prompted to configure authentication:
