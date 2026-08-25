@@ -115,7 +115,6 @@ try {
 
     await openCommand(page, 'View: Toggle Source Control', application);
     const sourceControl = page.getByRole('tabpanel', { name: /Source Control/u });
-    await openCommand(page, 'Git: Refresh', application);
     await sourceControl.getByText('README.md').waitFor({ timeout: 30_000 });
     await openCommand(page, 'Git: Stage All Changes', application);
     await sourceControl.getByText('STAGED CHANGES').waitFor();
