@@ -1,0 +1,15 @@
+.kogg-panel { box-sizing: border-box; height: 100%; overflow: auto; padding: 16px; color: var(--theia-foreground); background: var(--theia-editor-background); }
+.kogg-panel header { border-bottom: 1px solid var(--theia-panel-border); margin-bottom: 16px; }
+.kogg-panel h2, .kogg-panel h3 { margin: 0 0 8px; }
+.kogg-panel p { line-height: 1.45; }
+.kogg-panel form, .kogg-actions { display: flex; gap: 8px; margin: 12px 0; }
+.kogg-panel input, .kogg-panel select, .kogg-panel textarea { box-sizing: border-box; width: 100%; margin-top: 4px; padding: 7px 8px; color: var(--theia-input-foreground); background: var(--theia-input-background); border: 1px solid var(--theia-input-border, transparent); }
+.kogg-panel button { padding: 7px 12px; color: var(--theia-button-foreground); background: var(--theia-button-background); border: 0; cursor: pointer; }
+.kogg-panel button:disabled { cursor: default; opacity: .55; }
+.kogg-package-list article { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 8px; padding: 12px 0; border-bottom: 1px solid var(--theia-panel-border); }
+.kogg-package-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; }
+.kogg-package-list article p { margin: 4px 0 0; color: var(--theia-descriptionForeground); }
+.kogg-form-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px; }
+.kogg-form-grid label, .kogg-panel > label { display: block; margin: 10px 0; }
+.kogg-blocked { color: var(--theia-notificationsWarningIcon-foreground); }
+.kogg-advisory-reply pre { white-space: pre-wrap; font-family: var(--theia-ui-font-family); }

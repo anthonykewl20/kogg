@@ -6,6 +6,7 @@
   "types": "lib/browser/frontend-module.d.ts",
   "files": ["lib", "src"],
   "dependencies": {
+    "@kogg/contracts": "0.1.0",
     "@theia/core": "1.74.1"
   },
   "devDependencies": {
@@ -22,7 +23,8 @@
   "theiaExtensions": [
     {
       "frontend": "lib/browser/frontend-module",
-      "backend": "lib/node/backend-module"
+      "backend": "lib/node/backend-module",
+      "electronMain": "lib/electron-main/electron-main-module"
     }
   ]
 }

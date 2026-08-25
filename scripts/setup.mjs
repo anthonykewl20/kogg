@@ -9,6 +9,8 @@ const run = (command, args, options = {}) => {
 };
 
 run('yarn', ['install', '--frozen-lockfile']);
+run(process.execPath, ['scripts/provision-builtins.mjs']);
+run('yarn', ['playwright', 'install', 'chromium']);
 
 run('uv', ['venv', '--python', '3.12.14', '.venv']);
 run('uv', [

@@ -5,6 +5,8 @@ import keytar from 'keytar';
 import { injectable } from 'inversify';
 import type { CredentialMetadata, CredentialStore } from '@kogg/contracts';
 
+// diagnostic-coverage: providers.credentials
+
 interface EncryptedRecord {
     readonly iv: string;
     readonly ciphertext: string;
@@ -30,6 +32,7 @@ export class ElectronCredentialStore implements CredentialStore {
     async set(provider: string, account: string, secret: string): Promise<void> {
         await keytar.setPassword(this.service, recordKey(provider, account), secret);
         await this.writeMetadata(provider, account);
+        console.info('[kogg:providers:credential-store] credential.updated', { providerId: provider, runtime: 'electron' });
     }
 
     async get(provider: string, account: string): Promise<string | undefined> {
@@ -41,6 +44,7 @@ export class ElectronCredentialStore implements CredentialStore {
         const metadata = await this.readMetadata();
         delete metadata[recordKey(provider, account)];
         await this.saveMetadata(metadata);
+        console.info('[kogg:providers:credential-store] credential.deleted', { providerId: provider, runtime: 'electron', existed: deleted });
         return deleted;
     }
 
@@ -89,6 +93,7 @@ export class BrowserCredentialStore implements CredentialStore {
             tag: cipher.getAuthTag().toString('base64url'), updatedAt: new Date().toISOString()
         };
         await this.write(records);
+        console.info('[kogg:providers:credential-store] credential.updated', { providerId: provider, runtime: 'browser' });
     }
 
     async get(provider: string, account: string): Promise<string | undefined> {
@@ -108,6 +113,7 @@ export class BrowserCredentialStore implements CredentialStore {
         const existed = Boolean(records[key]);
         delete records[key];
         await this.write(records);
+        console.info('[kogg:providers:credential-store] credential.deleted', { providerId: provider, runtime: 'browser', existed });
         return existed;
     }
 

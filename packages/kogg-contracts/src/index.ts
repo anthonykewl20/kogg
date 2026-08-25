@@ -141,3 +141,38 @@ export interface ProviderRegistry {
 }
 
 export const ProviderRegistryToken = Symbol('ProviderRegistry');
+
+export type DiagnosticStatus = 'pass' | 'warn' | 'fail';
+
+export interface KoggDiagnosticCheck {
+  readonly id: string;
+  readonly status: DiagnosticStatus;
+  readonly summary: string;
+  readonly details?: Readonly<Record<string, string | number | boolean>>;
+}
+
+export interface KoggDiagnosticReport {
+  readonly schemaVersion: 1;
+  readonly generatedAt: string;
+  readonly overall: DiagnosticStatus;
+  readonly checks: readonly KoggDiagnosticCheck[];
+}
+
+export interface KoggSupportBundle {
+  readonly uri: string;
+  readonly report: KoggDiagnosticReport;
+}
+
+export interface KoggDiagnosticsService {
+  run(): Promise<KoggDiagnosticReport>;
+  createSupportBundle(): Promise<KoggSupportBundle>;
+}
+
+export interface KoggDiagnosticContributor {
+  readonly id: string;
+  diagnose(): Promise<readonly KoggDiagnosticCheck[]>;
+}
+
+export const KoggDiagnosticContribution = Symbol('KoggDiagnosticContribution');
+export const KoggDiagnosticsServicePath = '/services/kogg-diagnostics';
+export const KoggDiagnosticsServiceToken = Symbol('KoggDiagnosticsService');

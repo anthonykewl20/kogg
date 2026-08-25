@@ -1,14 +1,18 @@
 import { createHmac, timingSafeEqual } from 'node:crypto';
 import { Server } from 'node:http';
 import { Socket } from 'node:net';
-import { BackendApplicationContribution } from '@theia/core/lib/node';
-import { Application, NextFunction, Request, Response, urlencoded } from '@theia/core/shared/express';
-import { injectable } from '@theia/core/shared/inversify';
+import { BackendApplicationContribution, EarlyExpressMiddleware } from '@theia/core/lib/node';
+import { Application, NextFunction, Request, Response, Router, urlencoded } from '@theia/core/shared/express';
+import { inject, injectable, optional } from '@theia/core/shared/inversify';
+
+// diagnostic-coverage: core.browser-auth
 
 const COOKIE_NAME = 'kogg_session';
 
 @injectable()
 export class BrowserAuthContribution implements BackendApplicationContribution {
+  @inject(EarlyExpressMiddleware) @optional()
+  private readonly earlyMiddleware?: EarlyExpressMiddleware;
   private readonly enabled = process.env.KOGG_RUNTIME === 'browser';
   private readonly token = this.enabled ? this.required('KOGG_AUTH_TOKEN') : '';
   private readonly secureCookie = this.enabled ? this.resolveSecureCookie() : false;
@@ -16,8 +20,21 @@ export class BrowserAuthContribution implements BackendApplicationContribution {
     ? createHmac('sha256', this.token).update('kogg-browser-session-v1').digest('base64url')
     : '';
 
+  initialize(): void {
+    if (!this.enabled || !this.earlyMiddleware) return;
+    const router = Router();
+    this.install(router as unknown as Application);
+    this.earlyMiddleware.handlers.push(router);
+  }
+
   configure(app: Application): void {
+    if (this.earlyMiddleware) return;
+    this.install(app);
+  }
+
+  private install(app: Application): void {
     if (!this.enabled) return;
+    console.info('[kogg:core:browser-auth] middleware.enabled');
     app.use('/kogg/auth', urlencoded({ extended: false, limit: '4kb' }));
     app.get('/kogg/auth/login', (_request, response) => response.type('html').send(this.loginPage()));
     app.post('/kogg/auth/login', (request, response) => this.login(request, response));

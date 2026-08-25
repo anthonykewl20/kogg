@@ -3,6 +3,7 @@ lib/
 src-gen/
 dist/
 coverage/
+test-results/
 .cache/
 .browser_modules/
 .eslintcache
@@ -26,6 +27,7 @@ __pycache__/
 *.log
 
 apps/*/plugins/
+plugins/
 apps/*/resources/generated/
 marketplace/artifacts/
 marketplace/data/

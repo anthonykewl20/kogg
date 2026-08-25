@@ -17,11 +17,6 @@
     "@kogg/kernel": "0.1.0",
     "@kogg/marketplace": "0.1.0",
     "@kogg/providers": "0.1.0",
-    "@theia/ai-chat": "1.74.1",
-    "@theia/ai-chat-ui": "1.74.1",
-    "@theia/ai-core": "1.74.1",
-    "@theia/ai-core-ui": "1.74.1",
-    "@theia/ai-history": "1.74.1",
     "@theia/core": "1.74.1",
     "@theia/debug": "1.74.1",
     "@theia/editor": "1.74.1",
@@ -39,7 +34,6 @@
     "@theia/search-in-workspace": "1.74.1",
     "@theia/task": "1.74.1",
     "@theia/terminal": "1.74.1",
-    "@theia/vsx-registry": "1.74.1",
     "@theia/workspace": "1.74.1",
     "react": "18.3.1",
     "react-dom": "18.3.1"
@@ -55,7 +49,7 @@
   "scripts": {
     "bundle": "yarn rebuild && theia build --mode development",
     "rebuild": "theia rebuild:electron --cacheRoot ../..",
-    "start": "cross-env KOGG_RUNTIME=electron KOGG_ROOT=../.. VSX_REGISTRY_URL=http://127.0.0.1:3100 theia start",
+    "start": "cross-env KOGG_RUNTIME=electron KOGG_ROOT=../.. theia start --plugins=local-dir:../../plugins",
     "watch": "yarn rebuild && theia build --watch --mode development",
     "stage:runtime": "node ../../scripts/stage-runtime.mjs",
     "package": "yarn stage:runtime && electron-builder --config electron-builder.yml"

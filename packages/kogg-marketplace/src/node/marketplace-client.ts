@@ -4,6 +4,8 @@ import { inject, injectable } from 'inversify';
 import type { KoggPackageManifest, MarketplaceClient } from '@kogg/contracts';
 import { resolveRegistryUrl, verifyPackageManifest } from '../common/marketplace-policy';
 
+// diagnostic-coverage: marketplace.configuration, marketplace.registry, marketplace.installed
+
 const SAFE_SEGMENT = /^[a-z0-9][a-z0-9.-]*$/;
 
 @injectable()
@@ -11,6 +13,7 @@ export class KoggMarketplaceClient implements MarketplaceClient {
     constructor(@inject('KoggMarketplacePublicKey') private readonly publicKey: string) {}
 
     async search(query: string): Promise<KoggPackageManifest[]> {
+        console.debug('[kogg:marketplace:client] search.requested', { queryLength: query.length });
         const url = new URL('/kogg/v1/search', resolveRegistryUrl());
         url.searchParams.set('query', query);
         const response = await fetch(url);
@@ -19,6 +22,7 @@ export class KoggMarketplaceClient implements MarketplaceClient {
         }
         const manifests = await response.json() as KoggPackageManifest[];
         manifests.forEach(manifest => verifyPackageManifest(manifest, this.publicKey));
+        console.info('[kogg:marketplace:client] search.completed', { resultCount: manifests.length });
         return manifests;
     }
 
@@ -31,6 +35,7 @@ export class KoggMarketplaceClient implements MarketplaceClient {
         }
         const manifest = await response.json() as KoggPackageManifest;
         verifyPackageManifest(manifest, this.publicKey);
+        console.debug('[kogg:marketplace:client] details.verified', { packageId: manifest.id });
         return manifest;
     }
 
@@ -59,6 +64,7 @@ export class KoggMarketplaceClient implements MarketplaceClient {
         await fs.rm(destination, { recursive: true, force: true });
         await fs.rename(temporary, destination);
         await fs.writeFile(path.join(root, manifest.id, 'current'), manifest.version, { mode: 0o600 });
+        console.info('[kogg:marketplace:client] install.completed', { packageId: manifest.id, version: manifest.version });
     }
 
     async update(id: string): Promise<void> {
@@ -68,6 +74,7 @@ export class KoggMarketplaceClient implements MarketplaceClient {
     async remove(id: string): Promise<void> {
         this.assertSafe(id);
         await fs.rm(path.join(this.pluginRoot(), id), { recursive: true, force: true });
+        console.info('[kogg:marketplace:client] remove.completed', { packageId: id });
     }
 
     async rollback(id: string): Promise<void> {
@@ -81,6 +88,7 @@ export class KoggMarketplaceClient implements MarketplaceClient {
             throw new Error(`No previous Kogg package is retained for ${id}`);
         }
         await fs.writeFile(path.join(packageRoot, 'current'), entries.at(-2)!, { mode: 0o600 });
+        console.info('[kogg:marketplace:client] rollback.completed', { packageId: id });
     }
 
     async refreshRevocations(): Promise<void> {
@@ -91,6 +99,7 @@ export class KoggMarketplaceClient implements MarketplaceClient {
         const stateRoot = path.join(this.stateRoot(), 'marketplace');
         await fs.mkdir(stateRoot, { recursive: true, mode: 0o700 });
         await fs.writeFile(path.join(stateRoot, 'revocations.json'), await response.text(), { mode: 0o600 });
+        console.info('[kogg:marketplace:client] revocations.refreshed');
     }
 
     private assertSafe(...segments: string[]): void {

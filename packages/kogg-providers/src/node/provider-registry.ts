@@ -1,6 +1,8 @@
 import { inject, injectable } from 'inversify';
 import { CredentialStoreToken, type CredentialStore, type ModelDescriptor, type ProviderDescriptor, type ProviderRegistry } from '@kogg/contracts';
 
+// diagnostic-coverage: providers.registry, providers.credentials
+
 const PROVIDERS: readonly ProviderDescriptor[] = [
     provider('openai', 'OpenAI / OpenAI-compatible', 'api-key', false),
     provider('anthropic', 'Anthropic', 'api-key', false),
@@ -26,12 +28,7 @@ export class KoggProviderRegistry implements ProviderRegistry {
         const descriptor = this.requireProvider(providerId);
         const secret = descriptor.configuration === 'local' ? undefined : await this.credentials.get(providerId, account);
         if (descriptor.configuration !== 'local' && !secret) throw new Error(`Credential for ${providerId}/${account} is not configured`);
-        const headers: Record<string, string> = secret ? { authorization: `Bearer ${secret}` } : {};
-        if (providerId === 'anthropic' && secret) {
-            delete headers.authorization;
-            headers['x-api-key'] = secret;
-            headers['anthropic-version'] = '2023-06-01';
-        }
+        const headers = providerHeaders(providerId, secret);
         const response = await fetch(endpoint ?? defaultEndpoint(providerId), { headers, signal: AbortSignal.timeout(10_000) });
         if (!response.ok) throw new Error(`Model discovery failed with HTTP ${response.status}`);
         const payload = await response.json() as Record<string, unknown>;
@@ -57,16 +54,14 @@ export class KoggProviderRegistry implements ProviderRegistry {
         if (descriptor.configuration !== 'local' && !secret) return { ok: false, detail: 'Credential is not configured' };
         const target = endpoint ?? defaultEndpoint(providerId);
         try {
-            const headers: Record<string, string> = {};
-            if (secret) headers.authorization = `Bearer ${secret}`;
-            if (providerId === 'anthropic' && secret) {
-                delete headers.authorization;
-                headers['x-api-key'] = secret;
-                headers['anthropic-version'] = '2023-06-01';
-            }
+            const headers = providerHeaders(providerId, secret);
             const response = await fetch(target, { headers, signal: AbortSignal.timeout(10_000) });
             return { ok: response.ok, detail: response.ok ? 'Connection succeeded' : `Provider returned HTTP ${response.status}` };
         } catch (error) {
+            console.warn('[kogg:providers:registry] connection-test.failed', {
+                providerId,
+                errorType: error instanceof Error ? error.name : 'UnknownError'
+            });
             return { ok: false, detail: error instanceof Error ? error.message : 'Connection failed' };
         }
     }
@@ -83,6 +78,15 @@ export class KoggProviderRegistry implements ProviderRegistry {
         if (!descriptor) throw new Error(`Unknown Kogg provider ${id}`);
         return descriptor;
     }
+}
+
+function providerHeaders(providerId: string, secret?: string): Record<string, string> {
+    if (!secret) return {};
+    if (providerId === 'anthropic') {
+        return { 'x-api-key': secret, 'anthropic-version': '2023-06-01' };
+    }
+    if (providerId === 'google') return { 'x-goog-api-key': secret };
+    return { authorization: `Bearer ${secret}` };
 }
 
 function defaultEndpoint(id: string): string {

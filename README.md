@@ -29,6 +29,12 @@ browser build, Electron build, and packaging path in Colima with:
 yarn verify:linux
 ```
 
+Runtime health can be inspected from the command palette with `Kogg: Run
+Diagnostics`. `Kogg: Export Diagnostic Support Bundle` creates a redacted JSON
+report for troubleshooting. See [docs/diagnostics.md](docs/diagnostics.md) and
+[docs/observability.md](docs/observability.md) for the mandatory freshness and
+logging gates.
+
 ## Trust boundaries
 
 - Marketplace extensions run outside the Ranex authority boundary.

@@ -8,7 +8,10 @@ const resources = path.dirname(asar);
 const temporary = await mkdtemp(path.join(os.tmpdir(), 'kogg-artifact-audit-'));
 const forbidden = [
   ['public Open VSX endpoint', /https?:\/\/open-vsx\.org/iu],
-  ['Theia product-name default', /(?:applicationName|productName|windowTitle)[^\n]{0,40}Eclipse Theia/iu]
+  ['Theia product-name default', /(?:applicationName|productName|windowTitle)[^\n]{0,40}Eclipse Theia/iu],
+  ['stock Open VSX UI', /Search Open VSX Registry|Extensions:\s*Open VSX Registry/iu],
+  ['stock Workspace Trust branding', /Learn more about Theia(?:'s|’s) Workspace Trust|theia-ide\.org\/docs\/workspace_trust/iu],
+  ['stock custom-agent UI', /Re-run custom-agent migration/iu]
 ];
 const violations = [];
 
@@ -18,6 +21,8 @@ try {
   await requirePath(path.join(resources, 'kogg-runtime', 'ranex', 'LICENSE'), 'Ranex license');
   await requirePath(path.join(resources, 'kogg-runtime', 'adapter', 'kogg_ranex_adapter.py'), 'Kogg Ranex adapter');
   await requirePath(path.join(resources, 'kogg-runtime', 'marketplace-public.pem'), 'marketplace verification key');
+  await requirePath(path.join(resources, 'kogg-system-plugins', 'vscode.git', 'package.json'), 'bundled Git integration');
+  await requirePath(path.join(resources, 'kogg-system-plugins', 'ms-vscode.js-debug', 'package.json'), 'bundled JavaScript debugger');
   extractAll(asar, temporary);
   await walk(temporary);
 } finally {

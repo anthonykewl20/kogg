@@ -18,6 +18,7 @@
   ],
   "scripts": {
     "setup": "node scripts/setup.mjs",
+    "provision:builtins": "node scripts/provision-builtins.mjs",
     "bootstrap:macos": "bash scripts/bootstrap-macos.sh",
     "doctor": "node scripts/doctor.mjs",
     "generate:secrets": "node scripts/generate-secrets.mjs",
@@ -25,16 +26,21 @@
     "postinstall": "node scripts/patch-theia-registry.mjs && theia check:theia-version",
     "clean": "lerna run clean --scope '@kogg/*' && rimraf apps/*/lib apps/*/src-gen apps/*/dist",
     "build:packages": "lerna run build --scope '@kogg/*'",
-    "build:browser": "yarn build:packages && yarn --cwd apps/browser bundle",
-    "build:electron": "yarn build:packages && yarn --cwd apps/electron bundle",
+    "build:browser": "yarn provision:builtins && yarn build:packages && yarn --cwd apps/browser bundle",
+    "build:electron": "yarn provision:builtins && yarn build:packages && yarn --cwd apps/electron bundle",
     "typecheck": "lerna run typecheck --scope '@kogg/*'",
     "dev:browser": "node scripts/run-with-env.mjs yarn --cwd apps/browser start",
     "dev:electron": "node scripts/run-with-env.mjs yarn --cwd apps/electron start",
     "dev:registry": "node scripts/run-with-env.mjs node packages/kogg-marketplace/lib/node/dev-registry.js",
     "dev": "concurrently -k -n registry,browser -c magenta,cyan 'yarn dev:registry' 'yarn dev:browser'",
     "test:unit": "node --test packages/*/lib/**/*.test.js",
-    "test": "yarn build:packages && yarn test:unit && yarn audit:branding",
+    "test:e2e:browser": "node scripts/e2e-browser.mjs",
+    "test:e2e:electron": "node scripts/e2e-electron.mjs",
+    "test:e2e:artifact": "node scripts/e2e-artifact.mjs",
+    "test:e2e": "yarn build:browser && yarn test:e2e:browser && yarn build:electron && yarn test:e2e:electron",
+    "test": "yarn build:packages && yarn test:unit && yarn audit:branding && yarn audit:observability",
     "audit:branding": "node scripts/audit-branding.mjs",
+    "audit:observability": "node scripts/audit-observability.mjs",
     "audit:artifact": "node scripts/audit-artifact.mjs",
     "verify:linux": "docker build --file infra/ci/Dockerfile.linux --tag kogg-foundation-linux:local .",
     "package:electron": "yarn build:electron && yarn --cwd apps/electron package && yarn audit:artifact"
@@ -43,7 +49,10 @@
     "@theia/cli": "1.74.1",
     "concurrently": "9.2.1",
     "lerna": "8.2.4",
+    "playwright": "1.62.1",
     "rimraf": "6.0.1",
+    "jszip": "3.10.1",
+    "tar": "6.2.1",
     "typescript": "5.9.3"
   }
 }

@@ -13,6 +13,8 @@ import {
 } from '@kogg/contracts';
 import { injectable } from '@theia/core/shared/inversify';
 
+// diagnostic-coverage: kernel.health, kernel.journal
+
 interface RpcResponse {
   readonly id: string;
   readonly result?: unknown;
@@ -168,7 +170,10 @@ export class KernelBridgeImpl implements KernelBridge {
     let response: RpcResponse;
     try {
       response = JSON.parse(line) as RpcResponse;
-    } catch {
+    } catch (error) {
+      console.error('[kogg:kernel:bridge] protocol-response.invalid', {
+        errorType: error instanceof Error ? error.name : 'UnknownError'
+      });
       this.failAll(new Error('Ranex emitted malformed protocol output'));
       this.child?.kill();
       return;

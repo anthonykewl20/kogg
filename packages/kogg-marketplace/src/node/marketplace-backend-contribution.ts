@@ -4,6 +4,8 @@ import { injectable } from 'inversify';
 import { BackendApplicationContribution } from '@theia/core/lib/node/backend-application';
 import { resolveRegistryUrl } from '../common/marketplace-policy';
 
+// diagnostic-coverage: marketplace.configuration
+
 export function loadMarketplacePublicKey(): string {
     const root = path.resolve(process.env.KOGG_ROOT ?? process.cwd());
     const electronResources = (process as NodeJS.Process & { resourcesPath?: string }).resourcesPath;
@@ -18,6 +20,7 @@ function readFileExists(candidate: string): boolean {
         readFileSync(candidate);
         return true;
     } catch {
+        // observability-exempt: Probing an optional public-key path is an expected branch before selecting the development fallback.
         return false;
     }
 }
@@ -27,5 +30,6 @@ export class MarketplaceBackendContribution implements BackendApplicationContrib
     onStart(): void {
         const registry = resolveRegistryUrl().toString().replace(/\/$/, '');
         process.env.VSX_REGISTRY_URL = registry;
+        console.info('[kogg:marketplace:backend] registry.configured');
     }
 }

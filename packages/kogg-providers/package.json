@@ -3,14 +3,15 @@
   "version": "0.1.0",
   "private": true,
   "license": "UNLICENSED",
-  "main": "lib/node/backend-module.js",
-  "types": "lib/node/backend-module.d.ts",
+  "main": "lib/common/provider-service.js",
+  "types": "lib/common/provider-service.d.ts",
   "theiaExtensions": [
-    { "backend": "lib/node/backend-module" }
+    { "frontend": "lib/browser/frontend-module", "backend": "lib/node/backend-module" }
   ],
   "scripts": {
     "build": "tsc -b",
     "clean": "rimraf lib tsconfig.tsbuildinfo",
+    "typecheck": "tsc --noEmit",
     "test": "node --test lib/node/credential-store.test.js"
   },
   "dependencies": {

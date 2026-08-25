@@ -20,6 +20,8 @@ files:
 extraResources:
   - from: resources/generated/kogg-runtime
     to: kogg-runtime
+  - from: ../../plugins
+    to: kogg-system-plugins
 mac:
   category: public.app-category.developer-tools
   icon: resources/kogg.icns
