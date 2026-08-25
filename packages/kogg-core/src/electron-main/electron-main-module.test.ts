@@ -10,7 +10,8 @@ test('normalizes Playwright switches before the Electron application directory',
 
   assert.deepEqual(result, {
     args: ['--electronUserData=/tmp/profile', '/tmp/workspace'],
-    debugSwitches: 2
+    debugSwitches: 2,
+    applicationDirectoryRemoved: true
   });
 });
 
@@ -22,6 +23,20 @@ test('normalizes Playwright switches after the Electron application directory', 
 
   assert.deepEqual(result, {
     args: ['--electronUserData=/tmp/profile', '/tmp/workspace'],
-    debugSwitches: 2
+    debugSwitches: 2,
+    applicationDirectoryRemoved: true
+  });
+});
+
+test('retains the first Kogg option for a packaged Playwright launch', () => {
+  const result = normalizeUnbundledElectronArgv([
+    '/Kogg', '--inspect=0', '--remote-debugging-port=0',
+    '--electronUserData=/tmp/profile', '/tmp/workspace'
+  ]);
+
+  assert.deepEqual(result, {
+    args: ['--electronUserData=/tmp/profile', '/tmp/workspace'],
+    debugSwitches: 2,
+    applicationDirectoryRemoved: false
   });
 });
