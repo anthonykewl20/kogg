@@ -475,7 +475,14 @@ async function exerciseProjects(page) {
     projects = await ensureProjectsWidget(page);
     await waitForProjectText(projects, /Alpha[\s\S]*Active/u);
 
+    // Windows does not permit a watched workspace directory to be renamed.
+    // Model the real offline-relocation workflow by closing Kogg before the
+    // repository moves, then verify startup reconciliation after relaunch.
+    await stop(backend);
+    backend = undefined;
     await renameWhenReleased(secondaryRepository, relocatedRepository);
+    backend = launchBrowser(token);
+    await waitFor(`${appUrl}/kogg/auth/status`, 401);
     await page.reload({ waitUntil: 'domcontentloaded' });
     await page.locator('body.kogg-application').waitFor({ timeout: 20_000 });
     projects = await ensureProjectsWidget(page);
