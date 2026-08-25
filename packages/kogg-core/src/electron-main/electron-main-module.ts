@@ -6,20 +6,28 @@ import { ContainerModule } from '@theia/core/shared/inversify';
 class KoggElectronMainProcessArgv extends ElectronMainProcessArgv {
   override getProcessArgvWithoutBin(argv = process.argv): string[] {
     if (!this.isElectronApp || this.isBundledElectronApp) return super.getProcessArgvWithoutBin(argv);
-    const args = argv.slice(1);
-    let debugSwitches = 0;
-    while (/^--(?:inspect|remote-debugging-port)(?:=|$)/u.test(args[0] ?? '')) {
-      args.shift();
-      debugSwitches += 1;
-    }
-    // The first non-switch argument of an unbundled Electron process is the
-    // application directory, not an argument intended for Theia's CLI.
-    args.shift();
+    const { args, debugSwitches } = normalizeUnbundledElectronArgv(argv);
     if (debugSwitches) {
       console.debug('[kogg:core:electron-main] playwright-switches.normalized', { switchCount: debugSwitches });
     }
     return args;
   }
+}
+
+export function normalizeUnbundledElectronArgv(argv: readonly string[]): { args: string[]; debugSwitches: number } {
+  const args = argv.slice(1);
+  let debugSwitches = 0;
+  for (let index = args.length - 1; index >= 0; index -= 1) {
+    if (/^--(?:inspect|remote-debugging-port)(?:=|$)/u.test(args[index] ?? '')) {
+      args.splice(index, 1);
+      debugSwitches += 1;
+    }
+  }
+  // After Playwright-only switches are removed, the first argument of an
+  // unbundled Electron process is the application directory rather than an
+  // argument intended for Theia's CLI.
+  args.shift();
+  return { args, debugSwitches };
 }
 
 export default new ContainerModule((bind, unbind, isBound) => {
