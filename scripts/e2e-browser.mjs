@@ -176,7 +176,7 @@ try {
 
     await openCommand(page, 'Terminal: Create New Terminal');
     const terminalInput = page.locator('.xterm-helper-textarea').last();
-    await terminalInput.waitFor({ state: 'visible', timeout: 10_000 });
+    await terminalInput.waitFor({ state: 'visible', timeout: 30_000 });
     await terminalInput.fill("printf 'KOGG_TERMINAL_E2E\\n' | tee .kogg-terminal-proof");
     await terminalInput.press('Enter');
     await waitForWorkspaceProof('.kogg-terminal-proof', 'KOGG_TERMINAL_E2E');

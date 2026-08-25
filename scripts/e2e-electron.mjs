@@ -384,12 +384,12 @@ async function exerciseNodeDebug(page, electronApplication, configuration, expec
 }
 
 async function clearNotifications(page) {
-    for (let attempt = 0; attempt < 20; attempt++) {
-        const clear = page.locator('.theia-notifications-overlay [title="Clear"]:visible').first();
-        if (!await clear.isVisible().catch(() => false)) break;
-        await clear.evaluate(element => element.click()).catch(() => undefined);
-    }
-    await page.locator('.theia-notifications-overlay [title="Clear All Notifications"]:visible').click().catch(() => undefined);
+    await page.locator('.theia-notifications-overlay [title="Clear"]:visible').evaluateAll(elements => {
+        for (const element of elements) element.click();
+    }).catch(() => undefined);
+    await page.locator('.theia-notifications-overlay [title="Clear All Notifications"]:visible').evaluateAll(elements => {
+        for (const element of elements) element.click();
+    }).catch(() => undefined);
 }
 
 async function waitFor(url) {
