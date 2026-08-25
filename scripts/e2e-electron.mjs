@@ -120,7 +120,8 @@ try {
     await sourceControl.getByRole('textbox', { name: /Message/u }).fill('verify Electron Kogg Git workflow');
     await sourceControl.getByRole('button', { name: /Commit$/u }).click();
     await waitForGitSubject('verify Electron Kogg Git workflow');
-    await openCommand(page, 'Git: Create Branch...', application);
+    await sourceControl.locator('[title^="Refresh"]:visible').first().click().catch(() => undefined);
+    await openCommand(page, 'Git: Create Branch', application);
     const branchInput = page.locator('.quick-input-widget input').last();
     await branchInput.waitFor({ state: 'visible' });
     await branchInput.fill('kogg-electron-e2e-branch');
