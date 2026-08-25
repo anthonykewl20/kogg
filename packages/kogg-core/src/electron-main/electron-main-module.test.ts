@@ -3,9 +3,12 @@ import test from 'node:test';
 import { isBundledElectronApplication, normalizeUnbundledElectronArgv } from './electron-main-module';
 
 test('uses Electron packaging state instead of process.defaultApp', () => {
-  assert.equal(isBundledElectronApplication(true, false), false);
-  assert.equal(isBundledElectronApplication(true, true), true);
-  assert.equal(isBundledElectronApplication(false, true), false);
+  const developmentArgv = ['/electron', '/apps/electron', '--electronUserData=/tmp/profile', '/tmp/workspace'];
+  const packagedArgv = ['/Kogg', '--electronUserData=/tmp/profile', '/tmp/workspace'];
+  assert.equal(isBundledElectronApplication(true, false, developmentArgv, '/apps/electron'), false);
+  assert.equal(isBundledElectronApplication(true, true, developmentArgv, '/apps/electron'), false);
+  assert.equal(isBundledElectronApplication(true, true, packagedArgv, '/app.asar'), true);
+  assert.equal(isBundledElectronApplication(false, true, packagedArgv, '/app.asar'), false);
 });
 
 test('normalizes Playwright switches before the Electron application directory', () => {

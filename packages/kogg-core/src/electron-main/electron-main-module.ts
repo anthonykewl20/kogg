@@ -1,6 +1,7 @@
 import { ElectronMainProcessArgv } from '@theia/core/lib/electron-main/electron-main-application';
 import { ContainerModule } from '@theia/core/shared/inversify';
 import { app } from '@theia/electron/shared/electron';
+import path from 'node:path';
 
 // diagnostic-coverage: core.runtime
 
@@ -9,7 +10,7 @@ class KoggElectronMainProcessArgv extends ElectronMainProcessArgv {
     // Electron's process.defaultApp is unset for Playwright development
     // launches on Linux. app.isPackaged is the authoritative runtime signal
     // and remains true for Kogg's distributable artifacts on every platform.
-    return isBundledElectronApplication(this.isElectronApp, app.isPackaged);
+    return isBundledElectronApplication(this.isElectronApp, app.isPackaged, process.argv, app.getAppPath());
   }
 
   override getProcessArgvWithoutBin(argv = process.argv): string[] {
@@ -22,8 +23,18 @@ class KoggElectronMainProcessArgv extends ElectronMainProcessArgv {
   }
 }
 
-export function isBundledElectronApplication(isElectronApp: boolean, isPackaged: boolean): boolean {
-  return isElectronApp && isPackaged;
+export function isBundledElectronApplication(
+  isElectronApp: boolean,
+  isPackaged: boolean,
+  argv: readonly string[],
+  applicationPath: string
+): boolean {
+  if (!isElectronApp) return false;
+  const resolvedApplicationPath = path.resolve(applicationPath);
+  const explicitlyLoadedApplication = argv.slice(1).some(argument =>
+    !argument.startsWith('-') && path.resolve(argument) === resolvedApplicationPath
+  );
+  return isPackaged && !explicitlyLoadedApplication;
 }
 
 export function normalizeUnbundledElectronArgv(argv: readonly string[]): {
