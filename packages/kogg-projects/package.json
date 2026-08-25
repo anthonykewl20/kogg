@@ -1,0 +1,30 @@
+{
+  "name": "@kogg/projects",
+  "version": "0.1.0",
+  "private": true,
+  "license": "UNLICENSED",
+  "main": "lib/common/projects-protocol.js",
+  "types": "lib/common/projects-protocol.d.ts",
+  "theiaExtensions": [
+    { "frontend": "lib/browser/frontend-module", "backend": "lib/node/backend-module" }
+  ],
+  "scripts": {
+    "build": "tsc -b",
+    "clean": "rimraf lib tsconfig.tsbuildinfo",
+    "typecheck": "tsc --noEmit",
+    "test": "node --test lib/node/*.test.js"
+  },
+  "dependencies": {
+    "@kogg/contracts": "0.1.0",
+    "@theia/core": "1.74.1",
+    "@theia/filesystem": "1.74.1",
+    "@theia/process": "1.74.1",
+    "@theia/workspace": "1.74.1",
+    "inversify": "6.2.2"
+  },
+  "devDependencies": {
+    "@types/node": "22.15.3",
+    "rimraf": "6.0.1",
+    "typescript": "5.9.3"
+  }
+}

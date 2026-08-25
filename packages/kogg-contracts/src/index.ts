@@ -142,6 +142,77 @@ export interface ProviderRegistry {
 
 export const ProviderRegistryToken = Symbol('ProviderRegistry');
 
+export type ProjectId = string;
+export type ProjectRepositoryId = string;
+export type ProjectOperationId = string;
+export type ProjectRegistryRevision = number;
+
+export type ProjectRepositoryAvailability = 'available' | 'missing' | 'invalid' | 'revalidation-required';
+export type KoggProjectRole =
+  | 'orchestrator' | 'architect' | 'planner' | 'worker' | 'researcher'
+  | 'test-writer' | 'test-executor' | 'reviewer' | 'security-reviewer'
+  | 'performance-reviewer' | 'documentation-agent' | 'migration-agent'
+  | 'release-agent' | 'integrator' | 'verification-agent';
+
+export interface ProjectRepositorySummary {
+  readonly id: ProjectRepositoryId;
+  readonly displayName: string;
+  readonly rootUri: string;
+  readonly availability: ProjectRepositoryAvailability;
+  readonly revision: ProjectRegistryRevision;
+}
+
+export interface ProjectRoleAssignment {
+  readonly providerConfigurationId: string;
+  readonly modelId: string;
+}
+
+export interface ProjectTaskRepositoryBinding {
+  readonly taskId: string;
+  readonly repositoryId: ProjectRepositoryId;
+}
+
+export interface KoggProjectSummary {
+  readonly id: ProjectId;
+  readonly displayName: string;
+  readonly lifecycle: 'available' | 'unavailable';
+  readonly repositories: readonly ProjectRepositorySummary[];
+  readonly executionProfileId?: string;
+  readonly roleAssignments: Readonly<Partial<Record<KoggProjectRole, ProjectRoleAssignment>>>;
+  readonly taskBindings: readonly ProjectTaskRepositoryBinding[];
+  readonly revision: ProjectRegistryRevision;
+}
+
+export interface ProjectRegistrySnapshot {
+  readonly schemaVersion: 1;
+  readonly revision: ProjectRegistryRevision;
+  readonly activeProjectId?: ProjectId;
+  readonly pendingSwitch?: {
+    readonly operationId: ProjectOperationId;
+    readonly fromProjectId?: ProjectId;
+    readonly toProjectId: ProjectId;
+  };
+  readonly projects: readonly KoggProjectSummary[];
+}
+
+export interface ProjectMutationExpectation {
+  readonly expectedRegistryRevision: ProjectRegistryRevision;
+  readonly requestId: ProjectOperationId;
+}
+
+export interface ProjectSwitchTicket {
+  readonly operationId: ProjectOperationId;
+  readonly projectId: ProjectId;
+  readonly workspaceUri: string;
+  readonly expectedRegistryRevision: ProjectRegistryRevision;
+}
+
+export interface ProjectWorkspaceReconciliation {
+  readonly snapshot: ProjectRegistrySnapshot;
+  readonly action: 'none' | 'open';
+  readonly workspaceUri?: string;
+}
+
 export type DiagnosticStatus = 'pass' | 'warn' | 'fail';
 
 export interface KoggDiagnosticCheck {
