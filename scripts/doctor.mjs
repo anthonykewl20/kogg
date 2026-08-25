@@ -11,9 +11,15 @@ const record = (name, ok, detail) => {
   if (!ok) failures.push(`${name}: ${detail}`);
 };
 const command = (name, args = []) => spawnSync(name, args, { encoding: 'utf8' });
+const commandOutput = result => {
+  for (const output of [result.stdout, result.stderr]) {
+    if (typeof output === 'string' && output.trim()) return output.trim();
+  }
+  return result.error?.message || 'command produced no output';
+};
 const version = (name, args = ['--version']) => {
   const result = command(name, args);
-  return { ok: result.status === 0, text: (result.stdout || result.stderr).trim() };
+  return { ok: result.status === 0 && !result.error, text: commandOutput(result) };
 };
 
 record('architecture', process.arch === 'arm64' || process.arch === 'x64', `${process.platform}/${process.arch}`);
@@ -38,7 +44,7 @@ try {
   await writeFile(source, '#include <stdio.h>\nint main(void){puts("kogg-native-ok");return 0;}\n');
   const compile = command('clang', [source, '-o', binary]);
   const execute = compile.status === 0 ? command(binary) : { status: 1, stdout: '', stderr: compile.stderr };
-  record('native compiler', execute.status === 0 && execute.stdout.trim() === 'kogg-native-ok', execute.stderr?.trim() || execute.stdout?.trim());
+  record('native compiler', execute.status === 0 && execute.stdout?.trim() === 'kogg-native-ok', commandOutput(execute));
 } finally {
   await rm(tempDir, { recursive: true, force: true });
 }
@@ -53,7 +59,7 @@ for (const result of await Promise.all([3000, 3100, 3200].map(checkPort))) {
 }
 
 const docker = command('docker', ['info', '--format', '{{.ServerVersion}}']);
-record('docker (optional)', true, docker.status === 0 ? docker.stdout.trim() : 'unavailable; Electron development remains supported');
+record('docker (optional)', true, docker.status === 0 ? commandOutput(docker) : 'unavailable; Electron development remains supported');
 
 for (const check of checks) console.log(`${check.ok ? 'PASS' : 'FAIL'} ${check.name}: ${check.detail}`);
 if (failures.length) {
