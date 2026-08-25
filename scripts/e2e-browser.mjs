@@ -475,7 +475,7 @@ async function exerciseProjects(page) {
     projects = await ensureProjectsWidget(page);
     await waitForProjectText(projects, /Alpha[\s\S]*Active/u);
 
-    await rename(secondaryRepository, relocatedRepository);
+    await renameWhenReleased(secondaryRepository, relocatedRepository);
     await page.reload({ waitUntil: 'domcontentloaded' });
     await page.locator('body.kogg-application').waitFor({ timeout: 20_000 });
     projects = await ensureProjectsWidget(page);
@@ -514,6 +514,19 @@ async function exerciseProjects(page) {
     projects = await ensureProjectsWidget(page);
     await waitForProjectText(projects, /Alpha[\s\S]*Active/u);
     await waitForProjectText(projects.locator('[data-project-row]').filter({ hasText: 'Beta' }), /· available/u);
+}
+
+async function renameWhenReleased(source, destination) {
+    const deadline = Date.now() + 15_000;
+    for (;;) {
+        try {
+            await rename(source, destination);
+            return;
+        } catch (error) {
+            if (error?.code !== 'EBUSY' || Date.now() >= deadline) throw error;
+            await new Promise(resolve => setTimeout(resolve, 250));
+        }
+    }
 }
 
 async function waitForProjectText(locator, pattern) {
