@@ -49,7 +49,7 @@ try {
 
     application = await electron.launch({
         executablePath: require('electron'),
-        args: [path.join(root, 'apps/electron'), `--electronUserData=${path.join(temporary, 'electron-user-data')}`, workspace],
+        args: [path.join(root, 'apps/electron/lib/backend/electron-main.js'), `--electronUserData=${path.join(temporary, 'electron-user-data')}`, workspace],
         env: {
             ...process.env, KOGG_RUNTIME: 'electron', KOGG_ROOT: root,
             KOGG_STATE_DIR: path.join(temporary, 'state'),
