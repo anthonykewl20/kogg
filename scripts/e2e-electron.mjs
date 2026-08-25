@@ -71,7 +71,21 @@ try {
     // profile, without relying on an externally modified pre-launch fixture.
     const explorer = page.getByRole('tabpanel', { name: /Explorer/u });
     if (!await explorer.isVisible().catch(() => false)) await openCommand(page, 'View: Toggle Explorer', application);
-    await explorer.getByText('README.md').dblclick();
+    const readme = explorer.getByText('README.md');
+    if (await readme.isVisible({ timeout: 3_000 }).catch(() => false)) {
+        await readme.dblclick();
+    } else {
+        // A clean Linux profile can leave the workspace root collapsed. Use
+        // the same Go to File workflow a person would use instead of coupling
+        // the editor test to persisted tree-expansion state.
+        await page.keyboard.press(process.platform === 'darwin' ? 'Meta+P' : 'Control+P');
+        const quickOpen = page.getByRole('textbox', { name: 'Type to narrow down results.' });
+        await quickOpen.waitFor({ state: 'visible', timeout: 5_000 });
+        await quickOpen.fill('README.md');
+        const readmeOption = page.locator('[role="option"]:visible').filter({ hasText: 'README.md' }).first();
+        await readmeOption.waitFor({ state: 'visible', timeout: 10_000 });
+        await readmeOption.click();
+    }
     const editor = page.locator('.monaco-editor').last();
     await editor.click();
     await page.keyboard.press(process.platform === 'darwin' ? 'Meta+End' : 'Control+End');
