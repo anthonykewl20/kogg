@@ -387,7 +387,11 @@ async function createWorkspace() {
     await writeFile(path.join(workspace, 'verify.mjs'), "const message = 'KOGG_E2E_READY';\nconsole.log(message);\n");
     await writeFile(path.join(workspace, 'README.md'), '# Kogg E2E\n');
     await writeFile(path.join(workspace, '.theia', 'launch.json'), JSON.stringify({
-        version: '0.2.0', configurations: [{ name: 'Kogg E2E Debug', type: 'node', request: 'launch', program: '${workspaceFolder}/verify.mjs', stopOnEntry: true }]
+        version: '0.2.0', configurations: [{
+            name: 'Kogg E2E Debug', type: 'node', request: 'launch',
+            runtimeExecutable: process.execPath, program: path.join(workspace, 'verify.mjs'), cwd: workspace,
+            stopOnEntry: true
+        }]
     }, null, 2));
     await writeFile(path.join(workspace, '.theia', 'tasks.json'), JSON.stringify({
         version: '2.0.0', tasks: [{ label: 'Kogg E2E Task', type: 'shell', command: "printf 'KOGG_TASK_E2E\\n' | tee .kogg-task-proof", problemMatcher: [] }]
