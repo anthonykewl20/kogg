@@ -175,15 +175,20 @@ try {
 
 async function openCommand(page, label, electronApplication) {
     const input = page.getByRole('textbox', { name: 'Type to narrow down results.' });
-    await page.bringToFront();
-    await page.locator('body').click({ position: { x: 600, y: 300 } });
-    await page.keyboard.press(process.platform === 'darwin' ? 'Meta+Shift+P' : 'Control+Shift+P');
-    await input.waitFor({ state: 'visible', timeout: 3_000 }).catch(async () => {
-        // Electron on a headless Linux display can drop modified key chords
-        // while its native window is still gaining focus. F1 is Theia's
-        // platform-independent command-palette binding and avoids that race.
-        await page.keyboard.press('F1');
-        if (await input.waitFor({ state: 'visible', timeout: 3_000 }).then(() => true, () => false)) return;
+    const body = page.locator('body');
+    const shortcuts = [process.platform === 'darwin' ? 'Meta+Shift+P' : 'Control+Shift+P', 'F1', 'F1', 'F1'];
+    let opened = false;
+    for (const shortcut of shortcuts) {
+        await page.bringToFront();
+        await body.click({ position: { x: 600, y: 300 } });
+        await page.keyboard.press(shortcut);
+        opened = await input.waitFor({ state: 'visible', timeout: 2_500 }).then(() => true, () => false);
+        if (opened) break;
+    }
+    if (!opened) {
+        // Headless Linux can still drop key events while its native window is
+        // gaining focus. Use the visible Electron menu command as a bounded
+        // fallback, then give the rendered palette time to attach.
         await electronApplication.evaluate(({ Menu }) => {
             const visit = items => {
                 for (const item of items) {
@@ -194,8 +199,8 @@ async function openCommand(page, label, electronApplication) {
             };
             if (!visit(Menu.getApplicationMenu()?.items ?? [])) throw new Error('Electron Command Palette menu item not found');
         });
-        await input.waitFor({ state: 'visible', timeout: 5_000 });
-    });
+        await input.waitFor({ state: 'visible', timeout: 10_000 });
+    }
     await input.fill(`>${label}`);
     let option = page.locator(`[role="option"][aria-label="${label.replaceAll('"', '\\"')}"]:visible`);
     if (!await option.waitFor({ state: 'visible', timeout: 2_000 }).then(() => true, () => false)) {
