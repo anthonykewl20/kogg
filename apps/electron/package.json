@@ -50,7 +50,7 @@
   "scripts": {
     "bundle": "yarn rebuild && theia build --mode development",
     "rebuild": "theia rebuild:electron --cacheRoot ../..",
-    "start": "cross-env KOGG_RUNTIME=electron KOGG_ROOT=../.. theia start --plugins=local-dir:../../plugins",
+    "start": "cross-env KOGG_RUNTIME=electron KOGG_ROOT=../.. KOGG_ELECTRON_UNBUNDLED=1 theia start --plugins=local-dir:../../plugins",
     "watch": "yarn rebuild && theia build --watch --mode development",
     "stage:runtime": "node ../../scripts/stage-runtime.mjs",
     "package": "yarn stage:runtime && electron-builder --config electron-builder.yml"

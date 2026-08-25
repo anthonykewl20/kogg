@@ -8,6 +8,7 @@ test('uses Electron packaging state instead of process.defaultApp', () => {
   assert.equal(isBundledElectronApplication(true, false, developmentArgv, '/apps/electron'), false);
   assert.equal(isBundledElectronApplication(true, true, developmentArgv, '/apps/electron'), false);
   assert.equal(isBundledElectronApplication(true, true, packagedArgv, '/app.asar'), true);
+  assert.equal(isBundledElectronApplication(true, true, packagedArgv, '/app.asar', true), false);
   assert.equal(isBundledElectronApplication(false, true, packagedArgv, '/app.asar'), false);
 });
 

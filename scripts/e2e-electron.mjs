@@ -51,7 +51,7 @@ try {
         executablePath: require('electron'),
         args: [path.join(root, 'apps/electron/lib/backend/electron-main.js'), `--electronUserData=${path.join(temporary, 'electron-user-data')}`, workspace],
         env: {
-            ...process.env, KOGG_RUNTIME: 'electron', KOGG_ROOT: root,
+            ...process.env, KOGG_RUNTIME: 'electron', KOGG_ROOT: root, KOGG_ELECTRON_UNBUNDLED: '1',
             KOGG_STATE_DIR: path.join(temporary, 'state'),
             THEIA_CONFIG_DIR: path.join(temporary, 'state', 'config'),
             KOGG_REGISTRY_URL: registryUrl,
