@@ -68,7 +68,7 @@ try {
         await trust.click();
     }
     await page.waitForTimeout(2_000);
-    assert.equal(await page.title(), 'workspace');
+    assert.match(await page.title(), /^workspace(?: - Kogg)?$/u);
 
     await openCommand(page, 'Kogg: Run Diagnostics');
     await page.getByText(/Diagnostics: FAIL.*kernel\.journal/su).first().waitFor({ timeout: 15_000 });
