@@ -59,6 +59,14 @@ try {
         },
         timeout: 30_000
     });
+    const runtimeLaunch = await application.evaluate(({ app }) => ({
+        argv: process.argv,
+        applicationPath: app.getAppPath(),
+        defaultApp: process.defaultApp,
+        packaged: app.isPackaged,
+        forcedUnbundled: process.env.KOGG_ELECTRON_UNBUNDLED
+    }));
+    logs.push(`[electron-runtime] ${JSON.stringify(runtimeLaunch)}`);
     application.process().stdout?.on('data', chunk => logs.push(`[electron] ${chunk}`));
     application.process().stderr?.on('data', chunk => logs.push(`[electron:error] ${chunk}`));
     await application.firstWindow({ timeout: 30_000 });
