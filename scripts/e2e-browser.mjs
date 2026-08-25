@@ -580,14 +580,22 @@ async function chooseFolder(page, folder) {
     await location.press('Enter');
     const locationList = dialog.locator('.theia-LocationList');
     await locationList.waitFor({ state: 'visible', timeout: 10_000 });
+    const expectedLocations = new Set([normalizedPickerPath(folder), normalizedPickerPath(await realpath(folder))]);
     const folderDeadline = Date.now() + 10_000;
-    while (!decodeURIComponent(await locationList.inputValue()).endsWith(folder) && !decodeURIComponent(await locationList.inputValue()).endsWith(await realpath(folder)) && Date.now() < folderDeadline) {
+    while (!expectedLocations.has(normalizedPickerPath(await locationList.inputValue())) && Date.now() < folderDeadline) {
         await page.waitForTimeout(50);
     }
-    const selectedLocation = decodeURIComponent(await locationList.inputValue()).replace(/\/$/u, '');
-    assert.equal(selectedLocation.endsWith(folder) || selectedLocation.endsWith(await realpath(folder)), true);
+    assert.equal(expectedLocations.has(normalizedPickerPath(await locationList.inputValue())), true);
     await dialog.getByRole('button', { name: 'Open', exact: true }).click();
     await dialog.waitFor({ state: 'hidden', timeout: 10_000 });
+}
+
+function normalizedPickerPath(value) {
+    let candidate = decodeURIComponent(value).replace(/[\\/]+$/u, '');
+    if (/^file:/iu.test(candidate)) candidate = fileURLToPath(candidate);
+    else if (process.platform === 'win32' && /^\/[a-z]:[\\/]/iu.test(candidate)) candidate = candidate.slice(1);
+    const normalized = path.normalize(candidate);
+    return process.platform === 'win32' ? normalized.toLowerCase() : normalized;
 }
 
 function freePort() {

@@ -318,19 +318,25 @@ async function chooseElectronFolder(page, folder) {
     await location.press('Enter');
     const locationList = dialog.locator('.theia-LocationList');
     await locationList.waitFor({ state: 'visible', timeout: 10_000 });
+    const expectedLocations = new Set([normalizedPickerPath(folder), normalizedPickerPath(canonicalFolder)]);
     const folderDeadline = Date.now() + 10_000;
     let selectedLocation = '';
     while (Date.now() < folderDeadline) {
-        selectedLocation = decodeURIComponent(await locationList.inputValue()).replace(/\/$/u, '');
-        if (selectedLocation.endsWith(folder) || selectedLocation.endsWith(canonicalFolder)) break;
+        selectedLocation = normalizedPickerPath(await locationList.inputValue());
+        if (expectedLocations.has(selectedLocation)) break;
         await page.waitForTimeout(50);
     }
-    assert.ok(
-        selectedLocation.endsWith(folder) || selectedLocation.endsWith(canonicalFolder),
-        `Electron folder dialog did not navigate to ${canonicalFolder}; current location is ${selectedLocation}`
-    );
+    assert.equal(expectedLocations.has(selectedLocation), true);
     await dialog.getByRole('button', { name: 'Open', exact: true }).click();
     await dialog.waitFor({ state: 'hidden', timeout: 10_000 });
+}
+
+function normalizedPickerPath(value) {
+    let candidate = decodeURIComponent(value).replace(/[\\/]+$/u, '');
+    if (/^file:/iu.test(candidate)) candidate = fileURLToPath(candidate);
+    else if (process.platform === 'win32' && /^\/[a-z]:[\\/]/iu.test(candidate)) candidate = candidate.slice(1);
+    const normalized = path.normalize(candidate);
+    return process.platform === 'win32' ? normalized.toLowerCase() : normalized;
 }
 
 async function waitForElectronProjectText(locator, pattern) {
