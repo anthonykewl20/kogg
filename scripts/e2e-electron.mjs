@@ -121,7 +121,7 @@ try {
     await sourceControl.getByRole('button', { name: /Commit$/u }).click();
     await waitForGitSubject('verify Electron Kogg Git workflow');
     await sourceControl.locator('[title^="Refresh"]:visible').first().click().catch(() => undefined);
-    await openCommand(page, 'Git: Create Branch...', application);
+    await openCommand(page, 'Git: Create Branch...', application, 'Git: Create Branch');
     const branchInput = page.locator('.quick-input-widget input').last();
     await branchInput.waitFor({ state: 'visible' });
     await branchInput.fill('kogg-electron-e2e-branch');
@@ -211,7 +211,7 @@ try {
     await rm(temporary, { recursive: true, force: true });
 }
 
-async function openCommand(page, label, electronApplication) {
+async function openCommand(page, label, electronApplication, query = label) {
     const input = page.getByRole('textbox', { name: 'Type to narrow down results.' });
     const body = page.locator('body');
     if (label === 'Go to File...') {
@@ -248,7 +248,7 @@ async function openCommand(page, label, electronApplication) {
         });
         await input.waitFor({ state: 'visible', timeout: 10_000 });
     }
-    await input.fill(`>${label}`);
+    await input.fill(`>${query}`);
     let option = page.locator(`[role="option"][aria-label="${label.replaceAll('"', '\\"')}"]:visible`);
     if (!await option.waitFor({ state: 'visible', timeout: 2_000 }).then(() => true, () => false)) {
         option = page.locator('[role="option"]:visible').filter({ hasText: label }).first();
