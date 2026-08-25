@@ -295,11 +295,11 @@ async function waitForWorkspaceProof(name, expected) {
     throw new Error(`Timed out waiting for visible workflow proof ${name}`);
 }
 
-async function waitForSupportBundle(directory) {
+async function waitForSupportBundle(directory, minimumCount = 1) {
     const deadline = Date.now() + 15_000;
     while (Date.now() < deadline) {
         const files = await readdir(directory).catch(() => []);
-        if (files.length) return files;
+        if (files.length >= minimumCount) return files;
         await new Promise(resolve => setTimeout(resolve, 100));
     }
     throw new Error('Timed out waiting for the diagnostic support bundle export');
@@ -494,11 +494,11 @@ async function exerciseProjects(page) {
     await openCommand(page, 'Kogg: Run Diagnostics');
     await page.getByText(/Diagnostics: (?:WARN|FAIL)/u).first().waitFor({ timeout: 15_000 });
     await page.keyboard.press('Escape');
+    const supportDirectory = path.join(state, 'support');
+    const supportCount = (await readdir(supportDirectory).catch(() => [])).length;
     await openCommand(page, 'Kogg: Export Diagnostic Support Bundle');
-    await page.getByText(/Kogg diagnostic bundle created/u).first().waitFor({ timeout: 15_000 });
-    const supportFiles = (await readdir(path.join(state, 'support'))).sort();
-    assert(supportFiles.length > 0);
-    const supportReport = JSON.parse(await readFile(path.join(state, 'support', supportFiles.at(-1)), 'utf8'));
+    const supportFiles = (await waitForSupportBundle(supportDirectory, supportCount + 1)).sort();
+    const supportReport = JSON.parse(await readFile(path.join(supportDirectory, supportFiles.at(-1)), 'utf8'));
     assert.equal(supportReport.checks.find(check => check.id === 'projects.repositories')?.status, 'warn');
     assert.equal(supportReport.checks.find(check => check.id === 'projects.processes')?.status, 'pass');
     await page.keyboard.press('Escape');
