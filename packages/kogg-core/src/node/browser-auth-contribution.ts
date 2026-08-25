@@ -11,6 +11,7 @@ const COOKIE_NAME = 'kogg_session';
 export class BrowserAuthContribution implements BackendApplicationContribution {
   private readonly enabled = process.env.KOGG_RUNTIME === 'browser';
   private readonly token = this.enabled ? this.required('KOGG_AUTH_TOKEN') : '';
+  private readonly secureCookie = this.enabled ? this.resolveSecureCookie() : false;
   private readonly session = this.enabled
     ? createHmac('sha256', this.token).update('kogg-browser-session-v1').digest('base64url')
     : '';
@@ -68,9 +69,19 @@ export class BrowserAuthContribution implements BackendApplicationContribution {
   }
 
   private cookie(value: string, maxAge: number): string {
-    const origin = process.env.KOGG_PUBLIC_ORIGIN ?? '';
-    const secure = origin.startsWith('https://') ? '; Secure' : '';
+    const secure = this.secureCookie ? '; Secure' : '';
     return `${COOKIE_NAME}=${value}; Path=/; HttpOnly; SameSite=Strict; Max-Age=${maxAge}${secure}`;
+  }
+
+  private resolveSecureCookie(): boolean {
+    const configured = process.env.KOGG_PUBLIC_ORIGIN;
+    if (!configured) return false;
+    const origin = new URL(configured);
+    const loopback = origin.hostname === 'localhost' || origin.hostname === '127.0.0.1' || origin.hostname === '::1';
+    if (!loopback && origin.protocol !== 'https:') {
+      throw new Error('KOGG_PUBLIC_ORIGIN must use HTTPS outside loopback development');
+    }
+    return origin.protocol === 'https:';
   }
 
   private required(name: string): string {
