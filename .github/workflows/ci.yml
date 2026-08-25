@@ -31,7 +31,7 @@ jobs:
       - run: yarn build:electron
       - name: Electron E2E (Linux)
         if: runner.os == 'Linux'
-        run: dbus-run-session -- bash -c 'eval "$(gnome-keyring-daemon --start --components=secrets)" && xvfb-run -a yarn test:e2e:electron'
+        run: xvfb-run -a dbus-run-session -- bash -c 'eval "$(gnome-keyring-daemon --start --components=secrets)" && printf "\n" | gnome-keyring-daemon --unlock >/dev/null && yarn test:e2e:electron'
       - name: Electron E2E (macOS and Windows)
         if: runner.os != 'Linux'
         run: yarn test:e2e:electron

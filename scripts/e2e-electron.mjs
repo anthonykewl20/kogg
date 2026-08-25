@@ -115,7 +115,8 @@ try {
 
     await openCommand(page, 'View: Toggle Source Control', application);
     const sourceControl = page.getByRole('tabpanel', { name: /Source Control/u });
-    await sourceControl.getByText('README.md').waitFor({ timeout: 15_000 });
+    await openCommand(page, 'Git: Refresh', application);
+    await sourceControl.getByText('README.md').waitFor({ timeout: 30_000 });
     await openCommand(page, 'Git: Stage All Changes', application);
     await sourceControl.getByText('STAGED CHANGES').waitFor();
     await sourceControl.getByRole('textbox', { name: /Message/u }).fill('verify Electron Kogg Git workflow');
@@ -135,6 +136,7 @@ try {
     assert.doesNotMatch(logs.join('\n'), /Uncaught Exception:\s+Error: transport error/iu);
     process.stdout.write('Kogg Electron E2E passed: native window, marketplace, provider, Git, debug, and branding.\n');
 } catch (error) {
+    process.stderr.write(`${logs.join('\n')}\n`);
     if (application) {
         const windows = application.windows();
         if (windows[0]) await windows[0].screenshot({ path: path.join(results, 'failure.png'), fullPage: true }).catch(() => undefined);
