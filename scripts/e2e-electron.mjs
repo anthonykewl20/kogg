@@ -188,6 +188,15 @@ try {
 async function openCommand(page, label, electronApplication) {
     const input = page.getByRole('textbox', { name: 'Type to narrow down results.' });
     const body = page.locator('body');
+    if (label === 'Go to File...') {
+        for (let attempt = 0; attempt < 4; attempt += 1) {
+            await page.bringToFront();
+            await body.click({ position: { x: 600, y: 300 } });
+            await page.keyboard.press(process.platform === 'darwin' ? 'Meta+P' : 'Control+P');
+            if (await input.waitFor({ state: 'visible', timeout: 2_500 }).then(() => true, () => false)) return;
+        }
+        throw new Error('Electron Go to File input did not become visible');
+    }
     const shortcuts = [process.platform === 'darwin' ? 'Meta+Shift+P' : 'Control+Shift+P', 'F1', 'F1', 'F1'];
     let opened = false;
     for (const shortcut of shortcuts) {
