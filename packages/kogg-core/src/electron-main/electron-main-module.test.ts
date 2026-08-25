@@ -16,7 +16,7 @@ test('normalizes Playwright switches before the Electron application directory',
   const result = normalizeUnbundledElectronArgv([
     '/electron', '--inspect=0', '--remote-debugging-port=0', '/apps/electron',
     '--electronUserData=/tmp/profile', '/tmp/workspace'
-  ]);
+  ], ['/apps/electron']);
 
   assert.deepEqual(result, {
     args: ['--electronUserData=/tmp/profile', '/tmp/workspace'],
@@ -29,7 +29,7 @@ test('normalizes Playwright switches after the Electron application directory', 
   const result = normalizeUnbundledElectronArgv([
     '/electron', '/apps/electron', '--inspect=0', '--remote-debugging-port=0',
     '--electronUserData=/tmp/profile', '/tmp/workspace'
-  ]);
+  ], ['/apps/electron']);
 
   assert.deepEqual(result, {
     args: ['--electronUserData=/tmp/profile', '/tmp/workspace'],
@@ -48,5 +48,31 @@ test('retains the first Kogg option for a packaged Playwright launch', () => {
     args: ['--electronUserData=/tmp/profile', '/tmp/workspace'],
     debugSwitches: 2,
     applicationDirectoryRemoved: false
+  });
+});
+
+test('retains a Linux workspace when Electron has already consumed the application entrypoint', () => {
+  const result = normalizeUnbundledElectronArgv([
+    '/electron', '--inspect=0', '--remote-debugging-port=0',
+    '--electronUserData=/tmp/profile', '/tmp/workspace'
+  ], ['/apps/electron', '/apps/electron/lib/backend/electron-main.js']);
+
+  assert.deepEqual(result, {
+    args: ['--electronUserData=/tmp/profile', '/tmp/workspace'],
+    debugSwitches: 2,
+    applicationDirectoryRemoved: false
+  });
+});
+
+test('removes a known compiled Electron entrypoint without removing the workspace', () => {
+  const result = normalizeUnbundledElectronArgv([
+    '/electron', '/apps/electron/lib/backend/electron-main.js',
+    '--electronUserData=/tmp/profile', '/tmp/workspace'
+  ], ['/apps/electron', '/apps/electron/lib/backend/electron-main.js']);
+
+  assert.deepEqual(result, {
+    args: ['--electronUserData=/tmp/profile', '/tmp/workspace'],
+    debugSwitches: 0,
+    applicationDirectoryRemoved: true
   });
 });

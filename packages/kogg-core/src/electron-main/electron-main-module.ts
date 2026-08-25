@@ -21,10 +21,21 @@ class KoggElectronMainProcessArgv extends ElectronMainProcessArgv {
 
   override getProcessArgvWithoutBin(argv = process.argv): string[] {
     if (!this.isElectronApp || this.isBundledElectronApp) return super.getProcessArgvWithoutBin(argv);
-    const { args, debugSwitches } = normalizeUnbundledElectronArgv(argv);
-    if (debugSwitches) {
-      console.debug('[kogg:core:electron-main] playwright-switches.normalized', { switchCount: debugSwitches });
-    }
+    const applicationPath = app.getAppPath();
+    const applicationArguments = [
+      applicationPath,
+      path.join(applicationPath, 'lib/backend/electron-main.js'),
+      process.env.KOGG_ELECTRON_ENTRYPOINT,
+      require.main?.filename
+    ].filter((value): value is string => !!value);
+    const { args, debugSwitches, applicationDirectoryRemoved } = normalizeUnbundledElectronArgv(argv, applicationArguments);
+    console.debug('[kogg:core:electron-main] argv.normalized', {
+      inputCount: Math.max(0, argv.length - 1),
+      outputCount: args.length,
+      positionalCount: args.filter(argument => !argument.startsWith('-')).length,
+      switchCount: debugSwitches,
+      applicationArgumentRemoved: applicationDirectoryRemoved
+    });
     return args;
   }
 }
@@ -44,7 +55,10 @@ export function isBundledElectronApplication(
   return isPackaged && applicationPath.endsWith('.asar') && !explicitlyLoadedApplication;
 }
 
-export function normalizeUnbundledElectronArgv(argv: readonly string[]): {
+export function normalizeUnbundledElectronArgv(
+  argv: readonly string[],
+  applicationArguments: readonly string[] = []
+): {
   args: string[];
   debugSwitches: number;
   applicationDirectoryRemoved: boolean;
@@ -57,11 +71,15 @@ export function normalizeUnbundledElectronArgv(argv: readonly string[]): {
       debugSwitches += 1;
     }
   }
-  // After Playwright-only switches are removed, the first positional argument
-  // of an unbundled Electron process is the application directory. A packaged
-  // launch instead begins with Kogg's own CLI switch and must retain it.
-  const applicationDirectoryRemoved = !!args[0] && !args[0].startsWith('-');
-  if (applicationDirectoryRemoved) args.shift();
+  // Electron includes the loaded application in process.argv on macOS and
+  // Windows, but can consume it before userland on Linux. Remove only a known
+  // application path so a workspace is never mistaken for the entrypoint.
+  const resolvedApplicationArguments = new Set(applicationArguments.map(argument => path.resolve(argument)));
+  const applicationArgumentIndex = args.findIndex(argument =>
+    !argument.startsWith('-') && resolvedApplicationArguments.has(path.resolve(argument))
+  );
+  const applicationDirectoryRemoved = applicationArgumentIndex >= 0;
+  if (applicationDirectoryRemoved) args.splice(applicationArgumentIndex, 1);
   return { args, debugSwitches, applicationDirectoryRemoved };
 }
 

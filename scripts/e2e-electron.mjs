@@ -51,7 +51,9 @@ try {
         executablePath: require('electron'),
         args: [path.join(root, 'apps/electron/lib/backend/electron-main.js'), `--electronUserData=${path.join(temporary, 'electron-user-data')}`, workspace],
         env: {
-            ...process.env, KOGG_RUNTIME: 'electron', KOGG_ROOT: root, KOGG_ELECTRON_UNBUNDLED: '1',
+            ...process.env, KOGG_RUNTIME: 'electron', KOGG_ROOT: root,
+            KOGG_ELECTRON_UNBUNDLED: '1',
+            KOGG_ELECTRON_ENTRYPOINT: path.join(root, 'apps/electron/lib/backend/electron-main.js'),
             KOGG_STATE_DIR: path.join(temporary, 'state'),
             THEIA_CONFIG_DIR: path.join(temporary, 'state', 'config'),
             KOGG_REGISTRY_URL: registryUrl,
@@ -59,16 +61,16 @@ try {
         },
         timeout: 30_000
     });
-    const runtimeLaunch = await application.evaluate(({ app }) => ({
-        argv: process.argv,
-        applicationPath: app.getAppPath(),
-        defaultApp: process.defaultApp,
-        packaged: app.isPackaged,
-        forcedUnbundled: process.env.KOGG_ELECTRON_UNBUNDLED
-    }));
-    logs.push(`[electron-runtime] ${JSON.stringify(runtimeLaunch)}`);
     application.process().stdout?.on('data', chunk => logs.push(`[electron] ${chunk}`));
     application.process().stderr?.on('data', chunk => logs.push(`[electron:error] ${chunk}`));
+    const argumentShape = await application.evaluate(({ app }) => process.argv.slice(1).map(argument => {
+        if (argument.startsWith('--electronUserData=')) return 'user-data-option';
+        if (argument.startsWith('--')) return 'option';
+        if (argument === app.getAppPath()) return 'application-path';
+        if (/[\\/]electron-main\.js$/u.test(argument)) return 'application-entrypoint';
+        return 'positional';
+    }));
+    logs.push(`[electron] [kogg:e2e:electron] argv.shape ${JSON.stringify(argumentShape)}`);
     await application.firstWindow({ timeout: 30_000 });
     const page = await waitForKoggWindow(application);
     page.on('console', entry => logs.push(`[frontend:${entry.type()}] ${entry.text()}`));
