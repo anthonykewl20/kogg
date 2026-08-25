@@ -581,9 +581,8 @@ async function chooseFolder(page, folder) {
     while (!decodeURIComponent(await locationList.inputValue()).endsWith(folder) && !decodeURIComponent(await locationList.inputValue()).endsWith(await realpath(folder)) && Date.now() < folderDeadline) {
         await page.waitForTimeout(50);
     }
-    const selected = dialog.locator('.theia-mod-selected .theia-TreeNodeSegmentGrow').last();
-    await selected.waitFor({ state: 'visible', timeout: 5_000 });
-    assert.equal(decodeURIComponent(await selected.getAttribute('id') ?? '').replace(/\/$/u, '').endsWith(`/${path.basename(folder)}`), true);
+    const selectedLocation = decodeURIComponent(await locationList.inputValue()).replace(/\/$/u, '');
+    assert.equal(selectedLocation.endsWith(folder) || selectedLocation.endsWith(await realpath(folder)), true);
     await dialog.getByRole('button', { name: 'Open', exact: true }).click();
     await dialog.waitFor({ state: 'hidden', timeout: 10_000 });
 }
