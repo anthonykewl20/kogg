@@ -158,15 +158,10 @@ try {
     await provider.getByLabel('Provider').selectOption('openai');
     await provider.getByRole('button', { name: 'Test connection' }).click();
     await provider.getByText('Credential is not configured').waitFor();
-    // Hosted Linux runners do not have a logged-in desktop keyring collection.
-    // Native credential persistence remains covered on macOS and Windows; Linux
-    // continues through the provider, debugger, and project workflows.
-    if (process.platform !== 'linux') {
-        await provider.getByLabel('Credential').fill(providerSecret);
-        await provider.getByRole('button', { name: 'Save credential' }).click();
-        await provider.getByText('openai / default').waitFor();
-        assert.doesNotMatch(await provider.innerText(), new RegExp(providerSecret, 'u'));
-    }
+    await provider.getByLabel('Credential').fill(providerSecret);
+    await provider.getByRole('button', { name: 'Save credential' }).click();
+    await provider.getByText('openai / default').waitFor();
+    assert.doesNotMatch(await provider.innerText(), new RegExp(providerSecret, 'u'));
     await provider.getByLabel('Provider').selectOption('llamafile');
     await provider.getByLabel('Endpoint (optional)').fill('http://127.0.0.1:1/models');
     await provider.getByRole('button', { name: 'Test connection' }).click();
@@ -177,10 +172,8 @@ try {
     await provider.getByLabel('Advisory prompt').fill('Verify the Electron provider path.');
     await provider.getByRole('button', { name: 'Send advisory request' }).click();
     await provider.getByText('Kogg provider fixture responded successfully.').waitFor();
-    if (process.platform !== 'linux') {
-        await provider.locator('li').filter({ hasText: 'openai / default' }).getByRole('button', { name: 'Delete' }).click();
-        await provider.getByText('None. Secret values are never displayed.').waitFor();
-    }
+    await provider.locator('li').filter({ hasText: 'openai / default' }).getByRole('button', { name: 'Delete' }).click();
+    await provider.getByText('None. Secret values are never displayed.').waitFor();
     assert.equal(logs.join('\n').includes(providerSecret), false);
 
     await exerciseNodeDebug(page, application, 'Kogg Electron Debug', 'KOGG_ELECTRON_E2E_READY');
@@ -316,14 +309,22 @@ async function chooseElectronFolder(page, folder) {
     await dialog.waitFor({ state: 'visible', timeout: 10_000 });
     await dialog.locator('[title="Switch to text-based input"]').click();
     const location = dialog.locator('.theia-LocationTextInput');
-    await location.fill(folder);
+    const canonicalFolder = await realpath(folder);
+    await location.fill(canonicalFolder);
     await location.press('Enter');
     const locationList = dialog.locator('.theia-LocationList');
     await locationList.waitFor({ state: 'visible', timeout: 10_000 });
     const folderDeadline = Date.now() + 10_000;
-    while (!decodeURIComponent(await locationList.inputValue()).endsWith(folder) && !decodeURIComponent(await locationList.inputValue()).endsWith(await realpath(folder)) && Date.now() < folderDeadline) await page.waitForTimeout(50);
-    const selectedLocation = decodeURIComponent(await locationList.inputValue()).replace(/\/$/u, '');
-    assert.equal(selectedLocation.endsWith(folder) || selectedLocation.endsWith(await realpath(folder)), true);
+    let selectedLocation = '';
+    while (Date.now() < folderDeadline) {
+        selectedLocation = decodeURIComponent(await locationList.inputValue()).replace(/\/$/u, '');
+        if (selectedLocation.endsWith(folder) || selectedLocation.endsWith(canonicalFolder)) break;
+        await page.waitForTimeout(50);
+    }
+    assert.ok(
+        selectedLocation.endsWith(folder) || selectedLocation.endsWith(canonicalFolder),
+        `Electron folder dialog did not navigate to ${canonicalFolder}; current location is ${selectedLocation}`
+    );
     await dialog.getByRole('button', { name: 'Open', exact: true }).click();
     await dialog.waitFor({ state: 'hidden', timeout: 10_000 });
 }
