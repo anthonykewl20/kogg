@@ -78,9 +78,9 @@ try {
         // A clean Linux profile can leave the workspace root collapsed. Expand
         // the visible root just as a person would; absence of a workspace still
         // fails because there will be no expansion toggle or README entry.
-        const collapsedRoot = explorer.locator('.theia-ExpansionToggle.theia-mod-collapsed').first();
-        await collapsedRoot.waitFor({ state: 'visible', timeout: 5_000 });
-        await collapsedRoot.click();
+        const workspaceRoot = explorer.getByText(path.basename(workspace), { exact: true }).first();
+        await workspaceRoot.waitFor({ state: 'visible', timeout: 5_000 });
+        await workspaceRoot.dblclick();
         await readme.waitFor({ state: 'visible', timeout: 10_000 });
         await readme.dblclick();
     }
