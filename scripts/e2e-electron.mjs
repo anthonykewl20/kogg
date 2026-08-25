@@ -122,7 +122,6 @@ try {
     await sourceControl.getByRole('textbox', { name: /Message/u }).fill('verify Electron Kogg Git workflow');
     await sourceControl.getByRole('button', { name: /Commit$/u }).click();
     await waitForGitSubject('verify Electron Kogg Git workflow');
-    await openCommand(page, 'Git: Refresh', application);
     await openCommand(page, 'Git: Create Branch...', application);
     const branchInput = page.locator('.quick-input-widget input').last();
     await branchInput.waitFor({ state: 'visible' });
@@ -134,6 +133,7 @@ try {
     const visible = await page.locator('body').innerText();
     assert.doesNotMatch(visible, /Search Open VSX Registry|Learn more about Theia|custom-agent migration/iu);
     assert.doesNotMatch(logs.join('\n'), /Uncaught Exception:\s+Error: transport error/iu);
+    assert.doesNotMatch(logs.join('\n'), /Command with id '_chat\.editSessions\.accept' is not registered/iu);
     process.stdout.write('Kogg Electron E2E passed: native window, marketplace, provider, Git, debug, and branding.\n');
 } catch (error) {
     process.stderr.write(`${logs.join('\n')}\n`);

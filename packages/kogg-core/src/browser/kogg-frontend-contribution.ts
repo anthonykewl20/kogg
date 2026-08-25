@@ -68,6 +68,11 @@ export class KoggFrontendContribution implements FrontendApplicationContribution
   }
 
   registerCommands(commands: CommandRegistry): void {
+    // The bundled VS Code Git extension calls this internal VS Code command
+    // after a commit even when no chat edit session exists. Kogg intentionally
+    // ships without VS Code's stock chat agents, so the compatible behavior is
+    // a no-op rather than an unhandled plugin-host rejection.
+    commands.registerCommand({ id: '_chat.editSessions.accept' }, { execute: () => undefined });
     commands.registerCommand(KoggCommands.about, {
       execute: () => this.messages.info('Kogg — engineering control plane powered by the embedded Ranex kernel.')
     });
