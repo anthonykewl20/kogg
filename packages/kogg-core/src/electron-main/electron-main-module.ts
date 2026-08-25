@@ -7,9 +7,9 @@ import path from 'node:path';
 
 class KoggElectronMainProcessArgv extends ElectronMainProcessArgv {
   override get isBundledElectronApp(): boolean {
-    // Electron's process.defaultApp is unset for Playwright development
-    // launches on Linux. app.isPackaged is the authoritative runtime signal
-    // and remains true for Kogg's distributable artifacts on every platform.
+    // Electron's process.defaultApp is unset and app.isPackaged can be true for
+    // Playwright development launches on Linux. Kogg artifacts are always ASAR
+    // bundles, so the application payload path is the authoritative signal.
     return isBundledElectronApplication(this.isElectronApp, app.isPackaged, process.argv, app.getAppPath());
   }
 
@@ -34,7 +34,7 @@ export function isBundledElectronApplication(
   const explicitlyLoadedApplication = argv.slice(1).some(argument =>
     !argument.startsWith('-') && path.resolve(argument) === resolvedApplicationPath
   );
-  return isPackaged && !explicitlyLoadedApplication;
+  return isPackaged && applicationPath.endsWith('.asar') && !explicitlyLoadedApplication;
 }
 
 export function normalizeUnbundledElectronArgv(argv: readonly string[]): {
