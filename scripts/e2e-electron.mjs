@@ -153,6 +153,11 @@ async function openCommand(page, label, electronApplication) {
     await page.locator('body').click({ position: { x: 600, y: 300 } });
     await page.keyboard.press(process.platform === 'darwin' ? 'Meta+Shift+P' : 'Control+Shift+P');
     await input.waitFor({ state: 'visible', timeout: 3_000 }).catch(async () => {
+        // Electron on a headless Linux display can drop modified key chords
+        // while its native window is still gaining focus. F1 is Theia's
+        // platform-independent command-palette binding and avoids that race.
+        await page.keyboard.press('F1');
+        if (await input.waitFor({ state: 'visible', timeout: 3_000 }).then(() => true, () => false)) return;
         await electronApplication.evaluate(({ Menu }) => {
             const visit = items => {
                 for (const item of items) {
