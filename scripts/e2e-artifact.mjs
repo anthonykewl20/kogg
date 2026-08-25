@@ -15,7 +15,7 @@ try {
     await writeFile(path.join(workspace, 'README.md'), '# Packaged Kogg smoke\n');
     application = await electron.launch({
         executablePath: await packagedExecutable(),
-        args: ['--electronUserData', path.join(temporary, 'electron-user-data'), workspace],
+        args: [`--electronUserData=${path.join(temporary, 'electron-user-data')}`, workspace],
         env: {
             ...process.env,
             KOGG_RUNTIME: 'electron',

@@ -4,6 +4,7 @@ import { mkdtemp, mkdir, realpath, rm, writeFile } from 'node:fs/promises';
 import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
+import { randomBytes } from 'node:crypto';
 import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
 import { _electron as electron } from 'playwright';
@@ -17,6 +18,7 @@ const registryPort = await freePort();
 const registryUrl = `http://127.0.0.1:${registryPort}`;
 const results = path.join(root, 'test-results', 'electron');
 const logs = [];
+const providerSecret = randomBytes(24).toString('base64url');
 let registry;
 let application;
 
@@ -47,7 +49,7 @@ try {
 
     application = await electron.launch({
         executablePath: require('electron'),
-        args: [path.join(root, 'apps/electron'), '--electronUserData', path.join(temporary, 'electron-user-data'), workspace],
+        args: [path.join(root, 'apps/electron'), `--electronUserData=${path.join(temporary, 'electron-user-data')}`, workspace],
         env: {
             ...process.env, KOGG_RUNTIME: 'electron', KOGG_ROOT: root,
             KOGG_STATE_DIR: path.join(temporary, 'state'),
@@ -67,6 +69,33 @@ try {
     const trust = page.getByRole('button', { name: 'Yes, I trust the authors' });
     await trust.waitFor({ state: 'visible', timeout: 10_000 }).catch(() => undefined);
     if (await trust.isVisible().catch(() => false)) await trust.click();
+
+    // Exercise a real editor save before Git actions. This activates filesystem
+    // and repository watchers through the same path a person uses on a clean
+    // profile, without relying on an externally modified pre-launch fixture.
+    const explorer = page.getByRole('tabpanel', { name: /Explorer/u });
+    if (!await explorer.isVisible().catch(() => false)) await openCommand(page, 'View: Toggle Explorer', application);
+    await explorer.getByText('README.md').dblclick();
+    const editor = page.locator('.monaco-editor').last();
+    await editor.click();
+    await page.keyboard.press(process.platform === 'darwin' ? 'Meta+End' : 'Control+End');
+    await page.keyboard.type('\nMonaco user edit.');
+    await page.keyboard.press(process.platform === 'darwin' ? 'Meta+S' : 'Control+S');
+
+    await openCommand(page, 'View: Toggle Source Control', application);
+    const sourceControl = page.getByRole('tabpanel', { name: /Source Control/u });
+    await sourceControl.getByText('README.md').waitFor({ timeout: 30_000 });
+    await openCommand(page, 'Git: Stage All Changes', application);
+    await sourceControl.getByText('STAGED CHANGES').waitFor();
+    await sourceControl.getByRole('textbox', { name: /Message/u }).fill('verify Electron Kogg Git workflow');
+    await sourceControl.getByRole('button', { name: /Commit$/u }).click();
+    await waitForGitSubject('verify Electron Kogg Git workflow');
+    await openCommand(page, 'Git: Create Branch...', application);
+    const branchInput = page.locator('.quick-input-widget input').last();
+    await branchInput.waitFor({ state: 'visible' });
+    await branchInput.fill('kogg-electron-e2e-branch');
+    await branchInput.press('Enter');
+    await waitForGitBranch('kogg-electron-e2e-branch');
 
     await openCommand(page, 'Kogg: Open Marketplace', application);
     const marketplace = page.locator('.kogg-marketplace-widget');
@@ -105,6 +134,10 @@ try {
     await provider.getByLabel('Provider').selectOption('openai');
     await provider.getByRole('button', { name: 'Test connection' }).click();
     await provider.getByText('Credential is not configured').waitFor();
+    await provider.getByLabel('Credential').fill(providerSecret);
+    await provider.getByRole('button', { name: 'Save credential' }).click();
+    await provider.getByText('openai / default').waitFor();
+    assert.doesNotMatch(await provider.innerText(), new RegExp(providerSecret, 'u'));
     await provider.getByLabel('Provider').selectOption('llamafile');
     await provider.getByLabel('Endpoint (optional)').fill('http://127.0.0.1:1/models');
     await provider.getByRole('button', { name: 'Test connection' }).click();
@@ -115,21 +148,9 @@ try {
     await provider.getByLabel('Advisory prompt').fill('Verify the Electron provider path.');
     await provider.getByRole('button', { name: 'Send advisory request' }).click();
     await provider.getByText('Kogg provider fixture responded successfully.').waitFor();
-
-    await openCommand(page, 'View: Toggle Source Control', application);
-    const sourceControl = page.getByRole('tabpanel', { name: /Source Control/u });
-    await sourceControl.getByText('README.md').waitFor({ timeout: 30_000 });
-    await openCommand(page, 'Git: Stage All Changes', application);
-    await sourceControl.getByText('STAGED CHANGES').waitFor();
-    await sourceControl.getByRole('textbox', { name: /Message/u }).fill('verify Electron Kogg Git workflow');
-    await sourceControl.getByRole('button', { name: /Commit$/u }).click();
-    await waitForGitSubject('verify Electron Kogg Git workflow');
-    await openCommand(page, 'Git: Create Branch...', application);
-    const branchInput = page.locator('.quick-input-widget input').last();
-    await branchInput.waitFor({ state: 'visible' });
-    await branchInput.fill('kogg-electron-e2e-branch');
-    await branchInput.press('Enter');
-    await waitForGitBranch('kogg-electron-e2e-branch');
+    await provider.locator('li').filter({ hasText: 'openai / default' }).getByRole('button', { name: 'Delete' }).click();
+    await provider.getByText('None. Secret values are never displayed.').waitFor();
+    assert.equal(logs.join('\n').includes(providerSecret), false);
 
     await exerciseNodeDebug(page, application, 'Kogg Electron Debug', 'KOGG_ELECTRON_E2E_READY');
     await exerciseElectronProjects(page, application);

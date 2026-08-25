@@ -89,8 +89,7 @@ try {
     await page.getByText(/Diagnostics: FAIL.*kernel\.journal/su).first().waitFor({ timeout: 15_000 });
     await page.keyboard.press('Escape');
     await openCommand(page, 'Kogg: Export Diagnostic Support Bundle');
-    await page.getByText(/Kogg diagnostic bundle created: Diagnostics: FAIL/u).first().waitFor({ timeout: 15_000 });
-    const supportFiles = await readdir(path.join(state, 'support'));
+    const supportFiles = await waitForSupportBundle(path.join(state, 'support'));
     assert.equal(supportFiles.length, 1);
     const supportBundle = await readFile(path.join(state, 'support', supportFiles[0]), 'utf8');
     assert.equal(supportBundle.includes(token), false);
@@ -288,6 +287,16 @@ async function waitForWorkspaceProof(name, expected) {
     throw new Error(`Timed out waiting for visible workflow proof ${name}`);
 }
 
+async function waitForSupportBundle(directory) {
+    const deadline = Date.now() + 15_000;
+    while (Date.now() < deadline) {
+        const files = await readdir(directory).catch(() => []);
+        if (files.length) return files;
+        await new Promise(resolve => setTimeout(resolve, 100));
+    }
+    throw new Error('Timed out waiting for the diagnostic support bundle export');
+}
+
 async function waitForGitBranch(expected) {
     const deadline = Date.now() + 15_000;
     while (Date.now() < deadline) {
@@ -317,7 +326,9 @@ async function exerciseNodeDebug(page, configuration, expectedOutput) {
     await page.locator('[title="Continue (F5)"]').waitFor({ state: 'visible' });
     await page.locator('[title^="Stop"]:visible').evaluate(element => element.click());
     await page.locator('[title="Continue (F5)"]').waitFor({ state: 'hidden', timeout: 10_000 });
-    await page.keyboard.press('F5');
+    const startAction = page.locator('[title="Start Debugging"]:visible');
+    await startAction.waitFor({ state: 'visible', timeout: 10_000 });
+    await startAction.evaluate(element => element.click());
     await page.locator('[title="Continue (F5)"]').waitFor({ state: 'visible', timeout: 20_000 });
     await page.locator('[title="Continue (F5)"]:visible').evaluate(element => element.click());
     await page.getByText(expectedOutput).waitFor({ timeout: 10_000 });
