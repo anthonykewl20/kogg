@@ -310,23 +310,14 @@ async function waitForGitBranch(expected) {
 
 async function exerciseNodeDebug(page, configuration, expectedOutput) {
     const pauseTimeout = process.platform === 'win32' ? 60_000 : 20_000;
-    const waitForPause = async () => {
-        const paused = page.locator('[title="Continue (F5)"]').waitFor({ state: 'visible', timeout: pauseTimeout }).then(() => true);
-        if (process.platform !== 'win32') return paused;
-        // The Windows browser debug adapter can complete stopOnEntry programs
-        // without rendering the floating toolbar. The debug-console output is
-        // still durable proof that the selected configuration ran successfully.
-        const completed = page.getByText(expectedOutput).waitFor({ timeout: pauseTimeout }).then(() => false);
-        return Promise.race([paused, completed]);
-    };
     const start = async () => {
         await openCommand(page, 'Debug: Select and Start Debugging');
         const choice = page.locator('[role="option"]:visible').filter({ hasText: configuration });
         await choice.waitFor({ state: 'visible', timeout: 10_000 });
         await choice.click();
-        return waitForPause();
+        await page.locator('[title="Continue (F5)"]').waitFor({ state: 'visible', timeout: pauseTimeout });
     };
-    if (!await start()) return;
+    await start();
     for (const title of ['Step Over', 'Step Into', 'Step Out', 'Restart', 'Stop']) {
         await page.locator(`[title^="${title}"]:visible`).waitFor({ state: 'visible' });
     }
@@ -334,13 +325,13 @@ async function exerciseNodeDebug(page, configuration, expectedOutput) {
     await page.getByText('CALL STACK').first().waitFor();
     await page.locator('[title^="Restart"]:visible').evaluate(element => element.click());
     await page.waitForTimeout(500);
-    if (!await waitForPause()) return;
+    await page.locator('[title="Continue (F5)"]').waitFor({ state: 'visible', timeout: pauseTimeout });
     await page.locator('[title^="Stop"]:visible').evaluate(element => element.click());
     await page.locator('[title="Continue (F5)"]').waitFor({ state: 'hidden', timeout: 10_000 });
     const startAction = page.locator('[title="Start Debugging"]:visible');
     await startAction.waitFor({ state: 'visible', timeout: 10_000 });
     await startAction.evaluate(element => element.click());
-    if (!await waitForPause()) return;
+    await page.locator('[title="Continue (F5)"]').waitFor({ state: 'visible', timeout: pauseTimeout });
     await page.locator('[title="Continue (F5)"]:visible').evaluate(element => element.click());
     await page.getByText(expectedOutput).waitFor({ timeout: 10_000 });
 }
