@@ -27,12 +27,12 @@ try {
     await mkdir(results, { recursive: true });
     await writeFile(path.join(workspace, 'README.md'), '# Kogg Electron E2E\n');
     await mkdir(path.join(workspace, '.theia'), { recursive: true });
-    await writeFile(path.join(workspace, 'verify.mjs'), "const message = 'KOGG_ELECTRON_E2E_READY';\nconsole.log(message);\n");
+    await writeFile(path.join(workspace, 'verify.mjs'), "debugger;\nconst message = 'KOGG_ELECTRON_E2E_READY';\nconsole.log(message);\n");
     await writeFile(path.join(workspace, '.theia', 'launch.json'), JSON.stringify({
         version: '0.2.0', configurations: [{
             name: 'Kogg Electron Debug', type: 'node', request: 'launch',
             runtimeExecutable: process.execPath, program: path.join(workspace, 'verify.mjs'), cwd: workspace,
-            stopOnEntry: true
+            stopOnEntry: false
         }]
     }, null, 2));
     spawnSync('git', ['init', workspace], { stdio: 'ignore' });
