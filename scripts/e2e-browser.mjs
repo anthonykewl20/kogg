@@ -300,7 +300,10 @@ async function exerciseNodeDebug(page, configuration, expectedOutput) {
     await page.locator('[title="Continue (F5)"]').waitFor({ state: 'visible' });
     await page.locator('[title^="Stop"]:visible').evaluate(element => element.click());
     await page.locator('[title="Continue (F5)"]').waitFor({ state: 'hidden', timeout: 10_000 });
-    await start();
+    const startAction = page.locator('[title="Start Debugging"]:visible');
+    await startAction.waitFor({ state: 'visible', timeout: 10_000 });
+    await startAction.evaluate(element => element.click());
+    await page.locator('[title="Continue (F5)"]').waitFor({ state: 'visible', timeout: 20_000 });
     await page.locator('[title="Continue (F5)"]:visible').evaluate(element => element.click());
     await page.getByText(expectedOutput).waitFor({ timeout: 10_000 });
 }
