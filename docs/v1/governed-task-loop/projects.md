@@ -899,3 +899,53 @@ safe field keys without snapshotting paths or content.
 - Recommended authority, persistence, isolation, and prototype boundary: explicit.
 
 This is sufficient input for #63. It does not authorize production implementation.
+
+## Production implementation record (issue #68)
+
+Production implementation completed on 2026-08-26 on branch
+`feature/issue-68-projects-registry`, after the Foundation milestone and ordered
+research, pseudocode, and prototype gates closed.
+
+The shipped `@kogg/projects` Theia extension contains a dedicated SQLite registry,
+typed browser/backend protocol, visible Projects view, real fixed-argument Git
+probe, generated workspace projections, startup/switch reconciliation, project
+diagnostic contributor, and browser/Electron application wiring. The registry owns
+projects, canonical repositories, execution-profile references, fixed-role provider
+references, durable switch state, request/revision guards, and the V1
+one-repository-per-task binding constraint. Source files are never deleted by
+registry removal.
+
+The implementation preserves the prototype decisions: Node's pinned built-in
+SQLite binding, full synchronous rollback journaling, foreign keys, bounded busy
+handling, canonical Git-dir identity, Theia `ProcessManager` registration before
+spawn, bounded output and timeout, process-group kill/reap, safe correlation-only
+events, and zero raw paths/arguments/bodies in Kogg logs. Startup refuses corruption
+and newer schemas without replacing the database. Missing repositories remain
+visible, block switching/restoration, and support explicit same-identity relocation.
+
+Production tests cover persistence/restart, multi-repository projects, task rebind
+cardinality, execution profiles, role assignments, two-phase switching, active and
+last-repository removal refusal, duplicate/non-Git refusal, corrupt/newer registry
+startup, missing-root degradation, write contention with no mutation, diagnostic
+failure, real Git success/failure/timeout/cancel, register-before-start ordering,
+safe trace content, cleanup, and zero residual owned processes.
+
+The clean-profile browser journey drives only visible production controls and proves
+two projects, multi-repository membership, task binding/rebinding, settings and role
+restoration, duplicate/non-Git refusal, project switching, branded trust gates,
+missing state, explicit identity-preserving relocation, diagnostics, backend restart
+restoration, and 25 reconnect cycles. The Electron journey repeats real project
+creation, switching, trust, reload restoration, and the existing native
+marketplace/provider/Git/debug workflows. Packaged application launch and production
+artifact audits pass. Ranex/provider execution is not invoked by this metadata-only
+slice; no role assignment or task binding starts a provider, agent, command, or
+Ranex session.
+
+Mandatory release evidence:
+
+- `yarn test`: package builds, unit tests, branding audit, and observability audit.
+- `yarn audit:observability`: all production sources inspected with zero violations.
+- browser and Electron E2E: visible clean-profile workflows with real Git/filesystem/process boundaries.
+- `yarn package:electron`: packaged application and source-map/artifact audit.
+- `yarn test:e2e:artifact`: packaged native launch, diagnostics, marketplace, provider, and branding smoke.
+- `yarn verify:linux`: clean ARM64 Linux setup, tests and audits, browser build, AppImage/DEB packaging, and packaged-artifact audit.

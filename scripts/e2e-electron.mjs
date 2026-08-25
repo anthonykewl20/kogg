@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
-import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, realpath, rm, writeFile } from 'node:fs/promises';
 import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
@@ -12,6 +12,7 @@ const require = createRequire(import.meta.url);
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const temporary = await mkdtemp(path.join(os.tmpdir(), 'kogg-electron-e2e-'));
 const workspace = path.join(temporary, 'workspace');
+const secondaryRepository = path.join(temporary, 'secondary-repository');
 const registryPort = await freePort();
 const registryUrl = `http://127.0.0.1:${registryPort}`;
 const results = path.join(root, 'test-results', 'electron');
@@ -34,6 +35,7 @@ try {
     spawnSync('git', ['-C', workspace, 'add', '.'], { stdio: 'ignore' });
     spawnSync('git', ['-C', workspace, 'commit', '-m', 'initial Electron fixture'], { stdio: 'ignore' });
     await writeFile(path.join(workspace, 'README.md'), '# Kogg Electron E2E\nHuman workflow change.\n');
+    await initializeGitRepository(secondaryRepository, 'secondary Electron fixture');
     registry = spawn(process.execPath, ['packages/kogg-marketplace/lib/node/dev-registry.js'], {
         cwd: root,
         env: { ...process.env, KOGG_ROOT: root, KOGG_REGISTRY_PORT: String(registryPort) },
@@ -50,7 +52,8 @@ try {
             ...process.env, KOGG_RUNTIME: 'electron', KOGG_ROOT: root,
             KOGG_STATE_DIR: path.join(temporary, 'state'),
             THEIA_CONFIG_DIR: path.join(temporary, 'state', 'config'),
-            KOGG_REGISTRY_URL: registryUrl
+            KOGG_REGISTRY_URL: registryUrl,
+            THEIA_ELECTRON_DISABLE_NATIVE_ELEMENTS: '1'
         },
         timeout: 30_000
     });
@@ -129,11 +132,12 @@ try {
     await waitForGitBranch('kogg-electron-e2e-branch');
 
     await exerciseNodeDebug(page, application, 'Kogg Electron Debug', 'KOGG_ELECTRON_E2E_READY');
+    await exerciseElectronProjects(page, application);
     const visible = await page.locator('body').innerText();
     assert.doesNotMatch(visible, /Search Open VSX Registry|Learn more about Theia|custom-agent migration/iu);
     assert.doesNotMatch(logs.join('\n'), /Uncaught Exception:\s+Error: transport error/iu);
     assert.doesNotMatch(logs.join('\n'), /Command with id '_chat\.editSessions\.accept' is not registered/iu);
-    process.stdout.write('Kogg Electron E2E passed: native window, marketplace, provider, Git, debug, and branding.\n');
+    process.stdout.write('Kogg Electron E2E passed: native window, marketplace, provider, Git, debug, projects, switching, and branding.\n');
 } catch (error) {
     process.stderr.write(`${logs.join('\n')}\n`);
     if (application) {
@@ -172,9 +176,94 @@ async function openCommand(page, label, electronApplication) {
         await input.waitFor({ state: 'visible', timeout: 5_000 });
     });
     await input.fill(`>${label}`);
-    const option = page.locator(`[role="option"][aria-label="${label.replaceAll('"', '\\"')}"]:visible`);
-    await option.waitFor();
+    let option = page.locator(`[role="option"][aria-label="${label.replaceAll('"', '\\"')}"]:visible`);
+    if (!await option.waitFor({ state: 'visible', timeout: 2_000 }).then(() => true, () => false)) {
+        option = page.locator('[role="option"]:visible').filter({ hasText: label }).first();
+        await option.waitFor();
+    }
     await option.click();
+}
+
+async function initializeGitRepository(repository, subject) {
+    await mkdir(repository, { recursive: true });
+    await writeFile(path.join(repository, 'README.md'), `# ${subject}\n`);
+    spawnSync('git', ['init', '--quiet', repository], { stdio: 'ignore' });
+    spawnSync('git', ['-C', repository, 'config', 'user.name', 'Kogg E2E'], { stdio: 'ignore' });
+    spawnSync('git', ['-C', repository, 'config', 'user.email', 'kogg-e2e@example.invalid'], { stdio: 'ignore' });
+    spawnSync('git', ['-C', repository, 'add', '.'], { stdio: 'ignore' });
+    spawnSync('git', ['-C', repository, 'commit', '-m', subject], { stdio: 'ignore' });
+}
+
+async function exerciseElectronProjects(page, electronApplication) {
+    assert.equal(spawnSync('git', ['-C', await realpath(workspace), 'rev-parse', '--is-inside-work-tree'], { encoding: 'utf8' }).stdout.trim(), 'true');
+    let projects = await ensureElectronProjectsWidget(page, electronApplication);
+    await createElectronProject(page, projects, 'Electron Alpha', workspace);
+    await createElectronProject(page, projects, 'Electron Beta', secondaryRepository);
+    await waitForElectronProjectText(projects, /Electron Alpha[\s\S]*Electron Beta/u);
+    await projects.locator('[data-project-row]').filter({ hasText: 'Electron Beta' }).getByRole('button', { name: 'Switch' }).click();
+    await page.locator('body.kogg-application').waitFor({ timeout: 20_000 });
+    const trust = page.getByRole('button', { name: 'Yes, I trust the authors' });
+    await trust.waitFor({ state: 'visible', timeout: 20_000 });
+    await trust.click();
+    projects = await ensureElectronProjectsWidget(page, electronApplication);
+    await waitForElectronProjectText(projects, /Electron Beta[\s\S]*Active/u);
+    await page.reload({ waitUntil: 'domcontentloaded' });
+    await page.locator('body.kogg-application').waitFor({ timeout: 20_000 });
+    projects = await ensureElectronProjectsWidget(page, electronApplication);
+    await waitForElectronProjectText(projects, /Electron Beta[\s\S]*Active/u);
+}
+
+async function ensureElectronProjectsWidget(page, electronApplication) {
+    const widget = page.locator('.kogg-projects-widget').last();
+    if (!await widget.count()) {
+        await openCommand(page, 'View: Toggle Kogg Projects', electronApplication);
+        await widget.waitFor({ state: 'attached', timeout: 10_000 });
+    }
+    const deadline = Date.now() + 10_000;
+    while (/Loading projects/iu.test(await widget.textContent().catch(() => 'Loading projects')) && Date.now() < deadline) {
+        await new Promise(resolve => setTimeout(resolve, 50));
+    }
+    assert.doesNotMatch(await widget.textContent(), /Loading projects/iu);
+    return widget;
+}
+
+async function createElectronProject(page, projects, name, repository) {
+    await projects.getByLabel('New project name').fill(name);
+    await Promise.all([
+        chooseElectronFolder(page, repository),
+        projects.getByRole('button', { name: 'Choose repository and add project' }).click()
+    ]);
+    await waitForElectronProjectText(projects, new RegExp(name, 'u'));
+}
+
+async function chooseElectronFolder(page, folder) {
+    const dialog = page.locator('.dialogBlock');
+    await dialog.waitFor({ state: 'visible', timeout: 10_000 });
+    await dialog.locator('[title="Switch to text-based input"]').click();
+    const location = dialog.locator('.theia-LocationTextInput');
+    const parent = path.dirname(folder);
+    await location.fill(parent);
+    await location.press('Enter');
+    const locationList = dialog.locator('.theia-LocationList');
+    await locationList.waitFor({ state: 'visible', timeout: 10_000 });
+    const parentDeadline = Date.now() + 10_000;
+    while (!decodeURIComponent(await locationList.inputValue()).includes(parent) && Date.now() < parentDeadline) await page.waitForTimeout(50);
+    const target = dialog.locator('.theia-TreeNodeSegment').getByText(path.basename(folder), { exact: true }).last();
+    await target.waitFor({ state: 'visible', timeout: 10_000 });
+    await target.dblclick();
+    const folderDeadline = Date.now() + 10_000;
+    while (!decodeURIComponent(await locationList.inputValue()).endsWith(folder) && !decodeURIComponent(await locationList.inputValue()).endsWith(await realpath(folder)) && Date.now() < folderDeadline) await page.waitForTimeout(50);
+    await dialog.getByRole('button', { name: 'Open', exact: true }).click();
+    await dialog.waitFor({ state: 'hidden', timeout: 10_000 });
+}
+
+async function waitForElectronProjectText(locator, pattern) {
+    const deadline = Date.now() + 15_000;
+    while (Date.now() < deadline) {
+        if (pattern.test(await locator.textContent().catch(() => ''))) return;
+        await new Promise(resolve => setTimeout(resolve, 50));
+    }
+    throw new Error(`Timed out waiting for Electron Projects state: ${pattern}`);
 }
 
 async function waitForKoggWindow(electronApplication) {

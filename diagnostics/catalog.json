@@ -9,6 +9,10 @@
     { "id": "marketplace.registry", "owner": "kogg-marketplace", "description": "The configured signed registry is reachable and returns verifiable manifests." },
     { "id": "marketplace.installed", "owner": "kogg-marketplace", "description": "Installed marketplace package pointers are readable." },
     { "id": "providers.registry", "owner": "kogg-providers", "description": "The provider registry can enumerate configured adapters." },
-    { "id": "providers.credentials", "owner": "kogg-providers", "description": "Credential metadata is readable without exposing credential contents." }
+    { "id": "providers.credentials", "owner": "kogg-providers", "description": "Credential metadata is readable without exposing credential contents." },
+    { "id": "projects.registry", "owner": "kogg-projects", "description": "The project registry schema, integrity, foreign keys, and storage permissions are valid." },
+    { "id": "projects.repositories", "owner": "kogg-projects", "description": "Registered repository availability can be evaluated without exposing paths." },
+    { "id": "projects.restoration", "owner": "kogg-projects", "description": "The active project and pending switch state are internally consistent." },
+    { "id": "projects.processes", "owner": "kogg-projects", "description": "No Kogg-owned repository probe is stalled, hidden, orphaned, or residual." }
   ]
 }

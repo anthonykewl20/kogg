@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
-import { mkdtemp, mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, readdir, realpath, rename, rm, writeFile } from 'node:fs/promises';
 import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
@@ -11,6 +11,11 @@ const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const resultRoot = path.join(root, 'test-results', 'browser');
 const temporary = await mkdtemp(path.join(os.tmpdir(), 'kogg-browser-e2e-'));
 const workspace = path.join(temporary, 'workspace');
+const secondaryRepository = path.join(temporary, 'secondary-repository');
+const relocatedRepository = path.join(temporary, 'secondary-repository-relocated');
+const secondaryGitDirectory = path.join(temporary, 'secondary-git-dir');
+const additionalRepository = path.join(temporary, 'additional-repository');
+const invalidRepository = path.join(temporary, 'not-a-repository');
 const state = path.join(temporary, 'state');
 const registryPort = await freePort();
 const browserPort = await freePort();
@@ -69,6 +74,16 @@ try {
     }
     await page.waitForTimeout(2_000);
     assert.match(await page.title(), /^workspace(?: - Kogg)?$/u);
+
+    if (process.env.KOGG_E2E_PROJECTS_ONLY === '1') {
+        await exerciseProjects(page);
+        process.stdout.write('Kogg browser Projects-only E2E passed.\n');
+        await browser.close(); browser = undefined;
+        await stop(backend); backend = undefined;
+        await stop(registry); registry = undefined;
+        await rm(temporary, { recursive: true, force: true });
+        process.exit(0);
+    }
 
     await openCommand(page, 'Kogg: Run Diagnostics');
     await page.getByText(/Diagnostics: FAIL.*kernel\.journal/su).first().waitFor({ timeout: 15_000 });
@@ -192,6 +207,8 @@ try {
 
     await exerciseNodeDebug(page, 'Kogg E2E Debug', 'KOGG_E2E_READY');
 
+    await exerciseProjects(page);
+
     for (let cycle = 0; cycle < 25; cycle++) {
         await page.reload({ waitUntil: 'domcontentloaded' });
         await page.locator('body.kogg-application').waitFor({ timeout: 15_000 });
@@ -214,7 +231,7 @@ try {
     await page.waitForURL('**/kogg/auth/login', { timeout: 15_000 });
     assert.equal((await page.locator('h1').innerText()), 'Kogg');
 
-    process.stdout.write('Kogg browser E2E passed: auth, branding, marketplace, provider, Git, debug, and 25 reconnect cycles.\n');
+    process.stdout.write('Kogg browser E2E passed: auth, branding, marketplace, provider, Git, debug, projects, restoration, and 25 reconnect cycles.\n');
 } catch (error) {
     if (browser) {
         const pages = browser.contexts().flatMap(context => context.pages());
@@ -325,8 +342,11 @@ async function openCommand(page, label) {
         await input.waitFor({ state: 'visible', timeout: 5_000 });
     });
     await input.fill(`>${label}`);
-    const option = page.locator(`[role="option"][aria-label="${label.replaceAll('"', '\\"')}"]:visible`);
-    await option.waitFor();
+    let option = page.locator(`[role="option"][aria-label="${label.replaceAll('"', '\\"')}"]:visible`);
+    if (!await option.waitFor({ state: 'visible', timeout: 2_000 }).then(() => true, () => false)) {
+        option = page.locator('[role="option"]:visible').filter({ hasText: label }).first();
+        await option.waitFor();
+    }
     await option.click();
 }
 
@@ -356,6 +376,209 @@ async function createWorkspace() {
     spawnSync('git', ['-C', workspace, 'add', '.'], { stdio: 'ignore' });
     spawnSync('git', ['-C', workspace, 'commit', '-m', 'initial fixture'], { stdio: 'ignore' });
     await writeFile(path.join(workspace, 'README.md'), '# Kogg E2E\nHuman workflow change.\n');
+    await initializeGitRepository(secondaryRepository, 'secondary fixture', secondaryGitDirectory);
+    await initializeGitRepository(additionalRepository, 'additional fixture');
+    await mkdir(invalidRepository);
+}
+
+async function initializeGitRepository(repository, subject, separateGitDirectory) {
+    await mkdir(repository, { recursive: true });
+    await writeFile(path.join(repository, 'README.md'), `# ${subject}\n`);
+    const initArguments = separateGitDirectory
+        ? ['init', '--quiet', `--separate-git-dir=${separateGitDirectory}`, repository]
+        : ['init', '--quiet', repository];
+    spawnSync('git', initArguments, { stdio: 'ignore' });
+    spawnSync('git', ['-C', repository, 'config', 'user.name', 'Kogg E2E'], { stdio: 'ignore' });
+    spawnSync('git', ['-C', repository, 'config', 'user.email', 'kogg-e2e@example.invalid'], { stdio: 'ignore' });
+    spawnSync('git', ['-C', repository, 'add', '.'], { stdio: 'ignore' });
+    spawnSync('git', ['-C', repository, 'commit', '-m', subject], { stdio: 'ignore' });
+}
+
+async function exerciseProjects(page) {
+    assert.equal(spawnSync('git', ['-C', await realpath(workspace), 'rev-parse', '--is-inside-work-tree'], { encoding: 'utf8' }).stdout.trim(), 'true');
+    let projects = await ensureProjectsWidget(page);
+    await createProjectThroughPicker(page, projects, 'Alpha', workspace);
+    await waitForProjectText(projects, /Alpha/u);
+    await createProjectThroughPicker(page, projects, 'Beta', secondaryRepository);
+    await waitForProjectText(projects, /Beta/u);
+
+    const alpha = projects.locator('[data-project-row]').filter({ hasText: 'Alpha' });
+    if (await alpha.getByRole('button', { name: 'Manage' }).isEnabled()) await alpha.getByRole('button', { name: 'Manage' }).click();
+    await projects.getByLabel('Repository name').fill('Shared tools');
+    await Promise.all([
+        chooseFolder(page, additionalRepository),
+        projects.getByRole('button', { name: 'Choose and add repository' }).click()
+    ]);
+    await waitForProjectText(projects, /2 repositories · available/u);
+    await projects.getByLabel('Execution profile').selectOption('restricted');
+    await waitForProjectText(projects, /Project registry updated/iu);
+    await projects.getByLabel('Role').selectOption('worker');
+    await projects.getByLabel('Provider configuration').fill('ollama:default');
+    await projects.getByLabel('Model').fill('fixture-model');
+    await projects.getByRole('button', { name: 'Assign role' }).click();
+    await waitForProjectText(projects, /worker → ollama:default \/ fixture-model/u);
+    await projects.getByLabel('Task ID').fill('task-alpha');
+    await projects.getByLabel('Task repository').selectOption({ label: 'Shared tools' });
+    await projects.getByRole('button', { name: 'Bind task' }).click();
+    await waitForProjectText(projects, /task-alpha → Shared tools/u);
+    await projects.getByLabel('Task ID').fill('task-alpha');
+    await projects.getByLabel('Task repository').selectOption({ label: 'Alpha' });
+    await projects.getByRole('button', { name: 'Bind task' }).click();
+    await waitForProjectText(projects, /task-alpha → Alpha/u);
+    assert.equal((await projects.textContent()).match(/task-alpha →/gu)?.length, 1);
+
+    await createProjectThroughPicker(page, projects, 'Duplicate', workspace);
+    await projects.getByRole('status').filter({ hasText: /already registered/iu }).waitFor();
+    await createProjectThroughPicker(page, projects, 'Invalid', invalidRepository);
+    await projects.getByRole('status').filter({ hasText: /valid Git worktree/iu }).waitFor();
+    assert.equal(await projects.locator('[data-project-row]').count(), 2);
+    await clearNotifications(page);
+
+    await projects.locator('[data-project-row]').filter({ hasText: 'Beta' }).getByRole('button', { name: 'Switch' }).click();
+    await page.locator('body.kogg-application').waitFor({ timeout: 20_000 });
+    await trustWorkspace(page);
+    projects = await ensureProjectsWidget(page);
+    await waitForProjectText(projects, /Beta[\s\S]*Active/u);
+    await page.reload({ waitUntil: 'domcontentloaded' });
+    await page.locator('body.kogg-application').waitFor({ timeout: 20_000 });
+    projects = await ensureProjectsWidget(page);
+    await projects.locator('[data-project-row]').filter({ hasText: 'Alpha' }).getByRole('button', { name: 'Manage' }).click();
+    await waitForProjectText(projects, /worker → ollama:default \/ fixture-model/u);
+    await waitForProjectText(projects, /task-alpha → Alpha/u);
+    await projects.locator('[data-project-row]').filter({ hasText: 'Alpha' }).getByRole('button', { name: 'Switch' }).click();
+    await page.locator('body.kogg-application').waitFor({ timeout: 20_000 });
+    await trustWorkspace(page);
+    projects = await ensureProjectsWidget(page);
+    await waitForProjectText(projects, /Alpha[\s\S]*Active/u);
+
+    await rename(secondaryRepository, relocatedRepository);
+    await page.reload({ waitUntil: 'domcontentloaded' });
+    await page.locator('body.kogg-application').waitFor({ timeout: 20_000 });
+    projects = await ensureProjectsWidget(page);
+    const unavailableBeta = projects.locator('[data-project-row]').filter({ hasText: 'Beta' });
+    await waitForProjectText(unavailableBeta, /unavailable/u);
+    assert.equal(await unavailableBeta.locator('button[data-switch]').evaluate(button => button.disabled), true);
+    assert.equal(await projects.locator('[data-project-row]').filter({ hasText: 'Alpha' }).locator('button[data-remove-project]').evaluate(button => button.disabled), true);
+
+    await openCommand(page, 'Kogg: Run Diagnostics');
+    await page.getByText(/Diagnostics: (?:WARN|FAIL)/u).first().waitFor({ timeout: 15_000 });
+    await page.keyboard.press('Escape');
+    await openCommand(page, 'Kogg: Export Diagnostic Support Bundle');
+    await page.getByText(/Kogg diagnostic bundle created/u).first().waitFor({ timeout: 15_000 });
+    const supportFiles = (await readdir(path.join(state, 'support'))).sort();
+    assert(supportFiles.length > 0);
+    const supportReport = JSON.parse(await readFile(path.join(state, 'support', supportFiles.at(-1)), 'utf8'));
+    assert.equal(supportReport.checks.find(check => check.id === 'projects.repositories')?.status, 'warn');
+    assert.equal(supportReport.checks.find(check => check.id === 'projects.processes')?.status, 'pass');
+    await page.keyboard.press('Escape');
+    assert.match(logs.join('\n'), /repository\.revalidation\.completed/iu);
+    assert.match(logs.join('\n'), /repository\.process\.cleanup\.completed/iu);
+
+    await unavailableBeta.getByRole('button', { name: 'Manage' }).click();
+    await Promise.all([
+        chooseFolder(page, relocatedRepository),
+        projects.getByRole('button', { name: 'Relocate' }).click()
+    ]);
+    await waitForProjectText(projects.locator('[data-project-row]').filter({ hasText: 'Beta' }), /· available/u);
+    assert.equal(await projects.locator('[data-project-row]').filter({ hasText: 'Beta' }).locator('button[data-switch]').evaluate(button => button.disabled), false);
+
+    await stop(backend);
+    backend = launchBrowser(token);
+    await waitFor(`${appUrl}/kogg/auth/status`, 401);
+    await page.reload({ waitUntil: 'domcontentloaded' });
+    await page.locator('body.kogg-application').waitFor({ timeout: 20_000 });
+    projects = await ensureProjectsWidget(page);
+    await waitForProjectText(projects, /Alpha[\s\S]*Active/u);
+    await waitForProjectText(projects.locator('[data-project-row]').filter({ hasText: 'Beta' }), /· available/u);
+}
+
+async function waitForProjectText(locator, pattern) {
+    const deadline = Date.now() + 15_000;
+    while (Date.now() < deadline) {
+        if (pattern.test(await locator.textContent().catch(() => ''))) return;
+        await new Promise(resolve => setTimeout(resolve, 50));
+    }
+    throw new Error(`Timed out waiting for visible Projects state: ${pattern}`);
+}
+
+async function trustWorkspace(page) {
+    const trust = page.getByRole('button', { name: 'Yes, I trust the authors' });
+    await trust.waitFor({ state: 'visible', timeout: 20_000 });
+    await trust.click();
+    await page.locator('.workspace-trust-dialog').waitFor({ state: 'hidden', timeout: 10_000 }).catch(() => undefined);
+}
+
+async function ensureProjectsWidget(page) {
+    const widgets = page.locator('.kogg-projects-widget');
+    if (!await widgets.count()) {
+        await openCommand(page, 'View: Toggle Kogg Projects');
+        await widgets.first().waitFor({ state: 'attached', timeout: 10_000 });
+    }
+    let active = await renderedWidget(widgets);
+    if (active.area === 0) {
+        await openCommand(page, 'View: Toggle Kogg Projects');
+        await page.waitForTimeout(250);
+        active = await renderedWidget(widgets);
+    }
+    assert(active.area > 0);
+    const widget = widgets.nth(active.index);
+    const deadline = Date.now() + 10_000;
+    while (/Loading projects/iu.test(await widget.textContent().catch(() => 'Loading projects')) && Date.now() < deadline) {
+        await new Promise(resolve => setTimeout(resolve, 50));
+    }
+    assert.doesNotMatch(await widget.textContent(), /Loading projects/iu);
+    return widget;
+}
+
+async function renderedWidget(widgets) {
+    return widgets.evaluateAll(nodes => nodes.reduce((best, node, index) => {
+        const rectangle = node.getBoundingClientRect();
+        const area = rectangle.width * rectangle.height;
+        return area > best.area ? { area, index } : best;
+    }, { area: -1, index: 0 }));
+}
+
+async function createProjectThroughPicker(page, projects, name, repository) {
+    await projects.getByLabel('New project name').fill(name);
+    await Promise.all([
+        chooseFolder(page, repository),
+        projects.getByRole('button', { name: 'Choose repository and add project' }).click()
+    ]);
+    await projects.getByRole('status').filter({ hasText: /updated|already registered|valid Git worktree/iu }).waitFor({ timeout: 15_000 });
+}
+
+async function chooseFolder(page, folder) {
+    const dialog = page.locator('.dialogBlock');
+    await dialog.waitFor({ state: 'visible', timeout: 10_000 });
+    await dialog.locator('[title="Switch to text-based input"]').click();
+    const location = dialog.locator('.theia-LocationTextInput');
+    const parent = path.dirname(folder);
+    await location.fill(parent);
+    await location.press('Enter');
+    const locationList = dialog.locator('.theia-LocationList');
+    await locationList.waitFor({ state: 'visible', timeout: 10_000 });
+    const deadline = Date.now() + 10_000;
+    while (!decodeURIComponent(await locationList.inputValue()).includes(parent) && Date.now() < deadline) {
+        await page.waitForTimeout(50);
+    }
+    assert.match(decodeURIComponent(await locationList.inputValue()), new RegExp(escapeRegExp(parent), 'u'));
+    const target = dialog.locator('.theia-TreeNodeSegment').getByText(path.basename(folder), { exact: true }).last();
+    await target.waitFor({ state: 'visible', timeout: 10_000 });
+    assert.equal(decodeURIComponent(await target.getAttribute('id') ?? '').replace(/\/$/u, '').endsWith(`/${path.basename(folder)}`), true);
+    await target.dblclick();
+    const folderDeadline = Date.now() + 10_000;
+    while (!decodeURIComponent(await locationList.inputValue()).endsWith(folder) && !decodeURIComponent(await locationList.inputValue()).endsWith(await realpath(folder)) && Date.now() < folderDeadline) {
+        await page.waitForTimeout(50);
+    }
+    const selected = dialog.locator('.theia-mod-selected .theia-TreeNodeSegmentGrow').last();
+    await selected.waitFor({ state: 'visible', timeout: 5_000 });
+    assert.equal(decodeURIComponent(await selected.getAttribute('id') ?? '').replace(/\/$/u, '').endsWith(`/${path.basename(folder)}`), true);
+    await dialog.getByRole('button', { name: 'Open', exact: true }).click();
+    await dialog.waitFor({ state: 'hidden', timeout: 10_000 });
+}
+
+function escapeRegExp(value) {
+    return value.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&');
 }
 
 function freePort() {
