@@ -32,15 +32,19 @@ const python = version(process.platform === 'win32'
   ? path.join(process.cwd(), '.venv', 'Scripts', 'python.exe')
   : path.join(process.cwd(), '.venv', 'bin', 'python'));
 record('python venv', python.ok && python.text.includes('3.12.14'), python.text || 'missing');
-for (const [tool, args] of [['git', ['--version']], ['sqlite3', ['--version']], ['clang', ['--version']], ['cmake', ['--version']], ['pkg-config', ['--version']]]) {
+for (const [tool, args] of [['git', ['--version']], ['sqlite3', ['--version']], ['clang', ['--version']], ['cmake', ['--version']]]) {
   const result = version(tool, args);
   record(tool, result.ok, result.text.split('\n')[0] || 'missing');
+}
+if (process.platform !== 'win32') {
+  const pkgConfig = version('pkg-config');
+  record('pkg-config', pkgConfig.ok, pkgConfig.text.split('\n')[0] || 'missing');
 }
 
 const tempDir = await mkdtemp(path.join(os.tmpdir(), 'kogg-doctor-'));
 try {
   const source = path.join(tempDir, 'smoke.c');
-  const binary = path.join(tempDir, 'smoke');
+  const binary = path.join(tempDir, process.platform === 'win32' ? 'smoke.exe' : 'smoke');
   await writeFile(source, '#include <stdio.h>\nint main(void){puts("kogg-native-ok");return 0;}\n');
   const compile = command('clang', [source, '-o', binary]);
   const execute = compile.status === 0 ? command(binary) : { status: 1, stdout: '', stderr: compile.stderr };

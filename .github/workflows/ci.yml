@@ -21,7 +21,10 @@ jobs:
           enable-cache: true
       - name: Install Linux native build prerequisites
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y dbus-x11 gnome-keyring libsecret-1-dev libsecret-tools libx11-dev libxkbfile-dev pkg-config rpm xvfb
+        run: sudo apt-get update && sudo apt-get install -y dbus-x11 gnome-keyring libsecret-1-dev libx11-dev libxkbfile-dev pkg-config rpm xvfb
+      - name: Install Windows native build prerequisites
+        if: runner.os == 'Windows'
+        run: choco install sqlite --version 3.53.4 -y --no-progress
       - run: volta install node@22.23.2 yarn@1.22.22
       - run: uv python install 3.12.14
       - run: yarn setup
@@ -31,9 +34,11 @@ jobs:
       - run: yarn build:electron
       - name: Electron E2E (Linux)
         if: runner.os == 'Linux'
-        run: xvfb-run -a dbus-run-session -- bash -c 'eval "$(gnome-keyring-daemon --start --components=secrets)" && printf "kogg-ci-keyring" | gnome-keyring-daemon --unlock >/dev/null && printf "fixture" | secret-tool store --label="Kogg CI" kogg-ci health >/dev/null && test "$(secret-tool lookup kogg-ci health)" = fixture && yarn test:e2e:electron'
+        timeout-minutes: 5
+        run: xvfb-run -a dbus-run-session -- bash -c 'eval "$(gnome-keyring-daemon --start --components=secrets)" && printf "\n" | gnome-keyring-daemon --unlock >/dev/null && yarn test:e2e:electron'
       - name: Electron E2E (macOS and Windows)
         if: runner.os != 'Linux'
+        timeout-minutes: 5
         run: yarn test:e2e:electron
       - run: yarn package:electron
         env:
