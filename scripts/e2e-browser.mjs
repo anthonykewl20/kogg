@@ -563,20 +563,10 @@ async function chooseFolder(page, folder) {
     await dialog.waitFor({ state: 'visible', timeout: 10_000 });
     await dialog.locator('[title="Switch to text-based input"]').click();
     const location = dialog.locator('.theia-LocationTextInput');
-    const parent = path.dirname(folder);
-    await location.fill(parent);
+    await location.fill(folder);
     await location.press('Enter');
     const locationList = dialog.locator('.theia-LocationList');
     await locationList.waitFor({ state: 'visible', timeout: 10_000 });
-    const deadline = Date.now() + 10_000;
-    while (!decodeURIComponent(await locationList.inputValue()).includes(parent) && Date.now() < deadline) {
-        await page.waitForTimeout(50);
-    }
-    assert.match(decodeURIComponent(await locationList.inputValue()), new RegExp(escapeRegExp(parent), 'u'));
-    const target = dialog.locator('.theia-TreeNodeSegment').getByText(path.basename(folder), { exact: true }).last();
-    await target.waitFor({ state: 'visible', timeout: 10_000 });
-    assert.equal(decodeURIComponent(await target.getAttribute('id') ?? '').replace(/\/$/u, '').endsWith(`/${path.basename(folder)}`), true);
-    await target.dblclick();
     const folderDeadline = Date.now() + 10_000;
     while (!decodeURIComponent(await locationList.inputValue()).endsWith(folder) && !decodeURIComponent(await locationList.inputValue()).endsWith(await realpath(folder)) && Date.now() < folderDeadline) {
         await page.waitForTimeout(50);
@@ -585,10 +575,6 @@ async function chooseFolder(page, folder) {
     assert.equal(selectedLocation.endsWith(folder) || selectedLocation.endsWith(await realpath(folder)), true);
     await dialog.getByRole('button', { name: 'Open', exact: true }).click();
     await dialog.waitFor({ state: 'hidden', timeout: 10_000 });
-}
-
-function escapeRegExp(value) {
-    return value.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&');
 }
 
 function freePort() {
