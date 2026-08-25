@@ -1,0 +1,11 @@
+{
+  "name": "ranex",
+  "repository": "https://github.com/anthonykewl20/ranex",
+  "commit": "5586d68b0936f554759022caabe847087f1d03ef",
+  "tree": "581ce66c54116d4be48b96c3a0359fbdd9d3077f",
+  "sourceContentManifestSha256": "cb87840bb4b469a4c5fbe2d23315874b19cb3c2635315f9ae78f691435fecf43",
+  "license": "MIT",
+  "protocol": "kogg-ranex-stdio",
+  "protocolVersion": 1,
+  "vendoredAt": "2026-08-25"
+}

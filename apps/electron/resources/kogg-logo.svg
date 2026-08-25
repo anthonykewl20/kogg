@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="420" height="160" viewBox="0 0 420 160" role="img" aria-label="Kogg">
+  <rect width="420" height="160" rx="24" fill="#0b1020"/>
+  <g transform="translate(34 34)" fill="none" stroke="#8b72ff" stroke-width="10" stroke-linecap="round" stroke-linejoin="round">
+    <circle cx="46" cy="46" r="34"/>
+    <path d="M46 0v18M46 74v18M0 46h18M74 46h18M14 14l13 13M65 65l13 13M78 14L65 27M27 65L14 78"/>
+  </g>
+  <text x="148" y="99" fill="#f3f5ff" font-family="system-ui,-apple-system,sans-serif" font-size="64" font-weight="750" letter-spacing="2">Kogg</text>
+</svg>

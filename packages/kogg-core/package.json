@@ -1,0 +1,28 @@
+{
+  "name": "@kogg/core",
+  "version": "0.1.0",
+  "private": true,
+  "main": "lib/browser/frontend-module.js",
+  "types": "lib/browser/frontend-module.d.ts",
+  "files": ["lib", "src"],
+  "dependencies": {
+    "@theia/core": "1.74.1"
+  },
+  "devDependencies": {
+    "@types/node": "22.15.3",
+    "rimraf": "6.0.1",
+    "typescript": "5.9.3"
+  },
+  "scripts": {
+    "prepare": "yarn clean && yarn build",
+    "clean": "rimraf lib",
+    "build": "tsc",
+    "typecheck": "tsc --noEmit"
+  },
+  "theiaExtensions": [
+    {
+      "frontend": "lib/browser/frontend-module",
+      "backend": "lib/node/backend-module"
+    }
+  ]
+}

@@ -1,0 +1,35 @@
+appId: dev.kogg.desktop
+productName: Kogg
+asar: true
+directories:
+  output: dist
+files:
+  - lib/**/*
+  - src-gen/**/*
+  - package.json
+  - resources/kogg-logo.svg
+  - "!node_modules/@theia/**/src/**/*"
+  - "!node_modules/@theia/**/lib/test/**/*"
+  - "!node_modules/@theia/**/lib/**/test/**/*"
+  - "!node_modules/@theia/**/*.spec.*"
+  - "!node_modules/@theia/**/*.map"
+  - "!node_modules/@kogg/**/*.test.*"
+  - "!node_modules/@kogg/**/*.map"
+  - "!node_modules/@kogg/**/src/**/*"
+extraResources:
+  - from: resources/generated/kogg-runtime
+    to: kogg-runtime
+mac:
+  category: public.app-category.developer-tools
+  icon: resources/kogg.icns
+  target:
+    - dmg
+    - zip
+win:
+  target:
+    - nsis
+linux:
+  category: Development
+  target:
+    - AppImage
+    - deb

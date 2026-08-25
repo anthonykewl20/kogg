@@ -1,0 +1,86 @@
+{
+  "name": "@kogg/electron-app",
+  "productName": "Kogg",
+  "version": "0.1.0",
+  "description": "Kogg engineering control plane",
+  "author": "Kogg",
+  "private": true,
+  "main": "lib/backend/electron-main.js",
+  "dependencies": {
+    "@kogg/contracts": "0.1.0",
+    "@kogg/core": "0.1.0",
+    "@kogg/kernel": "0.1.0",
+    "@kogg/marketplace": "0.1.0",
+    "@kogg/providers": "0.1.0",
+    "@theia/ai-chat": "1.74.1",
+    "@theia/ai-chat-ui": "1.74.1",
+    "@theia/ai-core": "1.74.1",
+    "@theia/ai-core-ui": "1.74.1",
+    "@theia/ai-history": "1.74.1",
+    "@theia/core": "1.74.1",
+    "@theia/debug": "1.74.1",
+    "@theia/editor": "1.74.1",
+    "@theia/electron": "1.74.1",
+    "@theia/filesystem": "1.74.1",
+    "@theia/markers": "1.74.1",
+    "@theia/messages": "1.74.1",
+    "@theia/monaco": "1.74.1",
+    "@theia/navigator": "1.74.1",
+    "@theia/plugin-ext-vscode": "1.74.1",
+    "@theia/preferences": "1.74.1",
+    "@theia/process": "1.74.1",
+    "@theia/scm": "1.74.1",
+    "@theia/scm-extra": "1.74.1",
+    "@theia/search-in-workspace": "1.74.1",
+    "@theia/task": "1.74.1",
+    "@theia/terminal": "1.74.1",
+    "@theia/vsx-registry": "1.74.1",
+    "@theia/workspace": "1.74.1",
+    "react": "18.3.1",
+    "react-dom": "18.3.1"
+  },
+  "devDependencies": {
+    "@theia/cli": "1.74.1",
+    "cross-env": "10.1.0",
+    "electron": "42.3.0",
+    "electron-builder": "26.15.3",
+    "@types/react": "18.3.27",
+    "@types/react-dom": "18.3.7"
+  },
+  "scripts": {
+    "bundle": "yarn rebuild && theia build --mode development",
+    "rebuild": "theia rebuild:electron --cacheRoot ../..",
+    "start": "cross-env KOGG_RUNTIME=electron KOGG_ROOT=../.. VSX_REGISTRY_URL=http://127.0.0.1:3100 theia start",
+    "watch": "yarn rebuild && theia build --watch --mode development",
+    "stage:runtime": "node ../../scripts/stage-runtime.mjs",
+    "package": "yarn stage:runtime && electron-builder --config electron-builder.yml"
+  },
+  "theia": {
+    "target": "electron",
+    "frontend": {
+      "config": {
+        "applicationName": "Kogg",
+        "reloadOnReconnect": true,
+        "electron": {
+          "appUserModelId": "dev.kogg.desktop",
+          "showWindowEarly": false,
+          "splashScreenOptions": {
+            "content": "resources/kogg-logo.svg",
+            "height": 160,
+            "width": 420
+          }
+        },
+        "preferences": {
+          "telemetry.telemetryLevel": "off"
+        }
+      }
+    },
+    "backend": {
+      "config": {
+        "configurationFolder": ".kogg",
+        "configureProxyFromPreferences": true,
+        "frontendConnectionTimeout": -1
+      }
+    }
+  }
+}

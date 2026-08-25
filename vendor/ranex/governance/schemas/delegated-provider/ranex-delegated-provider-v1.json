@@ -1,0 +1,1111 @@
+{
+  "$id": "https://ranex.dev/governance/schemas/delegated-provider/ranex-delegated-provider-v1.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "protocol": {
+    "bind": "127.0.0.1:ephemeral",
+    "bootstrap": {
+      "allowedToolNames": "sorted unique UTF-8 byte order; maxItems=32; each matches ^[A-Za-z0-9_-]{1,64}$",
+      "canonical": "strict duplicate-key rejection; bounded object; UTF-8 JSON",
+      "endpoint": {
+        "host": "127.0.0.1",
+        "port": "OS-assigned ephemeral port, 1..65535",
+        "scheme": "http"
+      },
+      "handshakeDeadline": "5 seconds; absent, malformed, or unsupported handshake terminates harness and refuses upstream with invalid_protocol/unsupported_version",
+      "modelPattern": "^[A-Za-z0-9._:/-]{1,256}$",
+      "protocol": "ranex-delegated-provider",
+      "required": [
+        "protocol",
+        "version",
+        "taskId",
+        "endpoint",
+        "capability",
+        "protocolFingerprint",
+        "provider",
+        "model",
+        "allowedToolNames",
+        "expiresAt",
+        "limits"
+      ],
+      "version": 1
+    },
+    "chat": "POST /v1/chat/completions",
+    "chatAccounting": {
+      "decrement": "after local validation succeeds, atomically reserve one slot immediately before upstream I/O; a reserved attempt consumes exactly one forever",
+      "emission": "pre-reservation failure consumes zero and emits none; every post-reservation terminal consumes exactly one and emits exactly one delegation provider-attempt stage",
+      "replay": "replayed requestId is rejected before reservation and consumes no request",
+      "retries": "none",
+      "remainingRequests": "broker session state returned by handshake only; never carried in relayed SSE"
+    },
+    "chatReplayKey": [
+      "session",
+      "requestId"
+    ],
+    "chatTimeout": "min(120s, remaining session TTL)",
+    "distinctRequestIds": "at most 8 accepted reservations per session; every accepted requestId is unique within that session",
+    "fixture": {
+      "harness": "vendor exact JSON fixture",
+      "path": "governance/schemas/delegated-provider/ranex-delegated-provider-v1.json",
+      "sha256": "pinned in tests/contract/test_delegated_provider_protocol.py EXPECTED_SHA256"
+    },
+    "grant": {
+      "chat": "provider and model must equal grant; chat tool names must be a subset",
+      "duplicateIncomingToolNames": "invalid_request",
+      "generated": "once from task/run inputs by kernel",
+      "harnessOverride": "forbidden",
+      "model": "exact case-sensitive value matching bootstrap model and ^[A-Za-z0-9._:/-]{1,256}$",
+      "provider": "openrouter",
+      "toolNames": "exact case-sensitive values matching ^[A-Za-z0-9_-]{1,64}$, maxItems=32, sorted unique by UTF-8 bytes"
+    },
+    "handshake": "POST /v1/handshake",
+    "httpAdmission": {
+      "maxHeaderBytes": 16384,
+      "maxHeaderCount": 100,
+      "maxPendingUnauthenticatedConnections": 64,
+      "maxRequestLineBytes": 8192,
+      "oversizedContentLengthStatus": 413,
+      "errorCodes": {
+        "oversizedContentLength": "request_too_large",
+        "chunked": "invalid_protocol",
+        "contentLengthWithTransferEncoding": "invalid_protocol",
+        "duplicateContentLength": "invalid_protocol",
+        "conflictingContentLength": "invalid_protocol",
+        "missingContentLength": "invalid_protocol",
+        "duplicateJsonKey": "invalid_protocol"
+      },
+      "acceptLoop": "bounded non-blocking accept loop; refuse further accepts while 64 unauthenticated connections are pending",
+      "unauthenticatedReadDeadlineSeconds": 5,
+      "framing": "Content-Length is required for requests with a body; Transfer-Encoding/chunked, Content-Length plus Transfer-Encoding, duplicate Content-Length, and conflicting Content-Length values are rejected",
+      "json": "strict duplicate-key rejection before authentication or body dispatch",
+      "providerSlot": "unauthenticated header/body admission is completed before authentication, validation, and the single provider-attempt slot reservation; partial unauthenticated clients cannot consume that slot",
+      "implementation": "bounded parser and socket deadlines; do not rely on undocumented http.server knobs",
+      "rationale": "16 KiB headers, 100 fields, and 8 KiB request lines stay below common stdlib line limits while bounding unauthenticated memory and header abuse; five seconds matches the handshake deadline",
+      "pendingRationale": "64 pending unauthenticated connections bound pre-auth resource use; a local process can still occupy the pending pool for up to the read deadline and deny the legitimate harness admission \u2014 a bounded local availability residual (the provider slot itself is never consumed)",
+      "availabilityResidual": "bounded local admission DoS remains possible; owner-accepted availability trade-off, recorded with the other known limits",
+      "contentLengthRationale": "rejecting a declared body above maxRequestBytes at admission avoids allocating or reading an oversized unauthenticated request"
+    },
+    "handshakeAccounting": "uncounted",
+    "handshakeReplayKey": [
+      "capability"
+    ],
+    "handshakeUse": "single-use-per-capability-session",
+    "httpSse": {
+      "countBefore": "decode, parse, or write; includes delimiters, comments, BOM, DONE, and offending bytes",
+      "done": "only a dispatched event whose assembled data is exactly [DONE]; terminal event relayed unchanged",
+      "eof": "EOF before DONE, invalid UTF-8, malformed framing, line/event/body limit => upstream_protocol",
+      "maxBodyBytes": 16777216,
+      "maxEventDataBytes": 1048576,
+      "maxRawLineBytes": 65536,
+      "post200Failure": "close downstream without synthetic SSE or status after downstream 200 is committed; tracing remains verdict-neutral",
+      "relay": "preserve each complete valid event original bytes exactly; no JSON rewriting",
+      "status": 200,
+      "stream": true,
+      "timeouts": {
+        "connectTlsSeconds": 10,
+        "firstByteSeconds": 30,
+        "interReadIdleSeconds": 30,
+        "total": "min(120s, remaining TTL)"
+      },
+      "upstreamExact": "https://openrouter.ai/api/v1/chat/completions"
+    },
+    "logging": {
+      "authoritativeEmitter": "kernel broker",
+      "broker": "no independent broker log; the kernel-owned reservation ledger is separate from ADR-031 tracing",
+      "events": [
+        "cli.task.delegate.start",
+        "cli.task.delegate.end",
+        "stage"
+      ],
+      "fields": [
+        "event",
+        "sid",
+        "time",
+        "level",
+        "module",
+        "stage",
+        "subject_digest",
+        "duration_us",
+        "hierarchy",
+        "child_id",
+        "code"
+      ],
+      "format": "JSONL",
+      "harness": "must not emit delegation stage events",
+      "audit": {
+        "durable": false,
+        "emitter": "exactly one ADR-031 emitter invocation per reserved attempt",
+        "materialization": "materialized only when tracing is enabled; tracing disabled is verdict-neutral and emits nothing",
+        "authority": "observability event only; not an authoritative durable audit"
+      },
+      "reservationLedger": {
+        "owner": "kernel broker",
+        "rows": 2,
+        "sequence": [
+          "reserved before any upstream I/O",
+          "terminal after upstream attempt"
+        ],
+        "identity": "each row carries the secret-free correlation fields taskId, session, requestId (when applicable), provider, model, and attemptCorrelationId = sha256 over canonical JSON {taskId, session, requestId} with sorted keys and compact separators; no secret material",
+        "stageEventLinkage": "the single ADR-031 provider_attempt stage event carries attemptCorrelationId as its non-null subject_digest; ledger rows and the stage event join on attemptCorrelationId; no new trace-schema field is introduced",
+        "crashRecovery": "at broker start, a reserved row without a terminal row is reconciled by appending a terminal row with outcome internal and marker reconciled_after_restart before any new reservation is accepted; a reconciliation pass applies the same rule to reserved rows older than timeoutSeconds + 60 seconds without a terminal row",
+        "fields": "secret-free row identity, outcome code on terminal row, and hash-chain link",
+        "prohibited": [
+          "prompts",
+          "outputs",
+          "headers",
+          "credentials"
+        ],
+        "residual": "does not detect rollback or truncation; characterized in SLICE-056"
+      },
+      "providerAttempt": {
+        "code": {
+          "argumentSet": [
+            "success",
+            "upstream_dns",
+            "upstream_connect",
+            "upstream_tls",
+            "client_cancelled",
+            "response_too_large",
+            "upstream_timeout",
+            "upstream_http",
+            "redirect_refused",
+            "upstream_protocol",
+            "server_shutdown",
+            "internal"
+          ],
+          "form": "delegation_provider_attempt:<argument>"
+        },
+        "event": "stage",
+        "fields": {
+          "nonNull": [
+            "event",
+            "sid",
+            "time",
+            "level",
+            "module",
+            "stage",
+            "subject_digest",
+            "duration_us",
+            "code"
+          ],
+          "null": [
+            "hierarchy",
+            "child_id"
+          ]
+        },
+        "module": "cli",
+        "stage": "cli.task.delegate.provider_attempt",
+        "emitter": "kernel broker exactly once per reserved attempt; harness never emits",
+        "subjectDigest": "non-null; equals attemptCorrelationId = sha256 over canonical JSON {taskId, session, requestId} with sorted keys and compact separators"
+      },
+      "schemaEvolution": "issue #43 owns the additive schema.py registry entry and its schema contract tests; this ADR and fixture define the valid event instance",
+      "secrets": "no session/auth headers/raw prompts",
+      "time": "UTC"
+    },
+    "maxBootstrapBytes": 65536,
+    "maxConcurrency": 1,
+    "maxRequestBytes": 4194304,
+    "maxRequests": 8,
+    "maxRequestsScope": "chat only; provider attempts",
+    "maxResponseBytes": 16777216,
+    "name": "ranex-delegated-provider",
+    "persistence": "no prompts or outputs; exactly two secret-free hash-chained reservation ledger rows per reserved attempt",
+    "policy": {
+      "chatModel": "must equal handshake model",
+      "chatProvider": "if omitted, use the authenticated session provider; if present, it must equal the session provider",
+      "chatTools": "function.name set must be subset of handshake tools",
+      "default": "deny",
+      "handshakeModel": "binds session",
+      "handshakeTools": "allowed function names",
+      "hostedProviderTools": "refuse",
+      "modelSource": "kernel task grant"
+    },
+    "security": {
+      "scope": "accidental secret non-propagation and credential hygiene across the harness process boundary; not isolation against an adversarial same-UID harness",
+      "sameUidResidual": "a same-UID adversary may ptrace-attach or read /proc/<pid>/ where permitted and extract the raw key; O_CLOEXEC, FD discipline, and capability bounds do not address process-memory inspection",
+      "optionalDeploymentHardening": "separate UID, yama ptrace_scope, and hidepid proc mounts are optional deployment preconditions left to the owner; they are not protocol requirements"
+    },
+    "preStreamHttpStatus": {
+      "invalid_protocol": 400,
+      "unsupported_version": 400,
+      "unauthorized": 401,
+      "handshake_required": 401,
+      "session_mismatch": 401,
+      "replay": 409,
+      "expired": 410,
+      "model_not_allowed": 403,
+      "provider_not_allowed": 403,
+      "invalid_request": 400,
+      "tool_not_allowed": 403,
+      "request_too_large": 413,
+      "concurrency_limit": 429,
+      "request_limit": 429,
+      "preStream": "return bounded generic JSON {error,message}; never leak upstream body",
+      "post200": "after downstream 200 headers commit, close downstream without synthetic SSE or status; no pre-stream status is returned and the observability event is not a durable audit"
+    },
+    "preDownstreamHttpStatus": {
+      "upstream_dns": 502,
+      "upstream_connect": 502,
+      "upstream_tls": 502,
+      "client_cancelled": null,
+      "response_too_large": 502,
+      "upstream_timeout": 504,
+      "upstream_http": 502,
+      "redirect_refused": 502,
+      "upstream_protocol": 502,
+      "server_shutdown": 503,
+      "internal": 500
+    },
+    "redirects": "refuse",
+    "requestBytes": "raw HTTP request body",
+    "requestId": {
+      "encoding": "base64url",
+      "finalCharacters": "AQgw",
+      "length": 22,
+      "randomBytes": 16
+    },
+    "responseBytes": "cumulative SSE bytes",
+    "retry": "none",
+    "schemaValidation": "handshake/chat provider/model/tools schemas are structurally permissive on purpose so authoritative validation+policy returns stable provider_not_allowed/model_not_allowed/tool_not_allowed; bootstrap+grant carry stricter immutable shapes",
+    "stream": "text/event-stream",
+    "timeoutScope": "whole request/stream",
+    "timeoutSeconds": 120,
+    "transport": {
+      "bootstrap": "one bounded canonical JSON object on an O_CLOEXEC pipe at exact FD 3",
+      "brokerTransport": "direct TLS through a verified HTTP stack",
+      "capability": "random capability in bootstrap, then authenticated handshake",
+      "childEnvironment": "explicit allowlist; excludes raw key and credential-pattern variables",
+      "fd3CloseAll": "kernel reads and closes its ingress FD 3; after that it creates a distinct child pipe whose read end is mapped to harness FD 3 and whose bytes are capability bootstrap only; the descriptor number is reused across process boundaries, never the bytes",
+      "fd3SelfAlias": "source read fd == 3 is repaired before posix_spawn by CLOEXEC duplication to fd >=4; no self-DUP2 close-order ambiguity",
+      "harnessEntry": "reads bounded capability bootstrap from child FD 3 at earliest entrypoint, validates, closes FD 3 immediately after the bounded read and before command/session/model/children",
+      "harnessStorage": "bounded in-memory only under non-adversarial broker dataflow (see protocol.security.sameUidResidual)",
+      "httpStack": "Python stdlib http.client HTTPSConnection directly to openrouter.ai:443 with normal certificate and hostname verification; no custom HTTP or TLS replacement",
+      "upstreamRequest": {
+        "endpoint": "https://openrouter.ai/api/v1/chat/completions",
+        "connection": "direct HTTPSConnection to openrouter.ai:443; no proxy, tunnel, or configurable endpoint",
+        "authorization": "broker constructs Authorization internally from the kernel-only raw key",
+        "forwarded": "harness cannot supply or forward Authorization, custom headers, proxy settings, endpoint, transport, TLS, or debug options",
+        "debuglevel": 0,
+        "redirects": "refuse"
+      },
+      "legacyRefusal": "any harness absent/malformed/unsupported FD3 bootstrap, non-FD3 bootstrap, or handshake not authenticated within 5 seconds is terminated/refused as invalid_protocol or unsupported_version before upstream; no raw-key fallback or legacy CLI",
+      "rawKeyIngress": "kernel receives the raw provider key only through an inherited FD/pipe owned by the kernel process under non-adversarial broker dataflow (see protocol.security.sameUidResidual)",
+      "rawKeyProhibited": [
+        "harness process",
+        "argv",
+        "bootstrap",
+        "files",
+        "logs",
+        "request bodies; under non-adversarial broker dataflow (see protocol.security.sameUidResidual)"
+      ],
+      "rawKeyResidency": "kernel/broker memory only under non-adversarial broker dataflow (see protocol.security.sameUidResidual)",
+      "redirects": "refuse",
+      "spawn": "kernel reads and closes its inherited raw-key ingress FD; it then creates a distinct O_CLOEXEC child pipe, maps only the capability bootstrap read end to harness FD 3, closes the source/original and unrelated descriptors using the verified close-all strategy, then setsid",
+      "sseValidator": "in-repository bounded frame validator implementing exactly the frozen WHATWG-compatible grammar; no custom TLS/HTTP replacement"
+    },
+    "ttlAccounting": "session-wall-clock",
+    "ttlSeconds": 300,
+    "upstream": "https://openrouter.ai/api/v1/chat/completions",
+    "validation": {
+      "failBeforeUpstream": true,
+      "fieldErrors": {
+        "capability": {
+          "comparison": "constant-time",
+          "error": "unauthorized"
+        },
+        "protocolFingerprint": "unsupported_version",
+        "model": "model_not_allowed",
+        "provider": "provider_not_allowed",
+        "requestId": {
+          "replay": "replay",
+          "structural": "invalid_request",
+          "terminalCharacters": "must be one of AQgw; any other final character is invalid_request"
+        },
+        "session": {
+          "activeUnderDifferentValidCapability": "session_mismatch",
+          "comparison": "constant-time capability comparison",
+          "oracle": "stable error code and generic message only; disclose no session existence or capability details",
+          "unknownOrUnauthenticated": "unauthorized"
+        },
+        "structuralFields": [
+          "protocol",
+          "messages",
+          "stream",
+          "requestId"
+        ],
+        "tools": "tool_not_allowed"
+      },
+      "precedence": [
+        "request_too_large",
+        "invalid_protocol",
+        "unsupported_version",
+        "unauthorized",
+        "handshake_required",
+        "session_mismatch",
+        "replay",
+        "expired",
+        "provider_not_allowed",
+        "model_not_allowed",
+        "tool_not_allowed",
+        "invalid_request",
+        "concurrency_limit",
+        "request_limit",
+        "upstream"
+      ],
+      "reservationState": {
+        "preReservation": {
+          "consumes": 0,
+          "emits": 0,
+          "errors": [
+            "invalid_protocol",
+            "unsupported_version",
+            "unauthorized",
+            "handshake_required",
+            "session_mismatch",
+            "replay",
+            "expired",
+            "model_not_allowed",
+            "provider_not_allowed",
+            "invalid_request",
+            "tool_not_allowed",
+            "request_too_large",
+            "concurrency_limit",
+            "request_limit"
+          ]
+        },
+        "postReservation": {
+          "consumes": 1,
+          "emits": 1,
+          "outcomes": [
+            "success",
+            "upstream_dns",
+            "upstream_connect",
+            "upstream_tls",
+            "client_cancelled",
+            "response_too_large",
+            "upstream_timeout",
+            "upstream_http",
+            "redirect_refused",
+            "upstream_protocol",
+            "server_shutdown",
+            "internal"
+          ]
+        }
+      }
+    },
+    "version": 1,
+    "preDownstreamNormalization": "ordered states, each with exactly one non-overlapping named code: DNS failure \u2192 upstream_dns; TCP connect failure \u2192 upstream_connect; TLS failure \u2192 upstream_tls; upstream disconnect or transport error before COMPLETE valid response headers \u2192 upstream_http; a complete upstream response (classification at status line and headers, before any body) with a 3xx redirect status \u2192 redirect_refused (redirects are refused, never followed); any other non-200 status \u2192 upstream_http; a 200 response with missing, malformed, or non-text/event-stream Content-Type (media-type parameters permitted per RFC 9110) \u2192 upstream_protocol; all classified before downstream commitment (downstream receives the mapped 502 pre-stream status, never the upstream body); after valid 200 text/event-stream response headers are received and the downstream 200 is committed, EOF before the SSE DONE sentinel or any other upstream protocol violation \u2192 upstream_protocol with post-200 close-downstream semantics (no synthetic status); client_cancelled has no downstream status because downstream is already gone and its reservation is consumed",
+    "terminalPrecedence": "the terminal outcome is the first terminal condition the broker observes; if a downstream client close and an upstream failure are observed in the same event-loop iteration, client_cancelled takes precedence"
+  },
+  "protocolFingerprint": "115c60229299f4769d01e88f4c4c758a0be6a9bbfd6090bb6ace9c2562f27ca2",
+  "schemas": {
+    "handshakeRequest": {
+      "additionalProperties": false,
+      "properties": {
+        "capability": {
+          "maxLength": 256,
+          "minLength": 1,
+          "type": "string"
+        },
+        "protocolFingerprint": {
+          "pattern": "^[0-9a-f]{64}$",
+          "type": "string"
+        },
+        "model": {
+          "maxLength": 256,
+          "minLength": 1,
+          "type": "string"
+        },
+        "protocol": {
+          "const": "ranex-delegated-provider"
+        },
+        "provider": {
+          "maxLength": 256,
+          "minLength": 1,
+          "type": "string"
+        },
+        "tools": {
+          "items": {
+            "maxLength": 64,
+            "minLength": 1,
+            "pattern": "^[A-Za-z0-9_-]{1,64}$",
+            "type": "string"
+          },
+          "maxItems": 32,
+          "type": "array",
+          "uniqueItems": true
+        },
+        "version": {
+          "const": 1
+        }
+      },
+      "required": [
+        "protocol",
+        "version",
+        "capability",
+        "protocolFingerprint",
+        "model",
+        "provider"
+      ],
+      "type": "object"
+    },
+    "handshakeResponse": {
+      "additionalProperties": false,
+      "properties": {
+        "expiresAt": {
+          "format": "date-time",
+          "type": "string"
+        },
+        "protocol": {
+          "const": "ranex-delegated-provider"
+        },
+        "protocolFingerprint": {
+          "pattern": "^[0-9a-f]{64}$",
+          "type": "string"
+        },
+        "remainingRequests": {
+          "maximum": 8,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "session": {
+          "maxLength": 128,
+          "minLength": 16,
+          "type": "string"
+        },
+        "version": {
+          "const": 1
+        }
+      },
+      "required": [
+        "protocol",
+        "version",
+        "session",
+        "protocolFingerprint",
+        "expiresAt",
+        "remainingRequests"
+      ],
+      "type": "object"
+    },
+    "chatRequest": {
+      "additionalProperties": false,
+      "properties": {
+        "capability": {
+          "maxLength": 256,
+          "minLength": 1,
+          "type": "string"
+        },
+        "messages": {
+          "items": {},
+          "maxItems": 256,
+          "minItems": 1,
+          "type": "array"
+        },
+        "model": {
+          "maxLength": 256,
+          "minLength": 1,
+          "type": "string"
+        },
+        "protocol": {
+          "const": "ranex-delegated-provider"
+        },
+        "protocolFingerprint": {
+          "pattern": "^[0-9a-f]{64}$",
+          "type": "string"
+        },
+        "provider": {
+          "maxLength": 256,
+          "minLength": 1,
+          "type": "string"
+        },
+        "requestId": {
+          "pattern": "^[A-Za-z0-9_-]{21}[AQgw]$",
+          "type": "string"
+        },
+        "session": {
+          "maxLength": 128,
+          "minLength": 1,
+          "type": "string"
+        },
+        "stream": {
+          "const": true
+        },
+        "tools": {
+          "items": {
+            "additionalProperties": true,
+            "properties": {
+              "function": {
+                "additionalProperties": true,
+                "properties": {
+                  "name": {
+                    "maxLength": 64,
+                    "minLength": 1,
+                    "pattern": "^[A-Za-z0-9_-]{1,64}$",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "name"
+                ],
+                "type": "object"
+              }
+            },
+            "required": [
+              "function"
+            ],
+            "type": "object"
+          },
+          "maxItems": 32,
+          "type": "array",
+          "uniqueItems": true
+        },
+        "version": {
+          "const": 1
+        }
+      },
+      "required": [
+        "protocol",
+        "version",
+        "capability",
+        "session",
+        "protocolFingerprint",
+        "requestId",
+        "model",
+        "messages"
+      ],
+      "type": "object"
+    },
+    "chatResponse": {
+      "description": "Opaque raw SSE relay; each event is forwarded without constraining model-specific response structure.",
+      "type": "object"
+    },
+    "bootstrap": {
+      "additionalProperties": false,
+      "properties": {
+        "allowedToolNames": {
+          "items": {
+            "pattern": "^[A-Za-z0-9_-]{1,64}$",
+            "type": "string"
+          },
+          "maxItems": 32,
+          "type": "array",
+          "uniqueItems": true
+        },
+        "capability": {
+          "pattern": "^[A-Za-z0-9_-]{42}[AEIMQUYcgkosw048]$",
+          "type": "string"
+        },
+        "protocolFingerprint": {
+          "pattern": "^[0-9a-f]{64}$",
+          "type": "string"
+        },
+        "endpoint": {
+          "additionalProperties": false,
+          "properties": {
+            "host": {
+              "const": "127.0.0.1"
+            },
+            "port": {
+              "maximum": 65535,
+              "minimum": 1,
+              "type": "integer"
+            },
+            "scheme": {
+              "const": "http"
+            }
+          },
+          "required": [
+            "host",
+            "port",
+            "scheme"
+          ],
+          "type": "object"
+        },
+        "expiresAt": {
+          "format": "date-time",
+          "type": "string"
+        },
+        "limits": {
+          "additionalProperties": false,
+          "properties": {
+            "maxBootstrapBytes": {
+              "const": 65536
+            },
+            "maxConcurrency": {
+              "const": 1
+            },
+            "maxRequestBytes": {
+              "const": 4194304
+            },
+            "maxRequests": {
+              "const": 8
+            },
+            "maxResponseBytes": {
+              "const": 16777216
+            },
+            "timeoutSeconds": {
+              "const": 120
+            },
+            "ttlSeconds": {
+              "const": 300
+            }
+          },
+          "required": [
+            "maxBootstrapBytes",
+            "maxConcurrency",
+            "maxRequestBytes",
+            "maxRequests",
+            "maxResponseBytes",
+            "timeoutSeconds",
+            "ttlSeconds"
+          ],
+          "type": "object"
+        },
+        "model": {
+          "maxLength": 256,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9._:/-]{1,256}$",
+          "type": "string"
+        },
+        "protocol": {
+          "const": "ranex-delegated-provider"
+        },
+        "provider": {
+          "const": "openrouter"
+        },
+        "taskId": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "version": {
+          "const": 1
+        }
+      },
+      "required": [
+        "protocol",
+        "version",
+        "taskId",
+        "endpoint",
+        "capability",
+        "protocolFingerprint",
+        "provider",
+        "model",
+        "allowedToolNames",
+        "expiresAt",
+        "limits"
+      ],
+      "type": "object"
+    },
+    "error": {
+      "additionalProperties": false,
+      "properties": {
+        "error": {
+          "enum": [
+            "invalid_protocol",
+            "unsupported_version",
+            "unauthorized",
+            "handshake_required",
+            "session_mismatch",
+            "replay",
+            "expired",
+            "model_not_allowed",
+            "provider_not_allowed",
+            "invalid_request",
+            "tool_not_allowed",
+            "request_too_large",
+            "upstream_dns",
+            "upstream_connect",
+            "upstream_tls",
+            "client_cancelled",
+            "response_too_large",
+            "concurrency_limit",
+            "request_limit",
+            "upstream_timeout",
+            "upstream_http",
+            "redirect_refused",
+            "upstream_protocol",
+            "server_shutdown",
+            "internal"
+          ],
+          "type": "string"
+        },
+        "message": {
+          "maxLength": 512,
+          "type": "string"
+        }
+      },
+      "required": [
+        "error",
+        "message"
+      ],
+      "type": "object"
+    }
+  },
+  "title": "ranex-delegated-provider v1 protocol and vectors",
+  "vectorSemantics": {
+    "chat": {
+      "field": "expected",
+      "meaning": "broker state observation; never an SSE body"
+    },
+    "handshakeAndVersion": {
+      "field": "response",
+      "meaning": "literal wire body"
+    },
+    "independence": "each vector is evaluated from its declared state; replay vectors reuse only their declared key",
+    "ordering": "explicit",
+    "syntaxVector": "zero-byte deterministic encodings pin syntax only; runtime randomness is implementation-tested"
+  },
+  "vectors": [
+    {
+      "bootstrap": {
+        "allowedToolNames": [
+          "alpha",
+          "weather"
+        ],
+        "capability": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "endpoint": {
+          "host": "127.0.0.1",
+          "port": 43127,
+          "scheme": "http"
+        },
+        "expiresAt": "2030-01-01T00:05:00Z",
+        "limits": {
+          "maxBootstrapBytes": 65536,
+          "maxConcurrency": 1,
+          "maxRequestBytes": 4194304,
+          "maxRequests": 8,
+          "maxResponseBytes": 16777216,
+          "timeoutSeconds": 120,
+          "ttlSeconds": 300
+        },
+        "model": "example/model",
+        "protocolFingerprint": "115c60229299f4769d01e88f4c4c758a0be6a9bbfd6090bb6ace9c2562f27ca2",
+        "provider": "openrouter",
+        "protocol": "ranex-delegated-provider",
+        "taskId": "task-vector-01",
+        "version": 1
+      },
+      "id": "bootstrap-complete-example-non-normative-port",
+      "portSemantics": "non-normative allocated-port example; implementation binds an OS-assigned port in the schema range"
+    },
+    {
+      "id": "fingerprint-mismatch-bootstrap",
+      "bootstrap": {
+        "allowedToolNames": [
+          "alpha",
+          "weather"
+        ],
+        "capability": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "endpoint": {
+          "host": "127.0.0.1",
+          "port": 43127,
+          "scheme": "http"
+        },
+        "expiresAt": "2030-01-01T00:05:00Z",
+        "limits": {
+          "maxBootstrapBytes": 65536,
+          "maxConcurrency": 1,
+          "maxRequestBytes": 4194304,
+          "maxRequests": 8,
+          "maxResponseBytes": 16777216,
+          "timeoutSeconds": 120,
+          "ttlSeconds": 300
+        },
+        "model": "example/model",
+        "protocolFingerprint": "0000000000000000000000000000000000000000000000000000000000000000",
+        "provider": "openrouter",
+        "protocol": "ranex-delegated-provider",
+        "taskId": "task-vector-01",
+        "version": 1
+      },
+      "expected": {
+        "error": "unsupported_version",
+        "reserved": false,
+        "upstream": false
+      }
+    },
+    {
+      "id": "handshake-ok",
+      "request": {
+        "capability": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "model": "example/model",
+        "protocol": "ranex-delegated-provider",
+        "protocolFingerprint": "115c60229299f4769d01e88f4c4c758a0be6a9bbfd6090bb6ace9c2562f27ca2",
+        "provider": "openrouter",
+        "tools": [
+          "alpha",
+          "weather"
+        ],
+        "version": 1
+      },
+      "response": {
+        "expiresAt": "2030-01-01T00:05:00Z",
+        "protocol": "ranex-delegated-provider",
+        "protocolFingerprint": "115c60229299f4769d01e88f4c4c758a0be6a9bbfd6090bb6ace9c2562f27ca2",
+        "remainingRequests": 8,
+        "session": "session-vector-01",
+        "version": 1
+      }
+    },
+    {
+      "id": "fingerprint-mismatch-handshake-response",
+      "response": {
+        "expiresAt": "2030-01-01T00:05:00Z",
+        "protocol": "ranex-delegated-provider",
+        "protocolFingerprint": "0000000000000000000000000000000000000000000000000000000000000000",
+        "remainingRequests": 8,
+        "session": "session-vector-01",
+        "version": 1
+      },
+      "expected": {
+        "error": "unsupported_version",
+        "reserved": false,
+        "upstream": false
+      }
+    },
+    {
+      "id": "handshake-replay",
+      "response": {
+        "error": "replay",
+        "message": "capability session already handshaken"
+      }
+    },
+    {
+      "expected": {
+        "emissionCount": 1,
+        "remainingRequests": 7,
+        "sse": "opaque relay; not a literal vector body"
+      },
+      "id": "chat-first-request",
+      "requestId": "AAAAAAAAAAAAAAAAAAAAAQ"
+    },
+    {
+      "expected": {
+        "error": "replay",
+        "remainingRequests": 7,
+        "reserved": false
+      },
+      "id": "chat-replay",
+      "requestId": "AAAAAAAAAAAAAAAAAAAAAQ"
+    },
+    {
+      "expected": {
+        "emissionCount": 1,
+        "remainingRequests": 6,
+        "sse": "opaque relay; not a literal vector body"
+      },
+      "id": "chat-distinct-second-request",
+      "requestId": "AAAAAAAAAAAAAAAAAAAABA"
+    },
+    {
+      "id": "unsupported-version",
+      "response": {
+        "error": "unsupported_version",
+        "message": "protocol version is not supported"
+      }
+    },
+    {
+      "expected": {
+        "error": "unsupported_version",
+        "reserved": false,
+        "upstream": false
+      },
+      "id": "fingerprint-mismatch",
+      "request": {
+        "capability": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "model": "example/model",
+        "protocol": "ranex-delegated-provider",
+        "protocolFingerprint": "0000000000000000000000000000000000000000000000000000000000000000",
+        "provider": "openrouter",
+        "tools": [
+          "alpha",
+          "weather"
+        ],
+        "version": 1
+      },
+      "response": {
+        "error": "unsupported_version",
+        "message": "protocol fingerprint is not supported"
+      }
+    },
+    {
+      "expected": {
+        "error": "unsupported_version",
+        "reserved": false,
+        "upstream": false
+      },
+      "id": "fingerprint-mismatch-chat-request",
+      "request": {
+        "capability": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "messages": [
+          {
+            "content": "hello",
+            "role": "user"
+          }
+        ],
+        "model": "example/model",
+        "protocol": "ranex-delegated-provider",
+        "protocolFingerprint": "0000000000000000000000000000000000000000000000000000000000000000",
+        "requestId": "AAAAAAAAAAAAAAAAAAAABg",
+        "session": "session-vector-01",
+        "stream": true,
+        "version": 1
+      },
+      "response": {
+        "error": "unsupported_version",
+        "message": "protocol fingerprint is not supported"
+      }
+    },
+    {
+      "expected": {
+        "emissionCount": 1,
+        "outcome": "upstream_timeout",
+        "remainingRequests": 5,
+        "reserved": true
+      },
+      "id": "chat-upstream-failure-consumes-attempt",
+      "requestId": "AAAAAAAAAAAAAAAAAAAABQ"
+    },
+    {
+      "expected": {
+        "error": "replay",
+        "remainingRequests": 5,
+        "reserved": false
+      },
+      "id": "chat-failed-request-replay-does-not-consume",
+      "requestId": "AAAAAAAAAAAAAAAAAAAABQ"
+    },
+    {
+      "expected": {
+        "error": "invalid_request",
+        "reserved": false
+      },
+      "id": "invalid-tool-order",
+      "requestId": "AAAAAAAAAAAAAAAAAAAABg"
+    },
+    {
+      "expected": {
+        "error": "invalid_request",
+        "reserved": false
+      },
+      "id": "invalid-request-id-terminal-character",
+      "requestId": "AAAAAAAAAAAAAAAAAAAAAZ"
+    },
+    {
+      "expected": {
+        "error": "concurrency_limit",
+        "reserved": false
+      },
+      "id": "concurrency-limit-before-reservation",
+      "requestId": "AAAAAAAAAAAAAAAAAAAABw"
+    },
+    {
+      "expected": {
+        "error": "expired",
+        "reserved": false
+      },
+      "id": "expired-before-reservation",
+      "requestId": "AAAAAAAAAAAAAAAAAAAACA"
+    },
+    {
+      "expected": {
+        "emissionCount": 1,
+        "outcome": "response_too_large",
+        "reserved": true
+      },
+      "id": "response-too-large-post-reservation",
+      "requestId": "AAAAAAAAAAAAAAAAAAAACQ"
+    },
+    {
+      "id": "upstream-dns-post-reservation",
+      "expected": {
+        "emissionCount": 1,
+        "outcome": "upstream_dns",
+        "reserved": true
+      }
+    },
+    {
+      "id": "upstream-connect-post-reservation",
+      "expected": {
+        "emissionCount": 1,
+        "outcome": "upstream_connect",
+        "reserved": true
+      }
+    },
+    {
+      "id": "upstream-tls-post-reservation",
+      "expected": {
+        "emissionCount": 1,
+        "outcome": "upstream_tls",
+        "reserved": true
+      }
+    },
+    {
+      "id": "upstream-non-200-status-post-reservation",
+      "expected": {
+        "emissionCount": 1,
+        "outcome": "upstream_http",
+        "reserved": true
+      }
+    },
+    {
+      "id": "upstream-redirect-refused-post-reservation",
+      "expected": {
+        "emissionCount": 1,
+        "outcome": "redirect_refused",
+        "reserved": true
+      }
+    },
+    {
+      "id": "upstream-wrong-media-type-post-reservation",
+      "expected": {
+        "emissionCount": 1,
+        "outcome": "upstream_protocol",
+        "reserved": true
+      }
+    },
+    {
+      "id": "client-cancelled-post-reservation",
+      "expected": {
+        "emissionCount": 1,
+        "outcome": "client_cancelled",
+        "reserved": true
+      }
+    },
+    {
+      "id": "sse-headers-then-immediate-eof-post-reservation",
+      "expected": {
+        "emissionCount": 1,
+        "outcome": "upstream_protocol",
+        "reserved": true
+      }
+    },
+    {
+      "id": "client-cancel-during-upstream-failure",
+      "expected": {
+        "emissionCount": 1,
+        "outcome": "client_cancelled",
+        "reserved": true
+      }
+    },
+    {
+      "expected": {
+        "error": "request_limit",
+        "reserved": false
+      },
+      "id": "ninth-distinct-request-limit-before-reservation",
+      "requestId": "AAAAAAAAAAAAAAAAAAAACg",
+      "state": {
+        "acceptedRequestIds": [
+          "AAAAAAAAAAAAAAAAAAAAAQ",
+          "AAAAAAAAAAAAAAAAAAAABA",
+          "AAAAAAAAAAAAAAAAAAAABQ",
+          "AAAAAAAAAAAAAAAAAAAACQ",
+          "AAAAAAAAAAAAAAAAAAABEw",
+          "AAAAAAAAAAAAAAAAAAABFA",
+          "AAAAAAAAAAAAAAAAAAABFw",
+          "AAAAAAAAAAAAAAAAAAABGA"
+        ]
+      }
+    }
+  ]
+}

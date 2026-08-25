@@ -1,0 +1,36 @@
+# Everything from before the 2026-07-31 clean slate. Local reference only,
+# never pushed. Full copies also live in ../ranex-FULL-BACKUP-2026-07-31 and in
+# this repo's own history at fb2ad9baa.
+legacy/
+
+.claude/worktrees/
+
+# Local helpers, credentials, and machine-specific values.
+.local/*
+!.local/*.example
+*.secret
+.env
+.env.local
+.env.*
+!.env.example
+!*.env.example
+
+# Runtime journal — regenerated per machine, not a shared artifact.
+governance/journal.sqlite3
+
+__pycache__/
+*.pyc
+*.egg-info/
+.pytest_cache/
+.venv/
+.coverage
+coverage.xml
+mutants/
+
+# Produced evidence is bound to an exact tree digest. Committing it changes
+# the tree and therefore invalidates it. Produce it per run, never store it.
+governance/evidence.json
+
+# Signed verdict read channel; runtime state, never part of its own subject.
+governance/verdicts/
+.worktrees/

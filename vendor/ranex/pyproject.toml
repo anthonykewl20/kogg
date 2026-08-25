@@ -1,0 +1,134 @@
+[project]
+name = "ranex"
+version = "0.0.0"
+description = "Deterministic governance for AI agents that build software"
+requires-python = ">=3.11,<3.15"
+dependencies = [
+    "PyYAML>=6.0.2,<7",
+    # SLICE-002. There is no asymmetric primitive in the standard library, and
+    # the verifier must not hold anything that could sign — see the slice's
+    # Decisions for why HMAC was refused.
+    "cryptography>=50.0.0,<51",
+    # SLICE-006. PEP 508 marker evaluation and PEP 427 wheel-tag selection for
+    # dependency provisioning. Already in the closure transitively via pytest;
+    # declared because ranex.provisioning imports it directly.
+    "packaging>=26,<27",
+]
+
+[dependency-groups]
+dev = [
+    "coverage>=7.10,<8",
+    "diff-cover>=9.7,<10",
+    # 3.6 renamed paths_to_mutate; keep the measured, repository-proven 3.5
+    # configuration until that migration is made deliberately.
+    "mutmut>=3.5,<3.6",
+    "pytest>=9.0.2,<10",
+]
+
+[tool.uv]
+package = false
+
+# SLICE-055 / ADR-032: subprocess coverage config, read through
+# COVERAGE_PROCESS_START by tests/e2e/coverage/sitecustomize.py in every
+# frame-wired child. `source` is deliberately RELATIVE: installed coverage
+# 7.15.3 resolves relative source entries against the measured process's own
+# working directory (inorout.py os.path.isdir), so a clone-judges-clone child
+# running with cwd=<subject> measures the subject's vendored copy of the
+# kernel — exactly the tree under governance. `parallel=true` gives every
+# process a suffixed data file inside the one shared COVERAGE_FILE home
+# (.local/ranex-e2e/coverage/, ignored .local/* territory); combines run with
+# --keep (tests/e2e/_prereqs.py combine_coverage) because installed coverage
+# deletes inputs without it. fail_under is derived from a real wired
+# entrypoint run at this tree (measured TOTAL 16.68% at the SLICE-059
+# final-phase tree — suite + combine + report stages of the documented
+# entrypoint, 75085 statements / 62558 missed; hermetic subprocess children
+# replace their PYTHONPATH and are deliberately unmeasured — ADR-032's
+# unmeasured class) under the standing variance-margin convention
+# (baseline precedent: measured 17.14 → fail_under 15 = floor − 2), and
+# must be re-derived, not guessed, whenever a family slice lands
+# (ADR-032 Consequences). floor(16.68) − 2 = 14.
+[tool.coverage.run]
+source = ["src/ranex"]
+parallel = true
+
+[tool.coverage.report]
+fail_under = 14
+
+[tool.pytest.ini_options]
+addopts = ["--strict-config", "--strict-markers"]
+pythonpath = ["src"]
+testpaths = ["tests"]
+
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+
+[tool.ruff.lint]
+# Starter adoption. Pyflakes (F, real dead code), isort (I), pyupgrade (UP),
+# bugbear (B, real bugs like loop-variable capture) and the subprocess-check
+# rule (PLW1510, surfaces silent subprocess failure). Complexity/length and
+# style-opinion families (PLR too-many-*, PYI, TRY, SIM, E7/E9 micro-style) are
+# intentionally not selected on a codebase that has never been linted; they are
+# a deliberate later expansion, not a drive-by.
+select = ["F", "I", "UP", "B", "PLW1510"]
+ignore = [
+    "E501",   # line length is a formatter concern; some lines are intentionally long.
+    "UP022",  # contextual stdout=PIPE/stderr=PIPE style; many call sites are intentional.
+]
+
+[tool.mutmut]
+paths_to_mutate = ["src/ranex/"]
+# Kernel-focused policy (owner-approved 2026-08-05, evidence in the close of
+# SLICE-009): mutate only in-process decision code. The cli/ and bootstrap/
+# layers are exercised through spawned subprocesses mutmut cannot observe —
+# their survivors are noise, and their real evidence is the live self-gate and
+# the e2e journeys. Survivors are review input, not a close blocker; preserve
+# the mutants/ cache so only changed functions re-test between runs.
+do_not_mutate = ["src/ranex/cli/*", "src/ranex/bootstrap/*"]
+# The frozen binding test reads the committed trust roots from the repository
+# root, which for mutmut is its copied tree. native/ carries the launcher
+# source the SLICE-047 fixtures copy — without it stats collection dies on
+# mutants/native/ranex-worker-launcher/launcher.c FileNotFoundError (a
+# pre-existing break since those fixtures landed).
+also_copy = ["governance/", "native/"]
+pytest_add_cli_args_test_selection = [
+    "tests/",
+    "--ignore=tests/contract/",
+    # e2e tests launch Python subprocesses, where mutmut's in-process
+    # trampoline is not initialised, and assert docstrings the trampoline strips.
+    "--ignore=tests/e2e/",
+    # Same subprocess shape as e2e: it drives `python -m ranex.cli.main` and the
+    # trampolined tree dies on the absent MUTANT_UNDER_TEST env var.
+    "--ignore=tests/integration/test_kernel_materialise_reference.py",
+    "--ignore=tests/security/test_slice003_bind_mount_identity.py",
+    # Same again: every delegation test here spawns the CLI, whose trampolined
+    # tree cannot initialise mutmut's runtime outside its runner. The same
+    # refusal branches stay under mutation in-process via
+    # tests/integration/test_delegation_command.py.
+    "--ignore=tests/security/test_slice008_execute_attest_separation.py",
+    # Mutating key confinement can write a generated private key into the real
+    # repository before the copied test observes the refusal has failed.
+    "--ignore=tests/security/test_keygen_key_confinement.py",
+    # Same subprocess shape as the entries above: these copy the native
+    # launcher fixtures into their subjects and spawn the confinement
+    # controller (`python -m ranex.cli.host_confinement`), whose trampolined
+    # tree dies on the absent MUTANT_UNDER_TEST env var.
+    "--ignore=tests/security/test_slice046_cmd_run_confinement.py",
+    "--ignore=tests/security/test_slice047_confinement_hardening.py",
+    "--ignore=tests/security/test_slice017_host_qualification.py",
+    # Sanctioned 2026-08-18 (SLICE-054 ruling extending F7): five more modules
+    # of the same subprocess-shaped family that blocked the stats phase —
+    # children import the trampolined tree and die on the absent
+    # MUTANT_UNDER_TEST env var / unset mutmut.config (NoneType) before
+    # writing evidence. The scrubbing module spawns real CLI subprocesses;
+    # its refusal/redaction branches stay under mutation in-process via
+    # tests/unit/test_observability.py, which remains in the selection.
+    "--ignore=tests/integration/test_slice017_native_launcher.py",
+    "--ignore=tests/integration/test_slice018_confinement_session.py",
+    "--ignore=tests/security/test_slice018_cgroup_output_lifecycle.py",
+    "--ignore=tests/security/test_trace_secret_scrubbing.py",
+    "--ignore=tests/unit/test_specification_generation.py",
+]
+
+[project.scripts]
+ranex = "ranex.cli.main:main"

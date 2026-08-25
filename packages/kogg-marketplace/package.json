@@ -1,0 +1,33 @@
+{
+  "name": "@kogg/marketplace",
+  "version": "0.1.0",
+  "private": true,
+  "license": "UNLICENSED",
+  "main": "lib/common/index.js",
+  "types": "lib/common/index.d.ts",
+  "theiaExtensions": [
+    { "backend": "lib/node/backend-module" }
+  ],
+  "scripts": {
+    "build": "tsc -b",
+    "clean": "rimraf lib tsconfig.tsbuildinfo",
+    "dev:registry": "node lib/node/dev-registry.js",
+    "test": "node --test lib/node/marketplace-policy.test.js"
+  },
+  "dependencies": {
+    "@kogg/contracts": "0.1.0",
+    "@theia/core": "1.74.1",
+    "@theia/plugin-ext": "1.74.1",
+    "@theia/plugin-ext-vscode": "1.74.1",
+    "@theia/vsx-registry": "1.74.1",
+    "inversify": "6.2.2",
+    "jszip": "3.10.1",
+    "semver": "7.7.2"
+  },
+  "devDependencies": {
+    "@types/node": "22.15.3",
+    "@types/semver": "7.7.1",
+    "rimraf": "6.0.1",
+    "typescript": "5.9.3"
+  }
+}

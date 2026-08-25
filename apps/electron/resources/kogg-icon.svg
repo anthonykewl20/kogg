@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024" role="img" aria-label="Kogg">
+  <rect width="1024" height="1024" rx="224" fill="#0b1020"/>
+  <g transform="translate(192 192)" fill="none" stroke="#8b72ff" stroke-width="70" stroke-linecap="round" stroke-linejoin="round">
+    <circle cx="320" cy="320" r="230"/>
+    <path d="M320 0v125M320 515v125M0 320h125M515 320h125M94 94l88 88M458 458l88 88M546 94l-88 88M182 458l-88 88"/>
+  </g>
+</svg>

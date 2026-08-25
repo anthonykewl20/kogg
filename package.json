@@ -1,0 +1,48 @@
+{
+  "name": "kogg",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Engineering control plane for autonomous software development",
+  "packageManager": "yarn@1.22.22",
+  "engines": {
+    "node": "22.23.2",
+    "yarn": "1.22.22"
+  },
+  "volta": {
+    "node": "22.23.2",
+    "yarn": "1.22.22"
+  },
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "setup": "node scripts/setup.mjs",
+    "bootstrap:macos": "bash scripts/bootstrap-macos.sh",
+    "doctor": "node scripts/doctor.mjs",
+    "generate:secrets": "node scripts/generate-secrets.mjs",
+    "prepare": "yarn build:packages",
+    "postinstall": "node scripts/patch-theia-registry.mjs && theia check:theia-version",
+    "clean": "lerna run clean --scope '@kogg/*' && rimraf apps/*/lib apps/*/src-gen apps/*/dist",
+    "build:packages": "lerna run build --scope '@kogg/*'",
+    "build:browser": "yarn build:packages && yarn --cwd apps/browser bundle",
+    "build:electron": "yarn build:packages && yarn --cwd apps/electron bundle",
+    "typecheck": "lerna run typecheck --scope '@kogg/*'",
+    "dev:browser": "node scripts/run-with-env.mjs yarn --cwd apps/browser start",
+    "dev:electron": "node scripts/run-with-env.mjs yarn --cwd apps/electron start",
+    "dev:registry": "node scripts/run-with-env.mjs node packages/kogg-marketplace/lib/node/dev-registry.js",
+    "dev": "concurrently -k -n registry,browser -c magenta,cyan 'yarn dev:registry' 'yarn dev:browser'",
+    "test:unit": "node --test packages/*/lib/**/*.test.js",
+    "test": "yarn build:packages && yarn test:unit && yarn audit:branding",
+    "audit:branding": "node scripts/audit-branding.mjs",
+    "audit:artifact": "node scripts/audit-artifact.mjs",
+    "package:electron": "yarn build:electron && yarn --cwd apps/electron package && yarn audit:artifact"
+  },
+  "devDependencies": {
+    "@theia/cli": "1.74.1",
+    "concurrently": "9.2.1",
+    "lerna": "8.2.4",
+    "rimraf": "6.0.1",
+    "typescript": "5.9.3"
+  }
+}
