@@ -75,16 +75,14 @@ try {
     if (await readme.isVisible({ timeout: 3_000 }).catch(() => false)) {
         await readme.dblclick();
     } else {
-        // A clean Linux profile can leave the workspace root collapsed. Use
-        // the same Go to File workflow a person would use instead of coupling
-        // the editor test to persisted tree-expansion state.
-        await openCommand(page, 'Go to File...', application);
-        const quickOpen = page.getByRole('textbox', { name: 'Type to narrow down results.' });
-        await quickOpen.waitFor({ state: 'visible', timeout: 5_000 });
-        await quickOpen.fill('README.md');
-        const readmeOption = page.locator('[role="option"]:visible').filter({ hasText: 'README.md' }).first();
-        await readmeOption.waitFor({ state: 'visible', timeout: 10_000 });
-        await readmeOption.click();
+        // A clean Linux profile can leave the workspace root collapsed. Expand
+        // the visible root just as a person would; absence of a workspace still
+        // fails because there will be no expansion toggle or README entry.
+        const collapsedRoot = explorer.locator('.theia-ExpansionToggle.theia-mod-collapsed').first();
+        await collapsedRoot.waitFor({ state: 'visible', timeout: 5_000 });
+        await collapsedRoot.click();
+        await readme.waitFor({ state: 'visible', timeout: 10_000 });
+        await readme.dblclick();
     }
     const editor = page.locator('.monaco-editor').last();
     await editor.click();
