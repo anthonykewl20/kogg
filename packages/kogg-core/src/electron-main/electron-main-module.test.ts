@@ -1,6 +1,12 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { normalizeUnbundledElectronArgv } from './electron-main-module';
+import { isBundledElectronApplication, normalizeUnbundledElectronArgv } from './electron-main-module';
+
+test('uses Electron packaging state instead of process.defaultApp', () => {
+  assert.equal(isBundledElectronApplication(true, false), false);
+  assert.equal(isBundledElectronApplication(true, true), true);
+  assert.equal(isBundledElectronApplication(false, true), false);
+});
 
 test('normalizes Playwright switches before the Electron application directory', () => {
   const result = normalizeUnbundledElectronArgv([
