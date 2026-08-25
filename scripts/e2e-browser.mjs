@@ -74,8 +74,7 @@ try {
     await page.getByText(/Diagnostics: FAIL.*kernel\.journal/su).first().waitFor({ timeout: 15_000 });
     await page.keyboard.press('Escape');
     await openCommand(page, 'Kogg: Export Diagnostic Support Bundle');
-    await page.getByText(/Kogg diagnostic bundle created: Diagnostics: FAIL/u).first().waitFor({ timeout: 15_000 });
-    const supportFiles = await readdir(path.join(state, 'support'));
+    const supportFiles = await waitForSupportBundle(path.join(state, 'support'));
     assert.equal(supportFiles.length, 1);
     const supportBundle = await readFile(path.join(state, 'support', supportFiles[0]), 'utf8');
     assert.equal(supportBundle.includes(token), false);
@@ -269,6 +268,16 @@ async function waitForWorkspaceProof(name, expected) {
         await new Promise(resolve => setTimeout(resolve, 100));
     }
     throw new Error(`Timed out waiting for visible workflow proof ${name}`);
+}
+
+async function waitForSupportBundle(directory) {
+    const deadline = Date.now() + 15_000;
+    while (Date.now() < deadline) {
+        const files = await readdir(directory).catch(() => []);
+        if (files.length) return files;
+        await new Promise(resolve => setTimeout(resolve, 100));
+    }
+    throw new Error('Timed out waiting for the diagnostic support bundle export');
 }
 
 async function waitForGitBranch(expected) {

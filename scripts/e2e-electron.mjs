@@ -35,7 +35,6 @@ try {
     spawnSync('git', ['-C', workspace, 'config', 'user.email', 'kogg-e2e@example.invalid'], { stdio: 'ignore' });
     spawnSync('git', ['-C', workspace, 'add', '.'], { stdio: 'ignore' });
     spawnSync('git', ['-C', workspace, 'commit', '-m', 'initial Electron fixture'], { stdio: 'ignore' });
-    await writeFile(path.join(workspace, 'README.md'), '# Kogg Electron E2E\nHuman workflow change.\n');
     registry = spawn(process.execPath, ['packages/kogg-marketplace/lib/node/dev-registry.js'], {
         cwd: root,
         env: { ...process.env, KOGG_ROOT: root, KOGG_REGISTRY_PORT: String(registryPort) },
@@ -67,9 +66,18 @@ try {
     await trust.waitFor({ state: 'visible', timeout: 10_000 }).catch(() => undefined);
     if (await trust.isVisible().catch(() => false)) await trust.click();
 
-    // Activate the workspace's Git provider before exercising OS-keychain
-    // backed provider configuration. This also proves clean-start repository
-    // discovery independently of later extension-host reloads.
+    // Exercise a real editor save before Git actions. This activates filesystem
+    // and repository watchers through the same path a person uses on a clean
+    // profile, without relying on an externally modified pre-launch fixture.
+    const explorer = page.getByRole('tabpanel', { name: /Explorer/u });
+    if (!await explorer.isVisible().catch(() => false)) await openCommand(page, 'View: Toggle Explorer', application);
+    await explorer.getByText('README.md').dblclick();
+    const editor = page.locator('.monaco-editor').last();
+    await editor.click();
+    await page.keyboard.press(process.platform === 'darwin' ? 'Meta+End' : 'Control+End');
+    await page.keyboard.type('\nMonaco user edit.');
+    await page.keyboard.press(process.platform === 'darwin' ? 'Meta+S' : 'Control+S');
+
     await openCommand(page, 'View: Toggle Source Control', application);
     const sourceControl = page.getByRole('tabpanel', { name: /Source Control/u });
     await sourceControl.getByText('README.md').waitFor({ timeout: 30_000 });
