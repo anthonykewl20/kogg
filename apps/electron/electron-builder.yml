@@ -1,5 +1,6 @@
 appId: dev.kogg.desktop
 productName: Kogg
+executableName: Kogg
 asar: true
 directories:
   output: dist
@@ -30,6 +31,7 @@ win:
     - nsis
 linux:
   category: Development
+  syncDesktopName: true
   target:
     - AppImage
     - deb

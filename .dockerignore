@@ -1,0 +1,11 @@
+.git
+.github
+.kogg
+.venv
+**/.env.local
+**/node_modules
+**/lib
+**/src-gen
+**/dist
+**/browser_modules
+apps/electron/resources/generated

@@ -1,9 +1,14 @@
 {
-  "name": "@kogg/electron-app",
+  "name": "kogg-electron-app",
   "productName": "Kogg",
+  "desktopName": "Kogg.desktop",
   "version": "0.1.0",
   "description": "Kogg engineering control plane",
-  "author": "Kogg",
+  "author": {
+    "name": "Kogg",
+    "email": "anthonykewl20@users.noreply.github.com"
+  },
+  "homepage": "https://github.com/anthonykewl20/kogg",
   "private": true,
   "main": "lib/backend/electron-main.js",
   "dependencies": {

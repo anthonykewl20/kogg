@@ -1,10 +1,10 @@
 import { extractAll } from '@electron/asar';
-import { mkdtemp, readFile, readdir, rm } from 'node:fs/promises';
+import { access, mkdtemp, readFile, readdir, rm, stat } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 
-const app = process.argv[2] ?? path.join('apps', 'electron', 'dist', 'mac-arm64', 'Kogg.app');
-const asar = path.resolve(app, 'Contents', 'Resources', 'app.asar');
+const asar = await locateAsar(process.argv[2]);
+const resources = path.dirname(asar);
 const temporary = await mkdtemp(path.join(os.tmpdir(), 'kogg-artifact-audit-'));
 const forbidden = [
   ['public Open VSX endpoint', /https?:\/\/open-vsx\.org/iu],
@@ -13,6 +13,11 @@ const forbidden = [
 const violations = [];
 
 try {
+  await requirePath(path.join(resources, 'kogg-runtime', 'python'), 'bundled Python runtime');
+  await requirePath(path.join(resources, 'kogg-runtime', 'ranex', 'PROVENANCE.json'), 'Ranex provenance');
+  await requirePath(path.join(resources, 'kogg-runtime', 'ranex', 'LICENSE'), 'Ranex license');
+  await requirePath(path.join(resources, 'kogg-runtime', 'adapter', 'kogg_ranex_adapter.py'), 'Kogg Ranex adapter');
+  await requirePath(path.join(resources, 'kogg-runtime', 'marketplace-public.pem'), 'marketplace verification key');
   extractAll(asar, temporary);
   await walk(temporary);
 } finally {
@@ -24,6 +29,50 @@ if (violations.length) {
   process.exit(1);
 }
 console.log(`Kogg production artifact audit passed: ${asar}`);
+
+async function locateAsar(input) {
+  if (input) {
+    const target = path.resolve(input);
+    const info = await stat(target);
+    if (info.isFile()) return target;
+    for (const candidate of [
+      path.join(target, 'Contents', 'Resources', 'app.asar'),
+      path.join(target, 'resources', 'app.asar'),
+      path.join(target, 'app.asar')
+    ]) {
+      try {
+        await access(candidate);
+        return candidate;
+      } catch { /* try the next packaged-app layout */ }
+    }
+    throw new Error(`No app.asar found below ${target}`);
+  }
+
+  const matches = [];
+  await findAsars(path.resolve('apps', 'electron', 'dist'), matches);
+  if (!matches.length) throw new Error('No packaged Kogg app found. Run yarn package:electron first.');
+  if (matches.length > 1) {
+    matches.sort((left, right) => right.mtimeMs - left.mtimeMs);
+    console.log(`Multiple packaged apps found; auditing newest app.asar: ${matches[0].file}`);
+  }
+  return matches[0].file;
+}
+
+async function findAsars(directory, matches) {
+  for (const entry of await readdir(directory, { withFileTypes: true })) {
+    const target = path.join(directory, entry.name);
+    if (entry.isDirectory()) await findAsars(target, matches);
+    else if (entry.name === 'app.asar') matches.push({ file: target, ...(await stat(target)) });
+  }
+}
+
+async function requirePath(target, label) {
+  try {
+    await access(target);
+  } catch {
+    violations.push(`${path.relative(process.cwd(), target)}: missing ${label}`);
+  }
+}
 
 async function walk(directory) {
   for (const entry of await readdir(directory, { withFileTypes: true })) {

@@ -36,6 +36,7 @@
     "test": "yarn build:packages && yarn test:unit && yarn audit:branding",
     "audit:branding": "node scripts/audit-branding.mjs",
     "audit:artifact": "node scripts/audit-artifact.mjs",
+    "verify:linux": "docker build --file infra/ci/Dockerfile.linux --tag kogg-foundation-linux:local .",
     "package:electron": "yarn build:electron && yarn --cwd apps/electron package && yarn audit:artifact"
   },
   "devDependencies": {

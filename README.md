@@ -21,6 +21,14 @@ yarn dev
 
 Start the Electron application separately with `yarn dev:electron`.
 
+Run the portable test suite with `yarn test`, package the current platform with
+`yarn package:electron`, or reproduce the complete Linux-native setup, test,
+browser build, Electron build, and packaging path in Colima with:
+
+```sh
+yarn verify:linux
+```
+
 ## Trust boundaries
 
 - Marketplace extensions run outside the Ranex authority boundary.
