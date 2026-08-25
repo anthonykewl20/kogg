@@ -152,7 +152,10 @@ try {
     await marketplace.getByText('None').waitFor();
     await page.keyboard.press('Escape');
     await marketplace.getByRole('button', { name: 'Install' }).click();
-    await marketplace.getByText('kogg.fixture 0.1.0').last().waitFor();
+    // The installed version label can retain a detached plugin view on Linux
+    // while Theia reloads contributions. The Remove action is the durable UI
+    // state proving that the reinstall completed.
+    await marketplace.getByRole('button', { name: 'Remove' }).waitFor({ timeout: 20_000 });
     await clearNotifications(page);
     await openCommand(page, 'View: Toggle Kogg AI', application);
     const provider = page.locator('.kogg-provider-widget');
@@ -194,7 +197,16 @@ try {
     await writeFile(path.join(results, 'failure.log'), `${logs.join('\n')}\n${error.stack ?? error}\n`).catch(() => undefined);
     throw error;
 } finally {
-    if (application) await application.close().catch(() => undefined);
+    if (application) {
+        const closed = await Promise.race([
+            application.close().then(() => true, () => false),
+            new Promise(resolve => setTimeout(() => resolve(false), 10_000))
+        ]);
+        if (!closed) {
+            console.warn('[kogg:e2e:electron] application.close.timed-out');
+            application.process().kill();
+        }
+    }
     await stop(registry);
     await rm(temporary, { recursive: true, force: true });
 }
