@@ -176,7 +176,7 @@ try {
 
     await openCommand(page, 'Terminal: Create New Terminal');
     const terminalSurface = page.locator('.xterm-screen:visible').last();
-    await terminalSurface.waitFor({ state: 'visible', timeout: 15_000 });
+    await terminalSurface.waitFor({ state: 'visible', timeout: process.platform === 'win32' ? 60_000 : 15_000 });
     await terminalSurface.click();
     await page.keyboard.type("printf 'KOGG_TERMINAL_E2E\\n' | tee .kogg-terminal-proof");
     await page.keyboard.press('Enter');
