@@ -75,7 +75,19 @@ try {
     // profile, without relying on an externally modified pre-launch fixture.
     const explorer = page.getByRole('tabpanel', { name: /Explorer/u });
     if (!await explorer.isVisible().catch(() => false)) await openCommand(page, 'View: Toggle Explorer', application);
-    await explorer.getByText('README.md').dblclick();
+    const readme = explorer.getByText('README.md');
+    if (await readme.isVisible({ timeout: 3_000 }).catch(() => false)) {
+        await readme.dblclick();
+    } else {
+        // A clean Linux profile can leave the workspace root collapsed. Expand
+        // the visible root just as a person would; absence of a workspace still
+        // fails because there will be no expansion toggle or README entry.
+        const collapsedRoot = explorer.locator('.theia-ExpansionToggle.theia-mod-collapsed').first();
+        await collapsedRoot.waitFor({ state: 'visible', timeout: 5_000 });
+        await collapsedRoot.click();
+        await readme.waitFor({ state: 'visible', timeout: 10_000 });
+        await readme.dblclick();
+    }
     const editor = page.locator('.monaco-editor').last();
     await editor.click();
     await page.keyboard.press(process.platform === 'darwin' ? 'Meta+End' : 'Control+End');

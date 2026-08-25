@@ -1,24 +1,40 @@
 import { ElectronMainProcessArgv } from '@theia/core/lib/electron-main/electron-main-application';
 import { ContainerModule } from '@theia/core/shared/inversify';
+import { app } from '@theia/electron/shared/electron';
+import path from 'node:path';
 
 // diagnostic-coverage: core.runtime
 
 class KoggElectronMainProcessArgv extends ElectronMainProcessArgv {
+  override get isBundledElectronApp(): boolean {
+    // Electron's process.defaultApp is unset for Playwright development
+    // launches on Linux. app.isPackaged is the authoritative runtime signal
+    // and remains true for Kogg's distributable artifacts on every platform.
+    return isBundledElectronApplication(this.isElectronApp, app.isPackaged, process.argv, app.getAppPath());
+  }
+
   override getProcessArgvWithoutBin(argv = process.argv): string[] {
-    if (!this.isElectronApp) return super.getProcessArgvWithoutBin(argv);
-    const { args, debugSwitches, applicationDirectoryRemoved } = normalizeUnbundledElectronArgv(argv);
-    // Electron 42 on Linux can leave process.defaultApp unset under Playwright,
-    // which makes Theia report a development launch as bundled. A Playwright
-    // debug switch followed by an application directory is unambiguously the
-    // development argv shape; packaged launches begin with another switch.
-    if (this.isBundledElectronApp && !(debugSwitches && applicationDirectoryRemoved)) {
-      return super.getProcessArgvWithoutBin(argv);
-    }
+    if (!this.isElectronApp || this.isBundledElectronApp) return super.getProcessArgvWithoutBin(argv);
+    const { args, debugSwitches } = normalizeUnbundledElectronArgv(argv);
     if (debugSwitches) {
       console.debug('[kogg:core:electron-main] playwright-switches.normalized', { switchCount: debugSwitches });
     }
     return args;
   }
+}
+
+export function isBundledElectronApplication(
+  isElectronApp: boolean,
+  isPackaged: boolean,
+  argv: readonly string[],
+  applicationPath: string
+): boolean {
+  if (!isElectronApp) return false;
+  const resolvedApplicationPath = path.resolve(applicationPath);
+  const explicitlyLoadedApplication = argv.slice(1).some(argument =>
+    !argument.startsWith('-') && path.resolve(argument) === resolvedApplicationPath
+  );
+  return isPackaged && !explicitlyLoadedApplication;
 }
 
 export function normalizeUnbundledElectronArgv(argv: readonly string[]): {
