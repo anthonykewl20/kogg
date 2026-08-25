@@ -65,6 +65,13 @@ try {
     await trust.waitFor({ state: 'visible', timeout: 10_000 }).catch(() => undefined);
     if (await trust.isVisible().catch(() => false)) await trust.click();
 
+    // Activate the workspace's Git provider before exercising OS-keychain
+    // backed provider configuration. This also proves clean-start repository
+    // discovery independently of later extension-host reloads.
+    await openCommand(page, 'View: Toggle Source Control', application);
+    const sourceControl = page.getByRole('tabpanel', { name: /Source Control/u });
+    await sourceControl.getByText('README.md').waitFor({ timeout: 30_000 });
+
     await openCommand(page, 'Kogg: Open Marketplace', application);
     const marketplace = page.locator('.kogg-marketplace-widget');
     await marketplace.getByText('Kogg Marketplace').first().waitFor();
@@ -113,8 +120,6 @@ try {
     await provider.getByRole('button', { name: 'Send advisory request' }).click();
     await provider.getByText('Kogg provider fixture responded successfully.').waitFor();
 
-    await openCommand(page, 'View: Toggle Source Control', application);
-    const sourceControl = page.getByRole('tabpanel', { name: /Source Control/u });
     await sourceControl.getByText('README.md').waitFor({ timeout: 30_000 });
     await openCommand(page, 'Git: Stage All Changes', application);
     await sourceControl.getByText('STAGED CHANGES').waitFor();
