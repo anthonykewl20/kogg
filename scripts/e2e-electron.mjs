@@ -78,7 +78,7 @@ try {
         // A clean Linux profile can leave the workspace root collapsed. Use
         // the same Go to File workflow a person would use instead of coupling
         // the editor test to persisted tree-expansion state.
-        await page.keyboard.press(process.platform === 'darwin' ? 'Meta+P' : 'Control+P');
+        await openCommand(page, 'Go to File...', application);
         const quickOpen = page.getByRole('textbox', { name: 'Type to narrow down results.' });
         await quickOpen.waitFor({ state: 'visible', timeout: 5_000 });
         await quickOpen.fill('README.md');
