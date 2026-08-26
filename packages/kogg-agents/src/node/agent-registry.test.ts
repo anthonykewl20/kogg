@@ -67,6 +67,30 @@ test('reconciles a durable nonterminal attempt without replay when no resource e
   } finally { await second?.onStop(); if (prior === undefined) delete process.env.KOGG_STATE_DIR; else process.env.KOGG_STATE_DIR = prior; await rm(directory, { recursive: true, force: true }); }
 });
 
+test('accepts only an exact operations-owner cleanup proof during startup recovery', async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), 'kogg-agents-')); const prior = process.env.KOGG_STATE_DIR; process.env.KOGG_STATE_DIR = directory;
+  const authority: TaskAdmissionAuthority = { resolveAdmission: async () => ADMISSION }; const first = new AgentRegistry(authority, new TestOperations(), new AdapterRegistry(), new LocalCredentialLeaseAuthority()); let second: AgentRegistry | undefined;
+  try {
+    await first.onStart(); const role = await first.createRoleRevision(roleRequest('25000000-0000-4000-8000-000000000001', '0')); assert.ok(role.role);
+    const refused = await first.startAttempt({ schemaVersion: '1', requestId: '35000000-0000-4000-8000-000000000001', expectedRegistryRevision: role.registryRevision, taskAdmissionId: ADMISSION.taskAdmissionId, roleRevisionId: role.role.roleRevisionId, providerId: 'kogg.fixture', modelId: 'fixture.echo', adapterKey: 'missing.adapter', adapterVersion: '1.0.0', deadlinePolicyId: 'interactive-v1' }); assert.ok(refused.attempt);
+    const seam = first as unknown as { transition(id: string, state: 'active'): void; database?: DatabaseSync }; seam.transition(refused.attempt.attemptId, 'active'); const resourceId = crypto.randomUUID(); const operationId = crypto.randomUUID(); seam.database?.prepare('INSERT INTO resources VALUES(?,?,?,?,?,?)').run(resourceId, refused.attempt.attemptId, operationId, 'kogg', 'provider-host', 'registered'); seam.database?.prepare('UPDATE attempts SET owned_resource_count=1 WHERE attempt_id=?').run(refused.attempt.attemptId); seam.database?.close();
+    second = new AgentRegistry(authority, new TestOperations(), new AdapterRegistry(), new LocalCredentialLeaseAuthority()); await second.onStart(); const recovered = await second.getAttempt(refused.attempt.attemptId);
+    assert.equal(recovered.state, 'recovered_terminal'); assert.equal(recovered.terminalCode, 'RECOVERY_REQUIRED'); assert.equal(recovered.ownedResourceCount, '0'); assert.equal((await second.snapshot()).admission, 'enabled');
+  } finally { await second?.onStop(); if (prior === undefined) delete process.env.KOGG_STATE_DIR; else process.env.KOGG_STATE_DIR = prior; await rm(directory, { recursive: true, force: true }); }
+});
+
+test('blocks startup admission when the operations owner cannot verify a persisted resource', async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), 'kogg-agents-')); const prior = process.env.KOGG_STATE_DIR; process.env.KOGG_STATE_DIR = directory;
+  const authority: TaskAdmissionAuthority = { resolveAdmission: async () => ADMISSION }; const first = new AgentRegistry(authority, new TestOperations(), new AdapterRegistry(), new LocalCredentialLeaseAuthority()); let second: AgentRegistry | undefined;
+  try {
+    await first.onStart(); const role = await first.createRoleRevision(roleRequest('25000000-0000-4000-8000-000000000002', '0')); assert.ok(role.role);
+    const refused = await first.startAttempt({ schemaVersion: '1', requestId: '35000000-0000-4000-8000-000000000002', expectedRegistryRevision: role.registryRevision, taskAdmissionId: ADMISSION.taskAdmissionId, roleRevisionId: role.role.roleRevisionId, providerId: 'kogg.fixture', modelId: 'fixture.echo', adapterKey: 'missing.adapter', adapterVersion: '1.0.0', deadlinePolicyId: 'interactive-v1' }); assert.ok(refused.attempt);
+    const seam = first as unknown as { transition(id: string, state: 'active'): void; database?: DatabaseSync }; seam.transition(refused.attempt.attemptId, 'active'); seam.database?.prepare('INSERT INTO resources VALUES(?,?,?,?,?,?)').run(crypto.randomUUID(), refused.attempt.attemptId, crypto.randomUUID(), 'kogg', 'provider-host', 'registered'); seam.database?.prepare('UPDATE attempts SET owned_resource_count=1 WHERE attempt_id=?').run(refused.attempt.attemptId); seam.database?.close();
+    const operations = new TestOperations(); operations.recoveryStatus = 'unverified'; second = new AgentRegistry(authority, operations, new AdapterRegistry(), new LocalCredentialLeaseAuthority()); await second.onStart(); const recovered = await second.getAttempt(refused.attempt.attemptId);
+    assert.equal(recovered.state, 'unverified_residual'); assert.equal(recovered.terminalCode, 'RESOURCE_IDENTITY_UNVERIFIED'); assert.equal(recovered.ownedResourceCount, '1'); assert.equal((await second.snapshot()).admission, 'blocked');
+  } finally { await second?.onStop(); if (prior === undefined) delete process.env.KOGG_STATE_DIR; else process.env.KOGG_STATE_DIR = prior; await rm(directory, { recursive: true, force: true }); }
+});
+
 test('fails startup with a closed integrity code and never echoes a corrupt registry path', async () => {
   const directory = await mkdtemp(path.join(os.tmpdir(), 'kogg-agents-corrupt-')); const prior = process.env.KOGG_STATE_DIR; process.env.KOGG_STATE_DIR = directory; const databasePath = path.join(directory, 'agents', 'registry.sqlite3'); await mkdir(path.dirname(databasePath), { recursive: true }); await writeFile(databasePath, 'not-a-sqlite-database');
   const registry = new AgentRegistry({ resolveAdmission: async () => ADMISSION }, new TestOperations(), new AdapterRegistry(), new LocalCredentialLeaseAuthority()); const captured: string[] = []; const original = console.error; console.error = (...values: unknown[]) => { captured.push(JSON.stringify(values)); };
@@ -199,10 +223,11 @@ function childRoleRequest(requestId: string, expectedRegistryRevision: string, r
 async function poll<T>(read: () => Promise<T>, done: (value: T) => boolean): Promise<T> { const deadline = Date.now() + 5_000; while (Date.now() < deadline) { const value = await read(); if (done(value)) return value; await new Promise(resolve => setTimeout(resolve, 20)); } throw new Error('Timed out polling attempt'); }
 
 class TestOperations implements OperationRegistryApi {
-  started = 0; readonly processes: TestProcess[] = [];
+  started = 0; readonly processes: TestProcess[] = []; recoveryStatus: 'cleaned' | 'unverified' | 'active' | 'missing' = 'cleaned';
   async startOperation(operation: StartOperation): Promise<OperationLease> { this.started++; const id = operation.id ?? crypto.randomUUID(); return { id, cancellable: true, start: () => undefined, active: () => undefined, waiting: () => undefined, activity: () => undefined, refuse: () => undefined, complete: () => undefined, fail: () => undefined, timeout: () => undefined, cancel: async () => undefined, cleanup: async run => { await run?.(); }, registerProcess: process => { const lease = new TestProcess(process); this.processes.push(lease); return lease; } }; }
   async snapshot() { return { schemaVersion: 1 as const, revision: 1, admission: 'enabled' as const, active: [], recent: [] }; }
   async cancel() { return this.snapshot(); }
+  async recoveryResult() { return { status: this.recoveryStatus }; }
   diagnostics() { return { integrity: true, foreignKeys: true, permissions: true, recoveryComplete: true, activeCount: 0, stalledCount: 0, residualCount: 0, cleanupFailureCount: 0, admission: 'enabled' as const }; }
 }
 class TestProcess implements ProcessLease { cleaned = false; constructor(readonly input: StartProcess) {} readonly id = crypto.randomUUID(); spawning(): void {} started(): void {} ready(): void {} activity(): void {} failed(): void {} exited(): void {} cleanup(): void { this.cleaned = true; } }

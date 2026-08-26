@@ -116,6 +116,7 @@ export interface ProcessLease {
 
 export interface OperationRegistryApi extends KoggOperationsService {
   startOperation(operation: StartOperation): Promise<OperationLease>;
+  recoveryResult(operationId: string): Promise<{ readonly status: 'cleaned' | 'unverified' | 'active' | 'missing'; readonly safeCode?: OperationSafeCode }>;
   diagnostics(): OperationDiagnostics;
 }
 
