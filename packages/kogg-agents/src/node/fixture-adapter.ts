@@ -26,7 +26,9 @@ class FixtureSession implements AgentAdapterSession {
     this.process = this.input.operation.registerProcess({ kind: 'provider-cli', owner: 'kogg-supervisor', cancel: () => this.cancel('policy') });
     this.process.spawning(); console.debug('[kogg:agents:adapter] fixture-host.start.requested', { attemptId: this.input.attemptId, resourceId: this.resourceId });
     const script = createRequire(__filename).resolve('@kogg/agents/lib/node/fixture-host.js');
-    const child = spawn(process.execPath, [script, this.input.modelId], { cwd: process.cwd(), env: { PATH: process.env.PATH ?? '', SystemRoot: process.env.SystemRoot ?? '' }, stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true, detached: process.platform !== 'win32' });
+    const childEnvironment: NodeJS.ProcessEnv = { PATH: process.env.PATH ?? '', SystemRoot: process.env.SystemRoot ?? '' };
+    if (process.versions.electron) childEnvironment.ELECTRON_RUN_AS_NODE = '1';
+    const child = spawn(process.execPath, [script, this.input.modelId], { cwd: process.cwd(), env: childEnvironment, stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true, detached: process.platform !== 'win32' });
     this.child = child; if (!child.pid) { this.process.failed('PROCESS_SPAWN_FAILED', 'MissingPid'); throw new FixtureAdapterError('ADAPTER_HOST_EXITED'); }
     this.process.started(child.pid);
     this.settled = new Promise<void>((resolve, reject) => {

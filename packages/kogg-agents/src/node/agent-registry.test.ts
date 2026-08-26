@@ -91,6 +91,18 @@ test('classifies adapter, provider, usage, model, and deadline failures with zer
   } finally { await registry.onStop(); if (priorState === undefined) delete process.env.KOGG_STATE_DIR; else process.env.KOGG_STATE_DIR = priorState; if (priorDeadline === undefined) delete process.env.KOGG_AGENT_TEST_DEADLINES; else process.env.KOGG_AGENT_TEST_DEADLINES = priorDeadline; await rm(directory, { recursive: true, force: true }); }
 });
 
+test('cancels a ready streaming host and commits zero-resource cleanup', async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), 'kogg-agents-')); const prior = process.env.KOGG_STATE_DIR; process.env.KOGG_STATE_DIR = directory;
+  const adapters = new AdapterRegistry(); const operations = new TestOperations(); const registry = new AgentRegistry({ resolveAdmission: async () => ADMISSION }, operations, adapters, new LocalCredentialLeaseAuthority()); const fixture = new FixtureAdapter(adapters);
+  try {
+    await registry.onStart(); fixture.onStart(); const role = await registry.createRoleRevision(roleRequest('22000000-0000-4000-8000-000000000001', '0', 'fixture.hang')); assert.ok(role.role);
+    const started = await registry.startAttempt({ schemaVersion: '1', requestId: '32000000-0000-4000-8000-000000000001', expectedRegistryRevision: role.registryRevision, taskAdmissionId: ADMISSION.taskAdmissionId, roleRevisionId: role.role.roleRevisionId, providerId: 'kogg.fixture', modelId: 'fixture.hang', adapterKey: 'kogg.fixture', adapterVersion: '1.0.0', deadlinePolicyId: 'interactive-v1' }); assert.ok(started.attempt);
+    const ready = await poll(() => registry.getAttempt(started.attempt!.attemptId), value => value.state === 'ready');
+    const cancelled = await registry.cancelAttempt({ schemaVersion: '1', requestId: '42000000-0000-4000-8000-000000000001', expectedRegistryRevision: ready.registryRevision, expectedAttemptRevision: ready.attemptRevision, attemptId: ready.attemptId, reason: 'user' });
+    assert.equal(cancelled.kind, 'completed'); assert.equal(cancelled.code, 'CANCELLED'); assert.equal(cancelled.attempt?.state, 'cleaned'); assert.equal(cancelled.attempt?.terminalCode, 'CANCELLED'); assert.equal(cancelled.attempt?.ownedResourceCount, '0'); assert.equal(operations.processes.every(process => process.cleaned), true);
+  } finally { await registry.onStop(); if (prior === undefined) delete process.env.KOGG_STATE_DIR; else process.env.KOGG_STATE_DIR = prior; await rm(directory, { recursive: true, force: true }); }
+});
+
 function roleRequest(requestId: string, expectedRegistryRevision: string, model = 'fixture.echo') { return { schemaVersion: '1' as const, requestId, expectedRegistryRevision, roleKey: 'implementer', displayName: 'Implementer', authority: { capabilityIds: ['provider-turn'], toolPolicyIds: ['read-only'], mayCreateChildren: false, permittedChildRoleKeys: [], maxChildDepth: '0', maxDirectChildren: '0' }, providerPolicy: { permittedProviderIds: ['kogg.fixture'], permittedModelIds: [model], requiredAdapterCapabilities: ['provider-turn'] }, budgetPolicyId: 'fixture-budget' }; }
 async function poll<T>(read: () => Promise<T>, done: (value: T) => boolean): Promise<T> { const deadline = Date.now() + 5_000; while (Date.now() < deadline) { const value = await read(); if (done(value)) return value; await new Promise(resolve => setTimeout(resolve, 20)); } throw new Error('Timed out polling attempt'); }
 
