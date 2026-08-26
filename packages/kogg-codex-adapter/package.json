@@ -1,0 +1,29 @@
+{
+  "name": "@kogg/codex-adapter",
+  "version": "0.1.0",
+  "private": true,
+  "license": "UNLICENSED",
+  "main": "lib/common/codex-protocol.js",
+  "types": "lib/common/codex-protocol.d.ts",
+  "theiaExtensions": [
+    { "backend": "lib/node/backend-module" }
+  ],
+  "scripts": {
+    "build": "tsc -b",
+    "clean": "rimraf lib tsconfig.tsbuildinfo",
+    "typecheck": "tsc --noEmit",
+    "test": "node --test lib/**/*.test.js"
+  },
+  "dependencies": {
+    "@kogg/agents": "0.1.0",
+    "@kogg/contracts": "0.1.0",
+    "@kogg/operations": "0.1.0",
+    "@theia/core": "1.74.1",
+    "inversify": "6.2.2"
+  },
+  "devDependencies": {
+    "@types/node": "22.15.3",
+    "rimraf": "6.0.1",
+    "typescript": "5.9.3"
+  }
+}

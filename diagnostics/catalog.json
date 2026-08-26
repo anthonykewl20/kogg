@@ -28,6 +28,14 @@
     { "id": "agents.processes", "owner": "kogg-agents", "description": "Every agent resource has one qualified owner and no hidden or residual process exists." },
     { "id": "agents.recovery", "owner": "kogg-agents", "description": "Agent startup reconciliation completed and admission agrees with recovery state." },
     { "id": "agents.logging", "owner": "kogg-agents", "description": "Agent lifecycle logging uses the closed safe event and field schemas." },
-    { "id": "agents.source-maps", "owner": "kogg-agents", "description": "Agent frontend, backend, Electron, and adapter-host bundles retain source maps and debugger reachability." }
+    { "id": "agents.source-maps", "owner": "kogg-agents", "description": "Agent frontend, backend, Electron, and adapter-host bundles retain source maps and debugger reachability." },
+    { "id": "codex.release", "owner": "kogg-codex-adapter", "description": "The exact signed Codex release, binary, helper, schema, and accepted-method bundle is qualified." },
+    { "id": "codex.confinement", "owner": "kogg-codex-adapter", "description": "Codex attempts use the exact qualified Linux namespace, cgroup, network, and writable-root profile." },
+    { "id": "codex.protocol", "owner": "kogg-codex-adapter", "description": "Codex app-server framing, schema, ordering, correlations, queues, and terminal observations are valid." },
+    { "id": "codex.credentials", "owner": "kogg-codex-adapter", "description": "Codex credential reservations are scoped, current, revocable, and bound to exact provider/model grants." },
+    { "id": "codex.processes", "owner": "kogg-codex-adapter", "description": "Every Codex host and descendant is registered before start with no hidden, escaped, or residual process." },
+    { "id": "codex.cleanup", "owner": "kogg-codex-adapter", "description": "Every terminal Codex attempt has released stdio, content, broker, configuration, and process resources." },
+    { "id": "codex.recovery", "owner": "kogg-codex-adapter", "description": "Codex startup recovery is complete and agrees with quarantine and residual state." },
+    { "id": "codex.source-maps", "owner": "kogg-codex-adapter", "description": "Codex browser, backend, Electron, adapter, broker, and Linux-owner failure branches are debugger reachable." }
   ]
 }

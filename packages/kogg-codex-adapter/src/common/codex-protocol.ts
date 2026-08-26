@@ -1,0 +1,20 @@
+// observability-exempt: This file contains pure closed declarations with no operational behavior.
+// diagnostic-exempt: Pure declarations have no independent runtime state.
+
+export type CodexSafeCode = 'CODEX_OK' | 'CODEX_RELEASE_UNQUALIFIED' | 'CODEX_MANIFEST_INVALID'
+  | 'CODEX_BINARY_MISMATCH' | 'CODEX_SCHEMA_MISMATCH' | 'CODEX_VERSION_MISMATCH'
+  | 'CODEX_PLATFORM_UNSUPPORTED' | 'CODEX_PROCESS_START_FAILED' | 'CODEX_INTERNAL_FAILURE';
+
+export interface QualifiedCodexReleaseV1 {
+  readonly manifestVersion: '1'; readonly releaseId: string; readonly codexVersion: string; readonly codexCommit: string;
+  readonly target: 'x86_64-unknown-linux-musl' | 'aarch64-unknown-linux-musl'; readonly binarySha256: string; readonly binarySize: string;
+  readonly appServerSchemaVersion: 'v2'; readonly appServerSchemaSha256: string; readonly acceptedMethodsSha256: string;
+  readonly linuxHelperSha256: string; readonly adapterVersion: string; readonly qualificationProfileId: string;
+  readonly signedAt: string; readonly signatureKeyId: string; readonly signature: string;
+}
+
+export interface CodexReleaseProjection {
+  readonly qualified: boolean; readonly safeCode: CodexSafeCode; readonly adapterVersion: string; readonly target?: QualifiedCodexReleaseV1['target'];
+  readonly releasePresent: boolean; readonly assetsVerified: boolean; readonly protocolVerified: boolean; readonly confinementVerified: boolean; readonly credentialBrokerReady: boolean; readonly processCount: number;
+  readonly residualCount: number; readonly recoveryComplete: boolean; readonly sourceMapsPresent: boolean;
+}

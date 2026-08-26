@@ -4,6 +4,7 @@
   "private": true,
   "dependencies": {
     "@kogg/agents": "0.1.0",
+    "@kogg/codex-adapter": "0.1.0",
     "@kogg/contracts": "0.1.0",
     "@kogg/core": "0.1.0",
     "@kogg/kernel": "0.1.0",
