@@ -35,7 +35,7 @@ export class AgentRegistry implements KoggAgentsService, BackendApplicationContr
     try {
       await fs.mkdir(path.dirname(this.databasePath), { recursive: true, mode: 0o700 });
       this.database = new DatabaseSync(this.databasePath, { enableForeignKeyConstraints: true, enableDoubleQuotedStringLiterals: false, allowExtension: false });
-      this.database.exec('PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; PRAGMA foreign_keys=ON; PRAGMA trusted_schema=OFF; PRAGMA busy_timeout=5000;');
+      this.database.exec('PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; PRAGMA foreign_keys=ON; PRAGMA trusted_schema=OFF;'); this.database.exec(`PRAGMA busy_timeout=${process.env.KOGG_AGENT_TEST_DEADLINES === '1' ? 50 : 5000};`);
       this.migrate(); this.assertIntegrity(); await fs.chmod(this.databasePath, 0o600).catch(error => { if (process.platform !== 'win32') throw error; });
       let recoveredCount = 0; let blockedCount = 0;
       for (const row of this.db().prepare("SELECT attempt_id,state,owned_resource_count FROM attempts WHERE state NOT IN ('cleaned','cleanup_failed','recovered_terminal','unverified_residual')").all() as Row[]) {
@@ -45,7 +45,7 @@ export class AgentRegistry implements KoggAgentsService, BackendApplicationContr
       }
       this.admission = blockedCount ? 'blocked' : 'enabled';
       agentLog('recovery.completed', { recoveredCount, blockedCount });
-    } catch (error) { this.admission = 'blocked'; this.database?.close(); this.database = undefined; agentLog('recovery.failed', { safeCode: codeOf(error) }); throw error; }
+    } catch (error) { const code = codeOf(error); this.admission = 'blocked'; this.database?.close(); this.database = undefined; agentLog('recovery.failed', { safeCode: code }); throw new AgentError(code); }
   }
   async onStop(): Promise<void> {
     agentLog('shutdown.started', { activeCount: this.live.size });
@@ -200,7 +200,7 @@ function str(row: Row, key: string): string { const value = row[key]; if (typeof
 function num(row: Row, key: string): number { const value = row[key]; if (typeof value !== 'number' || !Number.isSafeInteger(value)) throw new AgentError('AGENT_REGISTRY_INTEGRITY_FAILED'); return value; }
 function dec(row: Row, key: string): string { return String(num(row, key)); }
 function count(db: DatabaseSync, sql: string): number { return num(db.prepare(sql).get() as Row, 'count'); }
-function codeOf(error: unknown): AgentSafeCode { if (error instanceof AgentError || error instanceof AdapterResolutionError) return error.code; if (error instanceof Error && /locked|busy/iu.test(error.message)) return 'AGENT_REGISTRY_BUSY'; if (typeof error === 'object' && error !== null && 'code' in error) { const code = String(error.code); if (['EACCES', 'EPERM', 'EROFS'].includes(code)) return 'AGENT_REGISTRY_PERMISSION_FAILED'; if (AGENT_CODES.has(code as AgentSafeCode)) return code as AgentSafeCode; } return 'AGENT_INTERNAL_FAILURE'; }
+function codeOf(error: unknown): AgentSafeCode { if (error instanceof AgentError || error instanceof AdapterResolutionError) return error.code; if (error instanceof Error && /locked|busy/iu.test(error.message)) return 'AGENT_REGISTRY_BUSY'; if (error instanceof Error && /not a database|malformed/iu.test(error.message)) return 'AGENT_REGISTRY_INTEGRITY_FAILED'; if (error instanceof Error && /unable to open database|readonly database|disk I\/O/iu.test(error.message)) return 'AGENT_REGISTRY_PERMISSION_FAILED'; if (typeof error === 'object' && error !== null && 'code' in error) { const code = String(error.code); if (['EACCES', 'EPERM', 'EROFS'].includes(code)) return 'AGENT_REGISTRY_PERMISSION_FAILED'; if (AGENT_CODES.has(code as AgentSafeCode)) return code as AgentSafeCode; } return 'AGENT_INTERNAL_FAILURE'; }
 function errorName(error: unknown): string { return error instanceof Error ? error.name : 'UnknownError'; }
 function stateRoot(): string { const root = process.env.KOGG_ROOT ? path.resolve(process.env.KOGG_ROOT) : process.cwd(); return path.resolve(process.env.KOGG_STATE_DIR ?? path.join(root, '.kogg', 'state')); }
 function duration(deadline: DeadlineClass): number { if (process.env.KOGG_AGENT_TEST_DEADLINES === '1') return { handshake: 100, 'first-activity': 150, idle: 200, 'provider-request': 125, absolute: 1_000, 'cancel-grace': 100, cleanup: 150 }[deadline]; return { handshake: 30_000, 'first-activity': 60_000, idle: 120_000, 'provider-request': 120_000, absolute: 15 * 60_000, 'cancel-grace': 5_000, cleanup: 10_000 }[deadline]; }

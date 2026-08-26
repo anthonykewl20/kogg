@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
 import test from 'node:test';
 import type { OperationLease, OperationRegistryApi, ProcessLease, StartOperation, StartProcess } from '@kogg/operations/lib/common/operations-protocol';
 import type { TaskAdmissionAuthority, TaskAdmissionSnapshot } from '@kogg/tasks/lib/common/tasks-protocol';
@@ -64,6 +65,29 @@ test('reconciles a durable nonterminal attempt without replay when no resource e
     second = new AgentRegistry(authority, new TestOperations(), new AdapterRegistry(), new LocalCredentialLeaseAuthority()); await second.onStart(); const recovered = await second.getAttempt(refused.attempt.attemptId);
     assert.equal(recovered.state, 'recovered_terminal'); assert.equal(recovered.terminalCode, 'RECOVERY_REQUIRED'); assert.equal((await second.snapshot()).admission, 'enabled');
   } finally { await second?.onStop(); if (prior === undefined) delete process.env.KOGG_STATE_DIR; else process.env.KOGG_STATE_DIR = prior; await rm(directory, { recursive: true, force: true }); }
+});
+
+test('fails startup with a closed integrity code and never echoes a corrupt registry path', async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), 'kogg-agents-corrupt-')); const prior = process.env.KOGG_STATE_DIR; process.env.KOGG_STATE_DIR = directory; const databasePath = path.join(directory, 'agents', 'registry.sqlite3'); await mkdir(path.dirname(databasePath), { recursive: true }); await writeFile(databasePath, 'not-a-sqlite-database');
+  const registry = new AgentRegistry({ resolveAdmission: async () => ADMISSION }, new TestOperations(), new AdapterRegistry(), new LocalCredentialLeaseAuthority()); const captured: string[] = []; const original = console.error; console.error = (...values: unknown[]) => { captured.push(JSON.stringify(values)); };
+  try { await assert.rejects(() => registry.onStart(), error => error instanceof Error && error.message === 'AGENT_REGISTRY_INTEGRITY_FAILED'); assert.equal(captured.join('\n').includes(directory), false); assert.match(captured.join('\n'), /AGENT_REGISTRY_INTEGRITY_FAILED/u); }
+  finally { console.error = original; if (prior === undefined) delete process.env.KOGG_STATE_DIR; else process.env.KOGG_STATE_DIR = prior; await rm(directory, { recursive: true, force: true }); }
+});
+
+test('returns a typed busy failure without mutation and succeeds after lock release', async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), 'kogg-agents-busy-')); const priorState = process.env.KOGG_STATE_DIR; const priorDeadline = process.env.KOGG_AGENT_TEST_DEADLINES; process.env.KOGG_STATE_DIR = directory; process.env.KOGG_AGENT_TEST_DEADLINES = '1'; const registry = new AgentRegistry({ resolveAdmission: async () => ADMISSION }, new TestOperations(), new AdapterRegistry(), new LocalCredentialLeaseAuthority()); let blocker: DatabaseSync | undefined;
+  try {
+    await registry.onStart(); blocker = new DatabaseSync(path.join(directory, 'agents', 'registry.sqlite3')); blocker.exec('PRAGMA busy_timeout=50; BEGIN IMMEDIATE;');
+    const busy = await registry.createRoleRevision(roleRequest('24000000-0000-4000-8000-000000000001', '0')); assert.equal(busy.kind, 'failed'); assert.equal(busy.code, 'AGENT_REGISTRY_BUSY'); assert.equal((await registry.snapshot()).roles.length, 0);
+    blocker.exec('ROLLBACK'); blocker.close(); blocker = undefined; const completed = await registry.createRoleRevision(roleRequest('24000000-0000-4000-8000-000000000002', '0')); assert.equal(completed.kind, 'completed');
+  } finally { try { blocker?.exec('ROLLBACK'); } catch { /* observability-exempt: test teardown handles an already released SQLite lock. */ } blocker?.close(); await registry.onStop(); if (priorState === undefined) delete process.env.KOGG_STATE_DIR; else process.env.KOGG_STATE_DIR = priorState; if (priorDeadline === undefined) delete process.env.KOGG_AGENT_TEST_DEADLINES; else process.env.KOGG_AGENT_TEST_DEADLINES = priorDeadline; await rm(directory, { recursive: true, force: true }); }
+});
+
+test('fails startup with a closed permission code when the registry file is unreadable', async () => {
+  if (process.platform === 'win32' || process.getuid?.() === 0) return;
+  const directory = await mkdtemp(path.join(os.tmpdir(), 'kogg-agents-permission-')); const prior = process.env.KOGG_STATE_DIR; process.env.KOGG_STATE_DIR = directory; const databasePath = path.join(directory, 'agents', 'registry.sqlite3'); await mkdir(path.dirname(databasePath), { recursive: true }); await writeFile(databasePath, ''); await chmod(databasePath, 0o000); const registry = new AgentRegistry({ resolveAdmission: async () => ADMISSION }, new TestOperations(), new AdapterRegistry(), new LocalCredentialLeaseAuthority());
+  try { await assert.rejects(() => registry.onStart(), error => error instanceof Error && error.message === 'AGENT_REGISTRY_PERMISSION_FAILED'); }
+  finally { await chmod(databasePath, 0o600); if (prior === undefined) delete process.env.KOGG_STATE_DIR; else process.env.KOGG_STATE_DIR = prior; await rm(directory, { recursive: true, force: true }); }
 });
 
 test('classifies adapter, provider, usage, model, and deadline failures with zero residuals', async () => {
