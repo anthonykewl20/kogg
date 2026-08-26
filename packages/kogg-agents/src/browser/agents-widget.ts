@@ -1,9 +1,11 @@
 import { MessageService } from '@theia/core';
 import { BaseWidget } from '@theia/core/lib/browser/widgets/widget';
 import { inject, injectable, postConstruct } from '@theia/core/shared/inversify';
-import { KoggAgentsService, type AgentMutationResult, type AgentRegistrySnapshot, type AttemptProjectionV1, type KoggAgentsService as AgentsService } from '../common/agents-protocol';
+import { agentLog } from '../common/agent-logger';
+import { KoggAgentsService, type AgentMutationResult, type AgentRegistrySnapshot, type AgentSafeCode, type AttemptProjectionV1, type KoggAgentsService as AgentsService } from '../common/agents-protocol';
 import { AgentsClient } from './agents-client';
 
+// Logs through the closed [kogg:agents:registry] agentLog schema.
 // diagnostic-coverage: agents.adapters, agents.attempts, agents.processes, agents.recovery, agents.logging, agents.source-maps
 
 @injectable()
@@ -37,9 +39,9 @@ export class AgentsWidget extends BaseWidget {
   private async start(data: FormData): Promise<void> { const [adapterKey, adapterVersion] = String(data.get('adapter')).split('@'); await this.run(async () => { const result = await this.service.startAttempt({ schemaVersion: '1', requestId: crypto.randomUUID(), expectedRegistryRevision: this.snapshotValue.registryRevision, taskAdmissionId: String(data.get('admissionId')), roleRevisionId: String(data.get('roleRevisionId')), providerId: String(data.get('providerId')), modelId: String(data.get('modelId')), adapterKey: adapterKey!, adapterVersion: adapterVersion!, deadlinePolicyId: String(data.get('deadlinePolicyId')) }); this.accept(result, 'Attempt registered and starting.'); this.snapshotValue = await this.service.snapshot(); }); }
   private async cancel(attemptId: string): Promise<void> { const attempt = this.snapshotValue.attempts.find(value => value.attemptId === attemptId); if (!attempt) return; await this.run(async () => { const result = await this.service.cancelAttempt({ schemaVersion: '1', requestId: crypto.randomUUID(), expectedRegistryRevision: this.snapshotValue.registryRevision, expectedAttemptRevision: attempt.attemptRevision, attemptId, reason: 'user' }); this.accept(result, 'Cancel requested.'); this.snapshotValue = await this.service.snapshot(); }); }
   private accept(result: AgentMutationResult, success: string): void { if (result.kind !== 'completed') throw new UiError(result.code); this.status = success; }
-  private async run(action: () => Promise<void>): Promise<void> { this.busy = true; this.render(); try { await action(); } catch (error) { const code = error instanceof UiError ? error.code : 'AGENT_INTERNAL_FAILURE'; this.status = message(code); console.error('[kogg:agents:registry] frontend.operation.failed', { safeCode: code, errorType: error instanceof Error ? error.name : 'UnknownError' }); void this.messages.error(this.status); } finally { this.busy = false; this.render(); } }
+  private async run(action: () => Promise<void>): Promise<void> { this.busy = true; this.render(); try { await action(); } catch (error) { /* observability-exempt: closed agentLog emits the sanitized frontend failure before the safe user message. */ const code = error instanceof UiError ? error.code : 'AGENT_INTERNAL_FAILURE'; this.status = message(code); agentLog('frontend.operation.failed', { safeCode: code, errorType: error instanceof Error ? error.name : 'UnknownError' }); void this.messages.error(this.status); } finally { this.busy = false; this.render(); } }
 }
-class UiError extends Error { constructor(readonly code: string) { super(code); } }
+class UiError extends Error { constructor(readonly code: AgentSafeCode) { super(code); } }
 function list(value: FormDataEntryValue | null): string[] { return String(value ?? '').split(',').map(item => item.trim()).filter(Boolean); }
 function html(value: string): string { return value.replace(/[&<>'"]/gu, character => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;' })[character]!); }
 function message(code: string): string { const messages: Record<string, string> = { REGISTRY_REVISION_CONFLICT: 'The agent registry changed elsewhere. Your role edits remain available.', ATTEMPT_REVISION_CONFLICT: 'The attempt changed elsewhere. Refresh before cancelling.', REQUEST_ID_REUSED: 'This request identity was reused for a different action.', ADAPTER_UNAVAILABLE: 'The exact adapter is unavailable; no fallback was used.', ADAPTER_RESOLUTION_AMBIGUOUS: 'More than one exact adapter mapping exists.', TASK_AUTHORITY_STALE: 'The approved task admission is stale or missing.', RECOVERY_REQUIRED: 'Agent recovery must complete before a new attempt starts.' }; return messages[code] ?? `The agent operation failed safely (${code}).`; }

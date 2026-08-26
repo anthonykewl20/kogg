@@ -1,6 +1,8 @@
 import { injectable } from '@theia/core/shared/inversify';
 import type { AdapterRegistryApi, AgentAdapterFactory, AdapterDescriptorV1, AgentSafeCode } from '../common/agents-protocol';
+import { agentLog } from '../common/agent-logger';
 
+// Logs through the closed [kogg:agents:adapter] agentLog schema.
 // diagnostic-coverage: agents.adapters
 @injectable()
 export class AdapterRegistry implements AdapterRegistryApi {
@@ -10,7 +12,7 @@ export class AdapterRegistry implements AdapterRegistryApi {
     const key = descriptorKey(factory.descriptor); const existing = this.factories.get(key) ?? [];
     if (existing.some(item => canonical(item.descriptor) === canonical(factory.descriptor))) return;
     existing.push(factory); this.factories.set(key, existing);
-    console.info('[kogg:agents:adapter] adapter.registered', { adapterKey: factory.descriptor.adapterKey, adapterVersion: factory.descriptor.adapterVersion, protocolId: factory.descriptor.protocolId, protocolVersion: factory.descriptor.protocolVersion, ownerKind: factory.descriptor.ownerKind });
+    agentLog('adapter.registered', { adapterKey: factory.descriptor.adapterKey, adapterVersion: factory.descriptor.adapterVersion, protocolId: factory.descriptor.protocolId, protocolVersion: factory.descriptor.protocolVersion, ownerKind: factory.descriptor.ownerKind });
   }
   descriptors(): readonly AdapterDescriptorV1[] { return [...this.factories.values()].flat().map(factory => factory.descriptor).sort((a, b) => descriptorKey(a).localeCompare(descriptorKey(b))); }
   resolveExact(input: { adapterKey: string; adapterVersion: string; providerId: string; modelId: string; requiredCapabilities: readonly string[] }): AgentAdapterFactory {

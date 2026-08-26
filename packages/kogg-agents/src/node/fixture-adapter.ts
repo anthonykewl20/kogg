@@ -4,6 +4,7 @@ import { createInterface } from 'node:readline';
 import { BackendApplicationContribution } from '@theia/core/lib/node';
 import { inject, injectable } from '@theia/core/shared/inversify';
 import type { ProcessLease } from '@kogg/operations/lib/common/operations-protocol';
+import { agentLog } from '../common/agent-logger';
 import type { AdapterObservationV1, AgentAdapterFactory, AgentAdapterSession, AdapterDescriptorV1, CancelAttemptRequestV1 } from '../common/agents-protocol';
 import { AdapterRegistry } from './adapter-registry';
 
@@ -24,7 +25,7 @@ class FixtureSession implements AgentAdapterSession {
   async start(): Promise<void> {
     this.input.credentialLease.consume();
     this.process = this.input.operation.registerProcess({ kind: 'provider-cli', owner: 'kogg-supervisor', cancel: () => this.cancel('policy') });
-    this.process.spawning(); console.debug('[kogg:agents:adapter] fixture-host.start.requested', { attemptId: this.input.attemptId, resourceId: this.resourceId });
+    this.process.spawning();
     const script = createRequire(__filename).resolve('@kogg/agents/lib/node/fixture-host.js');
     const childEnvironment: NodeJS.ProcessEnv = { PATH: process.env.PATH ?? '', SystemRoot: process.env.SystemRoot ?? '' };
     if (process.versions.electron) childEnvironment.ELECTRON_RUN_AS_NODE = '1';
@@ -33,10 +34,10 @@ class FixtureSession implements AgentAdapterSession {
     this.process.started(child.pid);
     this.settled = new Promise<void>((resolve, reject) => {
       const lines = createInterface({ input: child.stdout, crlfDelay: Infinity });
-      lines.on('line', line => { try { const observation = parseObservation(line); if (observation.kind === 'ready') this.process?.ready(); else this.process?.activity(); this.input.onObservation(observation); } catch (error) { console.warn('[kogg:agents:adapter] fixture-host.observation.refused', { attemptId: this.input.attemptId, resourceId: this.resourceId, safeCode: 'ADAPTER_OBSERVATION_INVALID', errorType: error instanceof Error ? error.name : 'UnknownError' }); reject(error); } });
+      lines.on('line', line => { try { const observation = parseObservation(line); if (observation.kind === 'ready') this.process?.ready(); else this.process?.activity(); this.input.onObservation(observation); } catch (error) { /* observability-exempt: closed agentLog emits the sanitized invalid-observation boundary before rejection. */ agentLog('adapter.observation.refused', { attemptId: this.input.attemptId, resourceId: this.resourceId, safeCode: 'ADAPTER_OBSERVATION_INVALID', errorType: error instanceof Error ? error.name : 'UnknownError' }); reject(error); } });
       child.stderr.resume();
       child.once('error', error => { this.process?.failed('PROCESS_SPAWN_FAILED', error.name); reject(new FixtureAdapterError('ADAPTER_HOST_EXITED')); });
-      child.once('exit', (code, signal) => { this.process?.exited(signal ? 'signal' : code === 0 ? 'zero' : 'nonzero'); console.info('[kogg:agents:adapter] fixture-host.exited', { attemptId: this.input.attemptId, resourceId: this.resourceId, exitClass: signal ? 'signal' : code === 0 ? 'zero' : 'nonzero' }); if (code === 0 || signal) resolve(); else reject(new FixtureAdapterError('ADAPTER_HOST_EXITED')); });
+      child.once('exit', (code, signal) => { this.process?.exited(signal ? 'signal' : code === 0 ? 'zero' : 'nonzero'); agentLog('adapter.host.exited', { attemptId: this.input.attemptId, resourceId: this.resourceId, exitClass: signal ? 'signal' : code === 0 ? 'zero' : 'nonzero' }); if (code === 0 || signal) resolve(); else reject(new FixtureAdapterError('ADAPTER_HOST_EXITED')); });
     });
     return this.settled;
   }
