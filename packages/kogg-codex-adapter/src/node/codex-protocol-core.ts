@@ -21,7 +21,7 @@ export type CodexSafeObservation =
 export interface CodexFrameSchema { validate(frame: Readonly<Record<string, unknown>>, expectedRequestMethod?: string): CodexValidatedFrame | undefined; }
 export interface CodexContentRouter { accept(content: unknown, byteCount: number): Promise<boolean>; }
 
-export class CodexProtocolFault extends Error { constructor(readonly code: Extract<CodexSafeCode, 'CODEX_PROTOCOL_VIOLATION' | 'CODEX_PROTOCOL_UNSUPPORTED' | 'CODEX_FRAME_TOO_LARGE' | 'CODEX_QUEUE_OVERFLOW' | 'CODEX_STDIN_BACKPRESSURE' | 'CODEX_CONTENT_BACKPRESSURE'>) { super(code); } }
+export class CodexProtocolFault extends Error { constructor(readonly code: Extract<CodexSafeCode, 'CODEX_PROTOCOL_VIOLATION' | 'CODEX_PROTOCOL_UNSUPPORTED' | 'CODEX_FRAME_TOO_LARGE' | 'CODEX_QUEUE_OVERFLOW' | 'CODEX_STDIN_BACKPRESSURE' | 'CODEX_STDERR_LIMIT' | 'CODEX_CONTENT_BACKPRESSURE' | 'CODEX_TRANSPORT_LOST'>) { super(code); } }
 
 export class CodexProtocolCore {
   private bytes = Buffer.alloc(0); private phaseValue: CodexProtocolPhase = 'spawned'; private queuedBytes = 0;
