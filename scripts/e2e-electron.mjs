@@ -120,8 +120,7 @@ try {
     await sourceControl.getByRole('textbox', { name: /Message/u }).fill('verify Electron Kogg Git workflow');
     await sourceControl.getByRole('button', { name: /Commit$/u }).click();
     await waitForGitSubject('verify Electron Kogg Git workflow');
-    await sourceControl.locator('[title^="Refresh"]:visible').first().click().catch(() => undefined);
-    await openCommand(page, 'Git: Create Branch...', application, 'Git: Create Branch');
+    await openCommandWithRetry(page, 'Git: Create Branch...', application, 'Git: Create Branch');
     const branchInput = page.locator('.quick-input-widget input').last();
     await branchInput.waitFor({ state: 'visible' });
     await branchInput.fill('kogg-electron-e2e-branch');
@@ -211,7 +210,7 @@ try {
     await rm(temporary, { recursive: true, force: true });
 }
 
-async function openCommand(page, label, electronApplication, query = label) {
+async function openCommand(page, label, electronApplication, query = label, optionTimeout = 30_000) {
     const input = page.getByRole('textbox', { name: 'Type to narrow down results.' });
     const body = page.locator('body');
     if (label === 'Go to File...') {
@@ -252,9 +251,24 @@ async function openCommand(page, label, electronApplication, query = label) {
     let option = page.locator(`[role="option"][aria-label="${label.replaceAll('"', '\\"')}"]:visible`);
     if (!await option.waitFor({ state: 'visible', timeout: 2_000 }).then(() => true, () => false)) {
         option = page.locator('[role="option"]:visible').filter({ hasText: label }).first();
-        await option.waitFor();
+        await option.waitFor({ timeout: optionTimeout });
     }
     await option.click();
+}
+
+async function openCommandWithRetry(page, label, electronApplication, query) {
+    let lastError;
+    for (let attempt = 0; attempt < 6; attempt += 1) {
+        try {
+            await openCommand(page, label, electronApplication, query, 2_500);
+            return;
+        } catch (error) {
+            lastError = error;
+            await page.keyboard.press('Escape').catch(() => undefined);
+            await page.waitForTimeout(1_000);
+        }
+    }
+    throw lastError;
 }
 
 async function initializeGitRepository(repository, subject) {
