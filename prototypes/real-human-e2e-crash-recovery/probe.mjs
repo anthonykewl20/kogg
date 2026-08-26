@@ -77,9 +77,14 @@ try {
   }
 
   await openCommand(second.page, 'Kogg: Run Diagnostics', application);
-  await second.page.getByText(recoveryOutcome === 'recovered' ? /Diagnostics: PASS/u : /Diagnostics: FAIL/u).first().waitFor({ timeout: 30_000 });
+  const diagnosticsMessage = second.page.getByText(/Diagnostics: (?:PASS|WARN|FAIL)/u).first();
+  await diagnosticsMessage.waitFor({ timeout: 30_000 });
+  const diagnosticsOverall = (await diagnosticsMessage.innerText()).match(/Diagnostics: (PASS|WARN|FAIL)/u)?.[1]?.toLowerCase();
+  assert.ok(diagnosticsOverall);
+  if (recoveryOutcome === 'recovered') assert.notEqual(diagnosticsOverall, 'fail', 'successful reconciliation must not produce failing diagnostics');
+  else assert.equal(diagnosticsOverall, 'fail', 'blocked admission must produce failing diagnostics');
   await second.page.keyboard.press('Escape');
-  events.push({ eventName: 'scenario.step.completed', stepId: 'diagnostics-visible' });
+  events.push({ eventName: 'scenario.step.completed', stepId: 'diagnostics-visible', diagnosticsOverall });
 
   await identityMismatchCalibration();
   const productResidualCount = await liveIdentityCount(preCrashDescendants);
