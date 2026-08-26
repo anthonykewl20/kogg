@@ -36,6 +36,7 @@
     "test:unit": "node --test packages/*/lib/**/*.test.js",
     "test:e2e:browser": "node scripts/e2e-browser.mjs",
     "test:e2e:electron": "node scripts/e2e-electron.mjs",
+    "prototype:issue65": "node prototypes/real-human-e2e-crash-recovery/probe.mjs",
     "test:e2e:artifact": "node scripts/e2e-artifact.mjs",
     "test:e2e": "yarn build:browser && yarn test:e2e:browser && yarn build:electron && yarn test:e2e:electron",
     "test": "yarn build:packages && yarn test:unit && yarn audit:branding && yarn audit:observability",

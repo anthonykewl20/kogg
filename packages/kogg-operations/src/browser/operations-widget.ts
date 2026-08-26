@@ -25,6 +25,8 @@ export class OperationsWidget extends BaseWidget {
   }
   applySnapshot(snapshot: OperationsSnapshot): void { this.snapshotValue = snapshot; this.render(); }
   private async refresh(): Promise<void> {
+    // Prototype #65 branch-only debugger marker; this change is never merged.
+    debugger;
     try { this.snapshotValue = await this.service.snapshot(); }
     catch (error) { console.error('[kogg:operations:widget] snapshot.failed', { errorType: errorName(error) }); void this.messages.error('Kogg operations could not be loaded.'); }
     finally { this.render(); }

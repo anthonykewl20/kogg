@@ -34,7 +34,7 @@ jobs:
       - run: yarn build:electron
       - name: Electron E2E (Linux)
         if: runner.os == 'Linux'
-        timeout-minutes: 5
+        timeout-minutes: 8
         run: |
           xvfb-run -a dbus-run-session -- bash -euo pipefail -c '
             mkdir -p "$HOME/.local/share/keyrings"
@@ -42,11 +42,14 @@ jobs:
             eval "$(printf %s kogg-ci-keyring | gnome-keyring-daemon --unlock --components=secrets)"
             gdbus call --session --dest org.freedesktop.secrets --object-path /org/freedesktop/secrets --method org.freedesktop.DBus.Peer.Ping
             yarn test:e2e:electron
+            yarn prototype:issue65
           '
       - name: Electron E2E (macOS and Windows)
         if: runner.os != 'Linux'
-        timeout-minutes: 5
-        run: yarn test:e2e:electron
+        timeout-minutes: 8
+        run: |
+          yarn test:e2e:electron
+          yarn prototype:issue65
       - run: yarn package:electron
         env:
           CSC_IDENTITY_AUTO_DISCOVERY: "false"
