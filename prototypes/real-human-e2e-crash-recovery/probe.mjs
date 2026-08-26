@@ -84,14 +84,18 @@ try {
   const failedCheckIds = diagnosticsText.match(/Failed: ([a-z0-9., -]+)\./u)?.[1].split(', ') ?? [];
   assert.ok(diagnosticsOverall);
   if (recoveryOutcome === 'recovered') {
-    const recoveryFailures = failedCheckIds.filter(id => id.startsWith('operations.') || id.startsWith('kernel.'));
-    assert.deepEqual(recoveryFailures, [], `successful reconciliation has recovery diagnostic failures: ${recoveryFailures.join(',')}`);
+    const operationFailures = failedCheckIds.filter(id => id.startsWith('operations.'));
+    const unexpectedKernelFailures = failedCheckIds.filter(id => id.startsWith('kernel.') && id !== 'kernel.journal');
+    assert.deepEqual(operationFailures, [], `successful reconciliation has operation diagnostic failures: ${operationFailures.join(',')}`);
+    assert.deepEqual(unexpectedKernelFailures, [], `successful reconciliation has unexpected kernel diagnostic failures: ${unexpectedKernelFailures.join(',')}`);
   } else {
     assert.equal(diagnosticsOverall, 'fail', 'blocked admission must produce failing diagnostics');
     assert.ok(failedCheckIds.some(id => id.startsWith('operations.')), 'blocked admission must identify an operations diagnostic failure');
   }
+  const evidenceIntegrity = failedCheckIds.includes('kernel.journal') ? 'unavailable' : 'verified';
+  if (linuxQualified) assert.equal(evidenceIntegrity, 'unavailable', 'the prototype must retain the measured Linux journal-integrity gap');
   await second.page.keyboard.press('Escape');
-  events.push({ eventName: 'scenario.step.completed', stepId: 'diagnostics-visible', diagnosticsOverall, failedCheckIds });
+  events.push({ eventName: 'scenario.step.completed', stepId: 'diagnostics-visible', diagnosticsOverall, failedCheckIds, evidenceIntegrity });
 
   await identityMismatchCalibration();
   const productResidualCount = await liveIdentityCount(preCrashDescendants);
@@ -105,11 +109,12 @@ try {
   registry = undefined;
 
   const manifest = {
-    schemaVersion: 1, runId, platform: platform(), runtime: 'electron', state: recoveryOutcome === 'recovered' ? 'completed' : 'capability-refused',
+    schemaVersion: 1, runId, platform: platform(), runtime: 'electron', state: recoveryOutcome === 'recovered' && evidenceIntegrity === 'verified' ? 'completed' : 'capability-refused',
     operationShortId, debugger: debuggerProofs, fixtures: [...fixtures.values()], events,
     residualCount: productResidualCount, artifactDecision: 'retained',
-    productionDecision: linuxQualified ? 'retain-qualified-linux-reconciliation'
-      : recoveryOutcome === 'recovered' ? 'retain-contained-lifetime-after-matrix-confirmation' : 'require-native-identity-or-contained-lifetime-before-production'
+    productionDecision: linuxQualified ? 'repair-kernel-journal-recovery-before-production'
+      : recoveryOutcome === 'recovered' && evidenceIntegrity === 'verified' ? 'retain-contained-lifetime-after-matrix-confirmation'
+        : 'require-native-identity-or-contained-lifetime-and-evidence-recovery-before-production'
   };
   const serialized = JSON.stringify(manifest, null, 2);
   assertSafeArtifact(serialized);
