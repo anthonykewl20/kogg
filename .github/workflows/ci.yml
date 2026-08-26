@@ -28,6 +28,11 @@ jobs:
       - run: volta install node@22.23.2 yarn@1.22.22
       - run: uv python install 3.12.14
       - run: yarn setup
+      - name: Governed task boundary prototype
+        if: runner.os != 'Windows'
+        env:
+          KOGG_PROBE_PYTHON: .venv/bin/python
+        run: node prototypes/tasks-boundary/probe.mjs
       - run: yarn test
       - run: yarn build:browser
       - run: yarn test:e2e:browser
