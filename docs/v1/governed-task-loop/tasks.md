@@ -2,13 +2,14 @@
 
 Tracking: [#71](https://github.com/anthonykewl20/kogg/issues/71), research phase
 [#74](https://github.com/anthonykewl20/kogg/issues/74), and pseudocode phase
-[#77](https://github.com/anthonykewl20/kogg/issues/77).
+[#77](https://github.com/anthonykewl20/kogg/issues/77), and prototype phase
+[#80](https://github.com/anthonykewl20/kogg/issues/80).
 
 ## Status
 
-Research and decision-complete pseudocode are complete as of 2026-08-26. This
-packet contains no production code. Production remains gated by the ordered
-prototype and implementation issues and by Foundation
+Research, decision-complete pseudocode, and the real-boundary prototype are
+complete as of 2026-08-26. This packet contains no production code. Production
+remains gated by the ordered implementation issue and by Foundation
 [#47](https://github.com/anthonykewl20/kogg/issues/47).
 
 The research recommendation is a backend-owned, machine-local task registry with
@@ -839,6 +840,45 @@ The disposable probe should:
 If canonical bytes, transaction ordering, approval identity, or restart currentness
 cannot be proved, the probe must fail and reopen #77. It must not weaken digests,
 replace approval with a checkbox, or move authority into Git/frontend/Ranex storage.
+
+## Prototype findings and production decision
+
+The disposable #80 probe is preserved, deliberately unmerged, on branch
+`prototype/issue-80-tasks-boundary`. Commit
+`2eb19b58f0b65491212f22171c920328f68a1bf4` contains the measured probe and its
+prototype-only CI step; follow-up `2bf60fcec2866e5c1e6b6e7e199e281642f8c927`
+only clarifies platform scope. Prototype PR #134 is evidence, not a merge vehicle.
+The probe passed locally on macOS 26.6 and in CI on macOS 15 and qualified Ubuntu
+24.04 using the pinned setup.
+
+| Boundary | Measured result |
+| --- | --- |
+| Canonical bytes across runtimes | Pinned Node 22.23.2, independent Python 3.12.14, and Electron 42.3.0's embedded Node 24.15.0 produced identical canonical base64 and SHA-256 for the fixed ASCII-key/base64 payload. Electron reported SQLite 3.51.3. LF/CRLF, composed/decomposed Unicode, paired emoji, lone-surrogate rejection, and 1,048,576/1,048,577-byte boundaries behaved as specified. |
+| Two visible clients | Two isolated real Chromium contexts drove visible Save, Reload, Freeze, Review, Approve, Revoke, and Create successor controls. One stale edit completed and the other returned `TASK_REVISION_CONFLICT`; the losing buffer was not committed. |
+| Review authority | A challenge bound to one browser session approved the exact frozen revision. A forged challenge from the second session returned `REVIEW_REQUIRED` and created no approval. Revocation removed currentness, a successor stayed unapproved, and draft content/history/current blocked state survived a real database close/reopen. |
+| Line-ending UI boundary | A plain HTML `textarea` normalized CRLF to LF during a visible edit. This does not change the backend's exact-byte/no-normalization contract: the accepted bytes begin at the value submitted by the editor. Production cannot use an unqualified textarea or claim that pasted line endings survived. The Theia/Monaco model must expose the actual selected EOL mode before freeze, and #83 must assert the exact submitted and canonical bytes after visible LF and CRLF configurations; mixed-EOL service-contract vectors remain byte-exact. |
+| Kill before commit | A real writer inserted under `BEGIN IMMEDIATE` and received `SIGKILL` before commit. Restart exposed zero marker rows and `integrity_check=ok`. |
+| Kill after commit | A real writer committed and then received `SIGKILL`. Restart exposed exactly one marker row and `integrity_check=ok`. |
+| Competing writer | A separate process held the WAL write transaction; the contender reached the bounded SQLite busy result. Killing the holder left no uncommitted marker or residual writer. |
+| Idempotency | The same request ID/digest replayed the stored terminal result. A different digest under that ID produced `REQUEST_ID_REUSED` and no semantic mutation. |
+| Diagnostic corruption | A copied registry with a modified predecessor link failed deterministic event-chain verification while the authoritative registry remained intact. |
+| Debugger and lifecycle | Real Node and Electron inspectors reached listening endpoints. Every Python/Electron/helper/browser process was registered before start and emitted exit plus cleanup; the safe-field scanner found no content, path, digest, challenge, request payload, or command argument, and the live registry ended at zero. A successful run contained 68 safe lifecycle records and no task-owned process event. |
+
+### Production decision
+
+The combined canonicalization, SQLite WAL transaction, session-bound approval,
+restart-currentness, and multi-client design is validated without reopening #77.
+Implement `packages/kogg-tasks` exactly as specified in #83. Preserve the pinned
+runtime checks because `node:sqlite` remains experimental in Node 22.23.2, and
+retain the four fail-closed task diagnostics.
+
+The prototype's Python, Electron-as-Node, crash-writer, inspector, HTTP server, and
+Chromium children are harness-owned measurement processes only. Production task
+authoring still owns zero subprocesses. The real #83 browser and Electron suites
+must drive the production Theia widget and backend service rather than reuse this
+prototype UI or database code; must prove the Monaco EOL selection; and must repeat
+the conflict, forged challenge, crash, restart, idempotency, corruption, safe-trace,
+debugger, and zero-process cases at the owned production boundaries.
 
 ## Research gate conclusion
 
