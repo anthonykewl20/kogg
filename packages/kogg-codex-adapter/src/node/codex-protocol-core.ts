@@ -28,7 +28,7 @@ export class CodexProtocolCore {
   private readonly queue: Array<{ readonly bytes: number; readonly value: CodexSafeObservation }> = [];
   private readonly requests = new Map<number, string>(); private readonly serverRequests = new Set<number>();
   private threadCount = 0; private turnCount = 0; private terminalCount = 0; private shutdownCount = 0; private failed = false;
-  constructor(private readonly schema: CodexFrameSchema, private readonly acceptedInboundMethods: ReadonlySet<string>, private readonly content: CodexContentRouter) {}
+  constructor(private readonly schema: CodexFrameSchema, private readonly acceptedInboundMethods: Pick<ReadonlySet<string>, 'has'>, private readonly content: CodexContentRouter) {}
   phase(): CodexProtocolPhase { return this.phaseValue; }
   outstanding(): { readonly client: number; readonly server: number } { return { client: this.requests.size, server: this.serverRequests.size }; }
 
