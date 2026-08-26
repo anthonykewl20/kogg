@@ -1,5 +1,5 @@
 import { injectable } from '@theia/core/shared/inversify';
-import type { AdapterRegistryApi, AgentAdapterFactory, AdapterDescriptorV1 } from '../common/agents-protocol';
+import type { AdapterRegistryApi, AgentAdapterFactory, AdapterDescriptorV1, AgentSafeCode } from '../common/agents-protocol';
 
 // diagnostic-coverage: agents.adapters
 @injectable()
@@ -15,8 +15,12 @@ export class AdapterRegistry implements AdapterRegistryApi {
   descriptors(): readonly AdapterDescriptorV1[] { return [...this.factories.values()].flat().map(factory => factory.descriptor).sort((a, b) => descriptorKey(a).localeCompare(descriptorKey(b))); }
   resolveExact(input: { adapterKey: string; adapterVersion: string; providerId: string; modelId: string; requiredCapabilities: readonly string[] }): AgentAdapterFactory {
     symbolic(input.adapterKey); semver(input.adapterVersion); symbolic(input.providerId); symbolic(input.modelId); input.requiredCapabilities.forEach(symbolic);
-    const candidates = (this.factories.get(`${input.adapterKey}@${input.adapterVersion}`) ?? []).filter(factory => factory.descriptor.enabled && factory.descriptor.providerIds.includes(input.providerId) && input.requiredCapabilities.every(capability => factory.descriptor.capabilityIds.includes(capability)));
-    if (!candidates.length) throw new AdapterResolutionError('ADAPTER_UNAVAILABLE');
+    const exact = this.factories.get(`${input.adapterKey}@${input.adapterVersion}`) ?? [];
+    if (!exact.length) throw new AdapterResolutionError('ADAPTER_UNAVAILABLE');
+    const enabled = exact.filter(factory => factory.descriptor.enabled); if (!enabled.length) throw new AdapterResolutionError('ADAPTER_DISABLED');
+    const compatibleProtocol = enabled.filter(factory => factory.descriptor.protocolVersion.split('.')[0] === '1'); if (!compatibleProtocol.length) throw new AdapterResolutionError('PROTOCOL_UNSUPPORTED');
+    const provider = compatibleProtocol.filter(factory => factory.descriptor.providerIds.includes(input.providerId)); if (!provider.length) throw new AdapterResolutionError('PROVIDER_MISMATCH');
+    const candidates = provider.filter(factory => input.requiredCapabilities.every(capability => factory.descriptor.capabilityIds.includes(capability))); if (!candidates.length) throw new AdapterResolutionError('CAPABILITY_MISMATCH');
     if (candidates.length !== 1) throw new AdapterResolutionError('ADAPTER_RESOLUTION_AMBIGUOUS');
     return candidates[0]!;
   }
@@ -25,7 +29,7 @@ export class AdapterRegistry implements AdapterRegistryApi {
     return { descriptorCount: this.descriptors().length, ambiguousCount, invalidCount: 0, fallbackCount: 0 };
   }
 }
-export class AdapterResolutionError extends Error { constructor(readonly code: 'ADAPTER_UNAVAILABLE' | 'ADAPTER_RESOLUTION_AMBIGUOUS') { super(code); } }
+export class AdapterResolutionError extends Error { constructor(readonly code: Extract<AgentSafeCode, 'ADAPTER_UNAVAILABLE' | 'ADAPTER_RESOLUTION_AMBIGUOUS' | 'ADAPTER_DISABLED' | 'PROTOCOL_UNSUPPORTED' | 'PROVIDER_MISMATCH' | 'CAPABILITY_MISMATCH'>) { super(code); } }
 const SYMBOLIC = /^[a-z0-9][a-z0-9._:-]{0,127}$/u; const SEMVER = /^(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)(?:-[0-9A-Za-z.-]+)?$/u;
 function symbolic(value: string): void { if (!SYMBOLIC.test(value)) throw new Error('ADAPTER_DESCRIPTOR_INVALID'); }
 function semver(value: string): void { if (!SEMVER.test(value)) throw new Error('ADAPTER_DESCRIPTOR_INVALID'); }

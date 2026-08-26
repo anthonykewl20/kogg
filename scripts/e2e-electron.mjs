@@ -332,8 +332,27 @@ async function exerciseElectronTasks(page, electronApplication) {
     await tasks.locator('.kogg-review').getByText(canary).waitFor();
     await tasks.getByRole('button', { name: 'Approve this exact revision' }).click();
     await tasks.getByRole('button', { name: /Revoke approval/u }).waitFor();
+    await tasks.getByLabel('Existing run ID').fill('55555555-5555-4555-8555-555555555555');
+    await tasks.getByRole('button', { name: 'Authorize exact task admission' }).click();
+    const admission = tasks.locator('[data-admission-id]'); await admission.waitFor();
+    const admissionId = (await admission.innerText()).match(/[0-9a-f-]{36}/u)?.[0]; assert.ok(admissionId);
+    await exerciseElectronAgents(page, electronApplication, admissionId);
+    await openCommand(page, 'View: Toggle Kogg Tasks', electronApplication);
     await tasks.getByRole('button', { name: /Revoke approval/u }).click();
     assert.equal(logs.join('\n').includes(canary), false);
+}
+
+async function exerciseElectronAgents(page, electronApplication, admissionId) {
+    const agents = page.locator('.kogg-agents-widget').last();
+    if (!await agents.count()) {
+        await openCommand(page, 'View: Toggle Kogg Agents', electronApplication);
+        await agents.waitFor({ state: 'attached', timeout: 30_000 });
+    }
+    await agents.getByRole('button', { name: 'Save immutable revision' }).click();
+    await agents.locator('section').filter({ hasText: 'Role Revisions' }).locator('li').filter({ hasText: /implementer · [0-9a-f-]{36}/u }).waitFor();
+    await agents.getByLabel('Task admission ID').fill(admissionId);
+    await agents.getByRole('button', { name: 'Confirm and start exact attempt' }).click();
+    await agents.getByText(/cleaned · AGENT_OK.*resources 0/iu).waitFor({ timeout: 15_000 });
 }
 
 async function exerciseElectronOperations(page, electronApplication) {

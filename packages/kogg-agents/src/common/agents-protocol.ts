@@ -5,6 +5,7 @@ import type { OperationLease } from '@kogg/operations/lib/common/operations-prot
 export const KoggAgentsServicePath = '/services/kogg-agents';
 export const KoggAgentsService = Symbol('KoggAgentsService');
 export const KoggAdapterRegistry = Symbol('KoggAdapterRegistry');
+export const CredentialLeaseAuthority = Symbol('CredentialLeaseAuthority');
 
 export type Decimal = string;
 export type AttemptState = 'requested' | 'admitted' | 'adapter_resolved' | 'registered' | 'starting' | 'ready' | 'active'
@@ -64,6 +65,8 @@ export interface AgentRegistrySnapshot { readonly schemaVersion: '1'; readonly r
 export interface AdapterObservationV1 { readonly sequence: Decimal; readonly kind: 'ready' | 'activity' | 'usage' | 'completed' | 'failed'; readonly observedModelId?: string; readonly activityKind?: string; readonly usage?: UsageProjectionV1; readonly safeCode?: AgentSafeCode; }
 export interface KoggAgentsClient { changed(snapshot: AgentRegistrySnapshot): void | Promise<void>; }
 export interface AgentAdapterSession { readonly resourceId: string; readonly resourceKind: 'provider-host' | 'provider-request'; readonly ownerKind: AdapterDescriptorV1['ownerKind']; start(): Promise<void>; cancel(reason: CancelAttemptRequestV1['reason']): Promise<void>; cleanup(): Promise<{ readonly residualCount: number }>; }
-export interface AgentAdapterFactory { readonly descriptor: AdapterDescriptorV1; create(input: { readonly attemptId: string; readonly taskId: string; readonly providerId: string; readonly modelId: string; readonly operation: OperationLease; readonly onObservation: (observation: AdapterObservationV1) => void }): AgentAdapterSession; }
+export interface OpaqueCredentialLease { readonly leaseId: string; readonly expiresAt: string; consume(): void; dispose(): void; }
+export interface CredentialLeaseAuthority { issue(input: { readonly attemptId: string; readonly providerId: string; readonly modelId: string; readonly adapterKey: string; readonly adapterVersion: string; readonly capabilityIds: readonly string[] }): Promise<OpaqueCredentialLease>; }
+export interface AgentAdapterFactory { readonly descriptor: AdapterDescriptorV1; create(input: { readonly attemptId: string; readonly taskId: string; readonly providerId: string; readonly modelId: string; readonly operation: OperationLease; readonly credentialLease: OpaqueCredentialLease; readonly onObservation: (observation: AdapterObservationV1) => void }): AgentAdapterSession; }
 export interface AdapterRegistryApi { register(factory: AgentAdapterFactory): void; descriptors(): readonly AdapterDescriptorV1[]; resolveExact(input: { adapterKey: string; adapterVersion: string; providerId: string; modelId: string; requiredCapabilities: readonly string[] }): AgentAdapterFactory; }
 export interface KoggAgentsService { snapshot(): Promise<AgentRegistrySnapshot>; subscribe(): Promise<AgentRegistrySnapshot>; listAttempts(): Promise<readonly AttemptProjectionV1[]>; getAttempt(attemptId: string): Promise<AttemptProjectionV1>; listRoleRevisions(): Promise<readonly RoleRevisionV1[]>; createRoleRevision(request: CreateRoleRevisionRequestV1): Promise<AgentMutationResult>; startAttempt(request: StartAttemptRequestV1): Promise<AgentMutationResult>; cancelAttempt(request: CancelAttemptRequestV1): Promise<AgentMutationResult>; }

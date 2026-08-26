@@ -475,6 +475,7 @@ async function exerciseProjects(page) {
     await page.locator('body.kogg-application').waitFor({ timeout: 20_000 });
     await trustWorkspace(page);
     projects = await ensureProjectsWidget(page);
+    projects = await retryProjectSwitchAfterRestoreRace(page, projects, 'Beta');
     await waitForProjectText(projects, /Beta[\s\S]*Active/u);
     await page.reload({ waitUntil: 'domcontentloaded' });
     await page.locator('body.kogg-application').waitFor({ timeout: 20_000 });
@@ -486,6 +487,7 @@ async function exerciseProjects(page) {
     await page.locator('body.kogg-application').waitFor({ timeout: 20_000 });
     await trustWorkspace(page);
     projects = await ensureProjectsWidget(page);
+    projects = await retryProjectSwitchAfterRestoreRace(page, projects, 'Alpha');
     await waitForProjectText(projects, /Alpha[\s\S]*Active/u);
 
     // Windows does not permit a watched workspace directory to be renamed.
@@ -617,6 +619,14 @@ async function exerciseTasks(page) {
     await tasks.locator('.kogg-review').getByText(canary).waitFor();
     await tasks.getByRole('button', { name: 'Approve this exact revision' }).click();
     await tasks.getByRole('button', { name: /Revoke approval/u }).waitFor();
+    await tasks.getByLabel('Existing run ID').fill('44444444-4444-4444-8444-444444444444');
+    await tasks.getByRole('button', { name: 'Authorize exact task admission' }).click();
+    const admission = tasks.locator('[data-admission-id]');
+    await admission.waitFor();
+    const admissionId = (await admission.innerText()).match(/[0-9a-f-]{36}/u)?.[0];
+    assert.ok(admissionId);
+    await exerciseAgents(page, admissionId);
+    tasks = await ensureTasksWidget(page);
     await tasks.getByRole('button', { name: /Revoke approval/u }).click();
     // Wait for the backend-confirmed revocation projection before issuing the
     // successor mutation. On slower Windows runners the previous test raced the
@@ -632,6 +642,8 @@ async function exerciseTasks(page) {
     tasks = await ensureTasksWidget(page);
     await tasks.getByText(/active · draft/iu).waitFor();
     assert.match(await tasks.locator('[data-specification]').inputValue(), /Winner edit/u);
+    const agents = await ensureAgentsWidget(page);
+    await agents.getByText(/cleaned · AGENT_OK/u).waitFor();
     await openCommand(page, 'Kogg: Run Diagnostics');
     await page.getByText(/Diagnostics: FAIL.*passed/iu).first().waitFor({ timeout: 15_000 });
     const supportDirectory = path.join(state, 'support');
@@ -639,11 +651,37 @@ async function exerciseTasks(page) {
     await openCommand(page, 'Kogg: Export Diagnostic Support Bundle');
     const supportFiles = (await waitForSupportBundle(supportDirectory, supportCount + 1)).sort();
     const supportReport = JSON.parse(await readFile(path.join(supportDirectory, supportFiles.at(-1)), 'utf8'));
-    for (const id of ['tasks.registry', 'tasks.revisions', 'tasks.bindings', 'tasks.approvals']) {
+    for (const id of ['tasks.registry', 'tasks.revisions', 'tasks.bindings', 'tasks.approvals', 'agents.adapters', 'agents.attempts', 'agents.processes', 'agents.recovery', 'agents.logging', 'agents.source-maps']) {
         assert.equal(supportReport.checks.find(check => check.id === id)?.status, 'pass');
     }
     await page.keyboard.press('Escape');
     assert.equal(logs.join('\n').includes(canary), false);
+}
+
+async function exerciseAgents(page, admissionId) {
+    const agents = await ensureAgentsWidget(page);
+    await agents.getByRole('button', { name: 'Save immutable revision' }).click();
+    await agents.locator('section').filter({ hasText: 'Role Revisions' }).locator('li').filter({ hasText: /implementer · [0-9a-f-]{36}/u }).waitFor();
+    await agents.getByLabel('Task admission ID').fill(admissionId);
+    await agents.getByRole('button', { name: 'Confirm and start exact attempt' }).click();
+    await agents.getByText(/cleaned · AGENT_OK.*resources 0/iu).waitFor({ timeout: 15_000 });
+    await agents.getByLabel('Task admission ID').fill(admissionId);
+    await agents.getByLabel('Exact adapter and version').fill('missing.adapter@1.0.0');
+    await agents.getByRole('button', { name: 'Confirm and start exact attempt' }).click();
+    await agents.getByText(/cleaned · ADAPTER_UNAVAILABLE.*resources 0/iu).waitFor({ timeout: 10_000 });
+}
+
+async function ensureAgentsWidget(page) {
+    const widgets = page.locator('.kogg-agents-widget:visible');
+    if (!await widgets.count()) {
+        await openCommand(page, 'View: Toggle Kogg Agents');
+        await widgets.first().waitFor({ state: 'visible', timeout: 30_000 });
+    }
+    const widget = widgets.first();
+    const deadline = Date.now() + 10_000;
+    while (/Loading agent registry/iu.test(await widget.textContent().catch(() => 'Loading agent registry')) && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 50));
+    assert.doesNotMatch(await widget.textContent(), /Loading agent registry/iu);
+    return widget;
 }
 
 async function ensureTasksWidget(page) {
@@ -688,6 +726,20 @@ async function renderedWidget(widgets) {
         const area = rectangle.width * rectangle.height;
         return area > best.area ? { area, index } : best;
     }, { area: -1, index: 0 }));
+}
+
+async function retryProjectSwitchAfterRestoreRace(page, projects, projectName) {
+    const row = projects.locator('[data-project-row]').filter({ hasText: projectName });
+    if (/Active/u.test(await row.innerText())) return projects;
+    const button = row.getByRole('button', { name: 'Switch' });
+    if (await button.isEnabled().catch(() => false)) {
+        await button.click();
+        await page.locator('body.kogg-application').waitFor({ timeout: 20_000 });
+        const trust = page.getByRole('button', { name: 'Yes, I trust the authors' });
+        if (await trust.isVisible().catch(() => false)) await trustWorkspace(page);
+        return ensureProjectsWidget(page);
+    }
+    return projects;
 }
 
 async function createProjectThroughPicker(page, projects, name, repository) {
