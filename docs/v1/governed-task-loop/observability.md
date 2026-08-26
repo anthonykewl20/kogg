@@ -1,13 +1,14 @@
 # Operational lifecycle contract and supervised process registry
 
 Tracking: [#57](https://github.com/anthonykewl20/kogg/issues/57), research
-phase [#60](https://github.com/anthonykewl20/kogg/issues/60).
+phase [#60](https://github.com/anthonykewl20/kogg/issues/60), pseudocode phase
+[#64](https://github.com/anthonykewl20/kogg/issues/64).
 
 ## Status
 
-Research is complete as of 2026-08-26. This packet contains no production
-code. Production remains gated by the ordered pseudocode, prototype, and
-implementation issues and by Foundation
+Research and decision-complete pseudocode are complete as of 2026-08-26. This
+packet contains no production code. Production remains gated by the ordered
+prototype and implementation issues and by Foundation
 [#47](https://github.com/anthonykewl20/kogg/issues/47).
 
 The research recommendation is one backend-owned operation registry with a
@@ -493,3 +494,465 @@ The recommendation is sufficiently constrained for #64 to freeze closed DTOs,
 SQLite transitions, owner interfaces, event schemas, timeouts, admission rules,
 UI states, diagnostics, and exact expected traces without reopening the source
 selection.
+
+## Decision-complete production pseudocode
+
+This section is normative for #67 and #69. Names, state transitions, authority,
+ordering, time bounds, diagnostics, UI behavior, and expected traces are closed.
+The prototype may invalidate a decision with evidence; it may not silently pick
+an alternative.
+
+### Package and runtime topology
+
+Create a Theia extension `packages/kogg-operations` with this fixed ownership:
+
+```text
+src/common/operations-protocol.ts       redacted JSON-RPC DTOs and callback
+src/browser/frontend-module.ts          service proxy and widget binding
+src/browser/operations-widget.ts        safe active/recent lifecycle projection
+src/node/backend-module.ts              singleton services and lifecycle joins
+src/node/operation-registry.ts           SQLite authority and transition checks
+src/node/process-supervisor.ts           register/start/activity/exit/cleanup
+src/node/process-identity.ts             platform identity verification port
+src/node/operation-reconciler.ts         startup recovery and admission gate
+src/node/operation-diagnostics.ts        catalog contributor
+```
+
+`@kogg/contracts` owns only immutable cross-package DTOs and tokens. The new
+package owns operational persistence, transition validation, live supervision,
+reconciliation, UI projection, and diagnostics. Existing packages use an
+in-process `KoggOperationRegistry` and `KoggProcessSupervisor`; they cannot write
+the database. Both applications include the package statically.
+
+The backend is the sole writer. Use pinned Node `node:sqlite` `DatabaseSync`
+behind an injected database port. The path is
+`${KOGG_STATE_DIR}/operations/registry.sqlite3`, using the standard Kogg state
+root fallback. Use rollback journal, `synchronous=FULL`, foreign keys, a 5-second
+busy timeout, directory mode `0700`, and file mode `0600` where supported. No
+external call, spawn, stream wait, or UI wait occurs inside a transaction.
+
+### Closed public and internal contracts
+
+```ts
+type OperationState =
+  | 'requested' | 'refused' | 'starting' | 'active' | 'waiting' | 'stalled'
+  | 'cancelling' | 'completed' | 'failed' | 'timed-out' | 'cancelled'
+  | 'recovery-required' | 'recovering' | 'recovered';
+type CleanupState = 'not-required' | 'required' | 'cleaning' | 'cleaned' | 'failed';
+type ProcessState =
+  | 'registered' | 'spawning' | 'started' | 'ready' | 'spawn-failed'
+  | 'exited' | 'signalled' | 'possible-residual';
+type ProcessOwner = 'kogg-supervisor' | 'theia-task' | 'theia-terminal'
+  | 'theia-debug' | 'theia-plugin-host' | 'ranex';
+type OperationKind =
+  | 'application-start' | 'application-stop' | 'recovery' | 'diagnostics'
+  | 'support-export' | 'project-mutation' | 'repository-probe'
+  | 'project-switch' | 'worktree' | 'marketplace' | 'provider-connection'
+  | 'provider-session' | 'ranex-bridge' | 'ranex-request' | 'task'
+  | 'agent-dispatch' | 'check' | 'build' | 'test' | 'debug'
+  | 'evidence' | 'verdict' | 'merge';
+type ProcessKind = 'git' | 'ranex-kernel' | 'provider-cli'
+  | 'governed-command' | 'check' | 'build' | 'test' | 'debug-adapter'
+  | 'delegated-theia';
+
+interface Correlations {
+  projectId?: string; taskId?: string; runId?: string; attemptId?: string;
+  sessionId?: string; worktreeId?: string;
+}
+interface OperationSummary {
+  id: string; kind: OperationKind; state: OperationState;
+  cleanup: CleanupState; safeCode?: OperationSafeCode;
+  correlations: Correlations; processCount: number; activityCount: number;
+  canCancel: boolean; blocksAdmission: boolean;
+}
+interface OperationsSnapshot {
+  schemaVersion: 1; revision: number;
+  admission: 'enabled' | 'recovering' | 'blocked';
+  active: readonly OperationSummary[];
+  recent: readonly OperationSummary[]; // newest 100 terminal operations
+}
+interface KoggOperationsService {
+  snapshot(): Promise<OperationsSnapshot>;
+  cancel(request: { requestId: string; operationId: string }): Promise<OperationsSnapshot>;
+  setClient(client?: { changed(snapshot: OperationsSnapshot): void }): void;
+}
+```
+
+RPC is `/services/kogg-operations`. Validate closed objects, UUID v4 identifiers,
+safe integers, known enums, and correlation consistency. The frontend receives
+no PID, process fingerprint, timestamps, executable, path, argv, cwd, environment,
+output, error message, or arbitrary details map.
+
+Internal callers use:
+
+```ts
+interface StartOperation {
+  kind: OperationKind; correlations: Correlations;
+  absoluteTimeoutMs?: number; idleTimeoutMs?: number;
+}
+interface OperationLease {
+  id: string;
+  start(): Promise<void>; active(): Promise<void>; waiting(): Promise<void>;
+  activity(): Promise<void>;
+  refuse(code: OperationSafeCode): Promise<void>;
+  complete(code?: OperationSafeCode): Promise<void>;
+  fail(code: OperationSafeCode, errorType: string): Promise<void>;
+  cancel(): Promise<void>; timeout(code: OperationSafeCode): Promise<void>;
+  cleanup(run: () => Promise<void>): Promise<void>;
+}
+interface ProcessOwnerAdapter {
+  owner: ProcessOwner; kind: ProcessKind;
+  start(context: { operationId: string; processId: string }): Promise<LiveProcess>;
+  recover(binding: DurableProcessBinding): Promise<RecoveryObservation>;
+}
+interface LiveProcess {
+  identity: PlatformProcessIdentity;
+  ready?: Promise<void>; exit: Promise<ProcessExit>;
+  onActivity(listener: () => void): Disposable;
+  cancel(): Promise<void>; verifyAbsent(): Promise<boolean>;
+}
+```
+
+`start()` on an adapter is the first method allowed to spawn or delegate. The
+supervisor commits the logical process as `registered` before invoking it. Launch
+configuration remains inside the adapter in memory and is never passed to the
+registry. `PlatformProcessIdentity` is a closed backend-only value containing PID,
+platform, and a creation/start fingerprint; it is never logged or exported.
+
+Every operation lease is single-terminal and idempotent. A second conflicting
+terminal call throws `OPERATIONS_TRANSITION_INVALID`, records a registry failure,
+and blocks the affected scope. Losing a lease reference does not complete it;
+shutdown/recovery owns the record.
+
+### SQL schema and invariants
+
+```sql
+CREATE TABLE operation_meta (
+  singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+  schema_version INTEGER NOT NULL CHECK (schema_version = 1),
+  revision INTEGER NOT NULL CHECK (revision >= 1),
+  instance_id TEXT NOT NULL,
+  admission TEXT NOT NULL CHECK (admission IN ('enabled','recovering','blocked'))
+);
+CREATE TABLE operations (
+  id TEXT PRIMARY KEY, kind TEXT NOT NULL, state TEXT NOT NULL,
+  cleanup_state TEXT NOT NULL, safe_code TEXT NULL,
+  project_id TEXT NULL, task_id TEXT NULL, run_id TEXT NULL,
+  attempt_id TEXT NULL, session_id TEXT NULL, worktree_id TEXT NULL,
+  owner_instance_id TEXT NOT NULL, requested_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL, last_activity_at TEXT NULL,
+  absolute_deadline_at TEXT NULL, idle_deadline_at TEXT NULL,
+  activity_count INTEGER NOT NULL DEFAULT 0 CHECK (activity_count >= 0),
+  error_type TEXT NULL, revision INTEGER NOT NULL CHECK (revision >= 1)
+);
+CREATE TABLE processes (
+  id TEXT PRIMARY KEY, operation_id TEXT NOT NULL REFERENCES operations(id),
+  kind TEXT NOT NULL, owner TEXT NOT NULL, state TEXT NOT NULL,
+  cleanup_state TEXT NOT NULL, owner_instance_id TEXT NOT NULL,
+  theia_registration_id INTEGER NULL, pid INTEGER NULL,
+  identity_kind TEXT NULL, identity_fingerprint TEXT NULL,
+  started_at TEXT NULL, last_activity_at TEXT NULL,
+  exit_class TEXT NULL, exit_code INTEGER NULL, signal_class TEXT NULL,
+  revision INTEGER NOT NULL CHECK (revision >= 1)
+);
+CREATE TABLE operation_events (
+  sequence INTEGER PRIMARY KEY AUTOINCREMENT,
+  operation_id TEXT NOT NULL REFERENCES operations(id), process_id TEXT NULL,
+  event_name TEXT NOT NULL, safe_code TEXT NULL, event_at TEXT NOT NULL,
+  activity_count INTEGER NULL, exit_class TEXT NULL, error_type TEXT NULL
+);
+CREATE TABLE request_results (
+  request_id TEXT PRIMARY KEY, request_digest TEXT NOT NULL,
+  operation_id TEXT NOT NULL, safe_code TEXT NOT NULL, created_at TEXT NOT NULL
+);
+CREATE INDEX operation_active_idx ON operations(state, cleanup_state);
+CREATE INDEX process_operation_idx ON processes(operation_id);
+```
+
+Migration creates tables in foreign-key-valid order, is transactional, numbered,
+and hash-tested. Check constraints use the exact closed enum values in production
+SQL. `operation_events` accepts only closed event names through application
+validation. Process identity is encrypted neither at rest nor exported; it is
+machine-local operational state protected by file permissions and bounded
+retention.
+
+Every transition uses `BEGIN IMMEDIATE`, checks expected current state and
+revision, updates the snapshot row, appends exactly one event, increments row and
+global revisions, then commits. Process registration and its event are one
+transaction. PID/fingerprint binding and `process.started` are one later
+transaction. Terminal state and cleanup are separate transactions.
+
+Retain terminal, fully cleaned records for 30 days or 10,000 operations, whichever
+removes more old rows, pruning oldest complete operations after successful startup
+reconciliation. Never prune active, recovery-required, cleanup-failed,
+possible-residual, or admission-blocking rows. Deleting project/task records does
+not cascade operational history.
+
+### Exact state transitions
+
+Allowed operation transitions are:
+
+```text
+requested -> refused | starting | failed
+starting -> active | failed | timed-out | cancelling
+active -> waiting | stalled | completed | failed | timed-out | cancelling
+waiting -> active | stalled | completed | failed | timed-out | cancelling
+stalled -> active | failed | timed-out | cancelling
+cancelling -> cancelled | failed
+any nonterminal state found at startup -> recovery-required
+recovery-required -> recovering
+recovering -> recovered | failed
+```
+
+`refused`, `completed`, `failed`, `timed-out`, `cancelled`, and `recovered` are
+terminal. Refused operations use `not-required` cleanup only if no resource was
+acquired. Every other terminal operation must end `cleaned` or `failed` cleanup.
+An operation is release-complete only when both dimensions are terminal.
+
+Process transitions are:
+
+```text
+registered -> spawning
+spawning -> started | spawn-failed
+started -> ready | exited | signalled
+ready -> exited | signalled
+any nonterminal process found at startup -> possible-residual until recovery proves identity/absence
+```
+
+Process cleanup is `required -> cleaning -> cleaned | failed`. `spawn-failed` may
+be cleaned without a PID after adapter disposal. `exited`/`signalled` is not
+cleaned until streams/listeners are disposed and `verifyAbsent()` succeeds.
+Delegated owners prove cleanup through their service lifecycle, not PID probing.
+
+### Time and activity policy
+
+Use monotonic clocks for live deadlines and UTC only for durable ordering.
+`repository-probe` has 10-second idle and absolute bounds. Ranex bridge startup
+and handshake have a 15-second absolute bound; the ready bridge has a 30-second
+health/activity bound, no lifetime bound, and 5-second graceful plus 5-second
+forced shutdown bounds. Provider sessions default to 60 seconds idle and 30
+minutes absolute. Check/build/test/governed commands default to 5 minutes idle and
+60 minutes absolute, with an approved execution profile permitted to select 1
+minute through 2 hours absolute. Debug operations use 5 minutes idle and 8 hours
+absolute. Cleanup is 10 seconds unless Ranex's stricter authority supplies a
+smaller bound.
+
+Activity persistence is coalesced to at most once per second and once per 100
+semantic events, while the in-memory monotonic deadline updates immediately.
+Bytes, chunks, tokens, output length, and content are not activity fields.
+
+### Start, supervision, cancellation, and shutdown
+
+```text
+start operation
+  validate kind, correlations, timeout policy, and admission
+  transaction: insert requested operation + operation.requested
+  run authority checks
+  on refusal: transaction refused/not-required; return safe error
+  transaction starting + operation.started
+  perform state-changing non-process boundary or call supervisor
+
+supervisor start
+  transaction: insert process registered/required + process.registered
+  transaction: state spawning + process.spawn.started
+  call owner.start outside transaction
+  spawn error: transaction spawn-failed + process.failed; dispose; cleanup
+  success: transaction bind identity + started + process.started
+  attach activity/readiness/exit handlers before returning
+  readiness success -> process.ready; operation active
+  exit -> exited/signalled; drain/dispose; verify absence; cleanup
+
+cancel
+  idempotency record by requestId
+  if terminal return snapshot
+  transition cancelling; disable new child starts
+  call each owner cancel in reverse acquisition order
+  await bounded exit/drain/absence; cleanup resources
+  transition cancelled then cleaned; notify frontend
+
+backend onStop
+  set admission blocked; emit supervisor.shutdown.started
+  cancel/join operations in reverse dependency order
+  reconcile every owned process; flush events; close database last
+  emit supervisor.shutdown.completed only after zero unresolved owned processes
+```
+
+The supervisor wraps existing `ProcessManager` where Kogg owns a compatible Node
+child and records the Theia registration ID. It never uses Theia `RawProcess`,
+whose default logs include args/options. Kogg adapters use fixed commands,
+argument construction, minimal environment, bounded streams, and no shell.
+
+### Startup reconciliation and admission
+
+```text
+backend onStart
+  open/migrate/integrity-check database
+  replace instance_id; set admission=recovering
+  select every nonterminal operation, non-clean cleanup, and nonterminal process
+  do this even when no work is queued
+  serialize by sessionId, then attemptId, then worktreeId, else operationId
+  mark operation recovery-required -> recovering
+  for each process in reverse acquisition order:
+    delegated/Ranex owner: ask owner recover()
+    direct process: compare PID + creation fingerprint + expected parent/instance
+    proved absent: append recovery fact and cleaned
+    proved same owned child: bounded cancel/drain/absence then cleaned
+    mismatch/unprovable: do not signal; mark possible-residual/cleanup failed
+  mark operation recovered only when all resources are clean
+  if any registry corruption, unverified identity, or cleanup failure:
+    admission=blocked
+  else admission=enabled
+```
+
+Recovery is idempotent: repeated observation of a cleaned process appends no
+duplicate terminal fact. A current execution cannot overtake reconciliation for
+the same serialization key. UI/diagnostics remain available while admission is
+blocked; new governed operations, provider sessions, worktrees, and merges refuse
+`OPERATIONS_ADMISSION_BLOCKED`. Safe non-executing inspection may continue.
+
+On Linux, direct identity uses `/proc/<pid>/stat` start time plus boot ID and
+parent/group evidence. macOS uses process start time from an injected native
+inspection port. Windows requires a process creation time and owned Job Object or
+delegated Theia proof. If the #67 probe cannot prove a platform, governed direct
+children remain unqualified there; no PID-only fallback exists.
+
+### Safe codes and logger/event schemas
+
+`OperationSafeCode` is the closed union:
+
+```text
+OPERATIONS_OK, OPERATIONS_REFUSED, OPERATIONS_ADMISSION_BLOCKED,
+OPERATIONS_REGISTRY_UNAVAILABLE, OPERATIONS_SCHEMA_INCOMPATIBLE,
+OPERATIONS_INTEGRITY_FAILED, OPERATIONS_TRANSITION_INVALID,
+OPERATIONS_REQUEST_REPLAY_MISMATCH, OPERATION_IDLE_TIMEOUT,
+OPERATION_ABSOLUTE_TIMEOUT, OPERATION_CANCELLED, PROCESS_SPAWN_FAILED,
+PROCESS_READINESS_FAILED, PROCESS_EXIT_NONZERO, PROCESS_SIGNALLED,
+PROCESS_IDENTITY_UNVERIFIED, PROCESS_RESIDUAL, CLEANUP_TIMEOUT,
+CLEANUP_FAILED, RECOVERY_FAILED, OWNER_UNAVAILABLE
+```
+
+Use `kogg:operations:registry`, `kogg:operations:supervisor`,
+`kogg:operations:recovery`, `kogg:operations:diagnostics`, and
+`kogg:operations:widget`. Exact stable events are:
+
+```text
+registry.start.requested|completed|failed
+registry.migration.started|completed|failed
+registry.integrity.started|completed|failed
+operation.requested|started|active|waiting|stalled|cancel.requested|cancelling|completed|refused|failed|timeout|cancelled
+process.registered|spawn.started|started|ready|activity|exit|failed|possible-residual
+cleanup.started|completed|failed
+recovery.started|process.observed|completed|failed
+admission.enabled|blocked
+supervisor.shutdown.started|completed|failed
+diagnostics.started|completed|failed
+```
+
+Each event accepts only applicable opaque correlation IDs, operation/process ID,
+kind/owner enums, safe code, error type, exit class, activity count, duration
+bucket, process count, and Theia registration ID. The logger helper constructs
+closed fields and rejects extras in tests. It never accepts arbitrary objects.
+`process.activity` is debug-level and coalesced; state changes are info, stalls and
+recoverable cleanup degradation warn, and failed operations/cleanup error.
+
+### UI behavior
+
+Add `Kogg: Show Operations`, opening a dockable **Kogg Operations** widget. It
+shows admission status, active operations first, and the latest 100 terminal
+operations. A row displays operation kind, safe status, opaque short ID, safe
+correlation labels, process/activity counts, and safe code. It never displays
+commands, paths, prompts, code, output, provider bodies, PID, or environment.
+
+Active cancellable rows have one **Cancel** button with confirmation for build,
+test, debug, provider, Ranex, evidence, verdict, and merge kinds. During cancel it
+is disabled and reads **Cancelling…**. Terminal rows have no generic retry button;
+retry belongs to the owning feature and creates a new authorized attempt. Stalled,
+cleanup-failed, possible-residual, recovering, and admission-blocked states use
+distinct warning/error text and link to **Kogg: Run Diagnostics**. The UI never
+offers “kill PID” for unverified identity.
+
+Frontend disconnect/reconnect reloads the authoritative snapshot. Callback
+notifications are hints; revision gaps trigger a full snapshot. Cancel replay is
+idempotent. Backend-safe errors are rendered with the safe code and guidance;
+raw exceptions never cross RPC.
+
+### Diagnostics and support artifact
+
+Add these exact catalog entries owned by `kogg-operations`:
+
+- `operations.registry`: schema, integrity, permissions, transition append;
+- `operations.recovery`: startup sweep finished and no contradictory record;
+- `operations.processes`: no hidden, stalled, orphaned, unverified, or residual
+  owned process;
+- `operations.cleanup`: no terminal operation lacks proved cleanup; and
+- `operations.admission`: admission agrees with recovery and failures.
+
+Every operational source declares applicable coverage. Contributor failure yields
+a failing check for all checks it could not evaluate. Support output contains only
+check IDs, status, safe summary, enum/count details, schema version, and generation
+time. Add a denylist scan for paths, PID, argv, environment, prompts, code/diff,
+credentials, provider bodies, and operation event rows. Recursive redaction remains
+defense in depth, not the primary schema.
+
+### Unit, integration, and visible E2E contract
+
+Unit/contract tests cover every allowed transition and reject every other edge;
+single-terminal idempotency; request replay mismatch; logger field allowlists;
+DTO unknown fields; retention exclusions; admission; contributor failures; and
+support-artifact content denial.
+
+Integration tests use real SQLite and real children for synchronous/asynchronous
+spawn failure, readiness failure, healthy activity, idle and absolute timeout,
+nonzero/signal exit, cancel, stream drain, reverse cleanup, cleanup timeout,
+shutdown, crash/restart, empty-queue recovery, stale PID identity, contention,
+corruption, and zero residuals. The Ranex bridge test uses the bundled Python and
+real stdio protocol; internal Ranex descendants remain unregistered by Kogg.
+
+Visible browser/Electron E2E must produce these traces in order:
+
+```text
+success:
+  operation.requested -> operation.started -> process.registered ->
+  process.spawn.started -> process.started -> process.ready ->
+  operation.active -> process.exit -> cleanup.started ->
+  cleanup.completed -> operation.completed
+
+spawn failure:
+  operation.requested -> operation.started -> process.registered ->
+  process.spawn.started -> process.failed(PROCESS_SPAWN_FAILED) ->
+  cleanup.started -> cleanup.completed -> operation.failed
+
+idle timeout:
+  ... -> operation.active -> operation.stalled ->
+  operation.timeout(OPERATION_IDLE_TIMEOUT) -> cleanup.started ->
+  process.exit -> cleanup.completed
+
+cancel:
+  ... -> operation.active -> operation.cancel.requested -> operation.cancelling ->
+  cleanup.started -> process.exit -> cleanup.completed -> operation.cancelled
+
+restart recovery:
+  recovery.started -> process.observed -> cleanup.started ->
+  cleanup.completed -> recovery.completed -> admission.enabled
+
+unverified identity:
+  recovery.started -> process.possible-residual -> cleanup.failed ->
+  recovery.failed -> admission.blocked
+```
+
+Drive visible controls to start, inspect, cancel, diagnose, and export support
+data. Use real Git/filesystem/subprocess/Ranex boundaries and an unrelated
+calibration process for the stale-PID refusal. Kill/restart through normal app
+entrypoints. Assert OS-level absence and sanitized artifacts. Direct service
+calls, mocked owned boundaries, fake PIDs, hidden controls, and implementation-
+only assertions do not satisfy acceptance. Preserve TypeScript and bundle source
+maps and pause a debugger in the browser frontend, Node backend, Electron
+main/renderer, and Python adapter statements reached by these workflows.
+
+### Pseudocode gate verdict
+
+Research #60 is closed. Every operation/process state, terminal and cleanup edge,
+authority, persistence invariant, timeout, correlation, safe code, logger/event,
+diagnostic, UI state, recovery/admission decision, test, real-boundary E2E, and
+expected trace is fixed. There is no unresolved production choice. The selected
+Ranex bridge and process-identity boundary advances to prototype #67.
