@@ -956,3 +956,59 @@ authority, persistence invariant, timeout, correlation, safe code, logger/event,
 diagnostic, UI state, recovery/admission decision, test, real-boundary E2E, and
 expected trace is fixed. There is no unresolved production choice. The selected
 Ranex bridge and process-identity boundary advances to prototype #67.
+
+## Prototype findings (issue #67)
+
+The disposable prototype is preserved, and deliberately not merged, on branch
+`prototype/issue-67-operation-supervisor` at commit `ae141c6`. It exercised the
+actual bundled Ranex Python adapter under pinned Node 22.23.2, a real Theia
+`ProcessManager`, a real SQLite logical registry, POSIX process groups, Linux
+`/proc` identity, the Node inspector, and Python pdb. The same closed probe
+passed on macOS 26.6 and Debian Bookworm Linux.
+
+Measured evidence:
+
+- the logical operation and process transaction committed before the Theia
+  live owner was allowed to spawn the bridge; PID and platform fingerprint were
+  bound only after spawn;
+- normal handshake, readiness, semantic activity, shutdown, zero exit, stream
+  drain, unregister, cleanup, and OS absence were visible with only opaque IDs,
+  enums, and counts;
+- a real missing executable produced the registered -> spawn-failed -> cleaned
+  path with no hidden child;
+- a real bridge was stopped after readiness, its request exceeded a bounded
+  observation window, and timeout cancellation produced stalled, timed-out,
+  signalled-exit, drained-stream, cleaned, and absent observations;
+- a separate driver registered and started the real bridge, exited abruptly,
+  and left an empty-queue recovery process to verify identity, terminate the
+  bridge, clean the durable record, and restore the operation idempotently;
+- a deliberately mismatched durable fingerprint did not signal an unrelated
+  calibration process and produced `PROCESS_IDENTITY_UNVERIFIED` plus a
+  possible-residual record;
+- Linux identity combined boot ID and process start ticks. The Linux run found
+  that `kill(pid, 0)` still succeeds for an unreaped zombie, so production must
+  also classify `/proc/<pid>/stat` state `Z` as exited before residual decisions;
+- the Node inspector paused at the exact disposable bridge-owner source line
+  and Python pdb paused at adapter line 169. Production TypeScript and bundle
+  source-map verification remains an implementation and E2E gate; and
+- the safe-trace scan rejected paths, argv, environment keys, protocol method
+  names/bodies, source, prompts, and process output. `yarn audit:observability`
+  also passed with 45 production source files inspected.
+
+### Production decision
+
+The prototype validates the pseudocode without reopening #64. Implement
+`packages/kogg-operations` as specified: durable logical registration remains
+outside and before live ownership, compatible direct children are additionally
+owned by Theia in-process, and Ranex retains sole authority for governed
+descendants and evidence. Preserve the closed lifecycle, safe projection,
+startup admission gate, and identity-verification adapter.
+
+Governed child execution is qualified only where the responsible owner can
+prove both containment and post-restart identity. The Linux adapter may use the
+measured boot-ID/start-ticks identity with explicit zombie classification.
+macOS remains degraded for local bridge ownership. The prototype produced no
+qualified Windows process-group containment or restart identity proof, so V1
+must fail closed for governed child execution on Windows until an owner supplies
+both; PID-only signalling remains forbidden. Production tests must preserve
+this refusal rather than silently weakening the platform gate.
