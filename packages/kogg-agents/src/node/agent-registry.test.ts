@@ -104,7 +104,9 @@ test('classifies adapter, provider, usage, model, and deadline failures with zer
     ['fixture.idle', 'IDLE_TIMEOUT'],
     ['fixture.provider-request', 'PROVIDER_REQUEST_TIMEOUT'],
     ['fixture.absolute', 'ABSOLUTE_TIMEOUT'],
-    ['fixture.usage-decrease', 'AGENT_OK']
+    ['fixture.usage-decrease', 'AGENT_OK'],
+    ['fixture.usage-mode-switch', 'AGENT_OK'],
+    ['fixture.usage-overflow', 'AGENT_OK']
   ] as const;
   try {
     await registry.onStart(); fixture.onStart();
@@ -112,7 +114,7 @@ test('classifies adapter, provider, usage, model, and deadline failures with zer
       const role = await registry.createRoleRevision(roleRequest(`21000000-0000-4000-8000-${String(index + 1).padStart(12, '0')}`, (await registry.snapshot()).registryRevision, model)); assert.ok(role.role);
       const result = await registry.startAttempt({ schemaVersion: '1', requestId: `31000000-0000-4000-8000-${String(index + 1).padStart(12, '0')}`, expectedRegistryRevision: role.registryRevision, taskAdmissionId: ADMISSION.taskAdmissionId, roleRevisionId: role.role.roleRevisionId, providerId: 'kogg.fixture', modelId: model, adapterKey: 'kogg.fixture', adapterVersion: '1.0.0', deadlinePolicyId: 'interactive-v1' }); assert.ok(result.attempt);
       const terminal = await poll(() => registry.getAttempt(result.attempt!.attemptId), value => value.state === 'cleaned'); assert.equal(terminal.terminalCode, code, model); assert.equal(terminal.ownedResourceCount, '0', model);
-      if (model === 'fixture.usage-decrease') assert.equal(terminal.usage.status, 'invalid');
+      if (model.startsWith('fixture.usage-')) assert.equal(terminal.usage.status, 'invalid');
     }
     assert.equal(registry.diagnostics().residualCount, 0); assert.equal(operations.processes.every(process => process.cleaned), true);
   } finally { await registry.onStop(); if (priorState === undefined) delete process.env.KOGG_STATE_DIR; else process.env.KOGG_STATE_DIR = priorState; if (priorDeadline === undefined) delete process.env.KOGG_AGENT_TEST_DEADLINES; else process.env.KOGG_AGENT_TEST_DEADLINES = priorDeadline; await rm(directory, { recursive: true, force: true }); }
