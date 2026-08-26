@@ -6,9 +6,11 @@ phase [#76](https://github.com/anthonykewl20/kogg/issues/76), pseudocode phase
 
 ## Status
 
-Research and decision-complete pseudocode are complete as of 2026-08-27. This
-packet contains no production code. A disposable real-boundary probe follows in
-#82 and production implementation plus real human-level E2E follows in #85.
+Research, decision-complete pseudocode, and the bounded real-boundary prototype
+are complete as of 2026-08-27. This packet contains no production code. Findings
+from #82 are recorded in
+[`execution-prototype-findings.md`](execution-prototype-findings.md); production
+implementation plus real human-level E2E follows in #85.
 
 The selected design is one controller-owned, private Git repository and
 working tree per governed run, with one opaque run branch, seeded from the exact
