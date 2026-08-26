@@ -1,13 +1,14 @@
 # Ranex task operations and evidence binding
 
 Tracking: [#102](https://github.com/anthonykewl20/kogg/issues/102), research
-phase [#103](https://github.com/anthonykewl20/kogg/issues/103).
+phase [#103](https://github.com/anthonykewl20/kogg/issues/103), and pseudocode
+phase [#104](https://github.com/anthonykewl20/kogg/issues/104).
 
 ## Status
 
-Research is complete as of 2026-08-27. This packet contains no production code.
-Decision-complete records and pseudocode belong to #104, the real-boundary
-probe to #105, and production behavior plus real human-level E2E to #106.
+Research and decision-complete pseudocode are complete as of 2026-08-27. This
+packet contains no production code. It fixes the contract that #105 must probe
+at the real Ranex/Git/check boundary and #106 must ship with visible E2E.
 
 The recommendation is a closed Kogg-to-Ranex command protocol in which every
 request and result is bound to one immutable task revision, approved authority
@@ -427,34 +428,480 @@ pretending equivalent containment.
 - Using a remote transparency/workflow service as a prerequisite for local V1.
 - Allowing production merge because tests passed before the subject changed.
 
-## Inputs required for #104
+## Decision-complete kernel/evidence contract and pseudocode
 
-#104 must close these decisions in schemas and pseudocode:
+This section is normative for #105 and #106. `MUST` and `MUST NOT` are release
+gates. Illustrative pseudocode fixes behavior and ownership even where production
+names later follow repository conventions.
 
-1. exact operation catalog, capability versions, request/result/refusal schemas,
-   payload bounds, and method-to-dispatch/test/diagnostic closure;
-2. canonical byte/digest domains and cross-TypeScript/Python/Git fixtures;
-3. immutable task, approval, repository, run, producer, check, evidence, verdict,
-   and Ranex-provenance binding records;
-4. role separation and exact evidence applicability/freshness rules;
-5. idempotency, journal/Kogg commit points, unknown-outcome reconciliation, and
-   cancellation/cleanup state machines;
-6. safe projection, logging event/code catalog, metrics, and diagnostic entries;
-7. protocol hardening, environment/confinement, retention, upgrade, and backward-
-   compatibility rules; and
-8. real E2E fixtures, independent oracles, negative mutations, crash points, and
-   debugger/source-map proof.
+### Closed protocol and operation catalog
 
-## Research gate verdict
+The public boundary is length-prefixed canonical JSON over private stdio, not a
+shell or generic Ranex RPC. Protocol name is `kogg.ranex/v2`; the pinned Ranex
+provenance remains commit `5586d68b0936f554759022caabe847087f1d03ef`, tree
+`581ce66c54116d4be48b96c3a0359fbdd9d3077f`. Handshake and every request bind
+that provenance, the adapter artifact SHA-256, schema-set SHA-256, and one Kogg
+process registration identity.
+
+The only V1 application operations are:
+
+| Operation | Version | Mutation | Required diagnostic |
+| --- | --- | --- | --- |
+| `kernel.handshake` | 2 | no | `kernel.protocol` |
+| `kernel.health` | 1 | no | `kernel.bridge` |
+| `task.bind` | 1 | append | `kernel.bindings` |
+| `producer.dispatch` | 1 | append/process | `kernel.producers` |
+| `suite.freeze` | 1 | append | `kernel.suites` |
+| `suite.execute` | 1 | append/process | `kernel.checks` |
+| `evidence.admit` | 1 | append | `kernel.evidence` |
+| `gate.evaluate` | 1 | append | `kernel.verdicts` |
+| `verdict.read` | 1 | no | `kernel.verdicts` |
+| `operation.reconcile` | 1 | append-if-needed | `kernel.recovery` |
+| `operation.cancel` | 1 | append/process | `kernel.cleanup` |
+
+Controlled merge remains owned by #107–#111 and is intentionally absent. The
+adapter MUST delete the old advertised placeholders (`run`, `run-suite`,
+`add-dependency`, `add-public-key`, `dispatch-role`, `run-judge`, `merge`,
+`delegate`, and `fanout`) unless a listed operation implements their required
+behavior. Capability discovery returns only the table above with schema digests,
+payload limits, and host qualification. Unknown operations fail before dispatch.
+
+```text
+record KernelEnvelopeV2 {
+  protocol = "kogg.ranex/v2"
+  requestId: uuid
+  operationId: uuid
+  idempotencyKey: sha256
+  operation: closed operation name
+  operationVersion: integer
+  ranexCommit: exact 40-hex
+  schemaSetDigest: sha256
+  bodyDigest: sha256
+  body: operation-specific closed record
+}
+
+record KernelResultV2 {
+  protocol = "kogg.ranex/v2"
+  requestId: same uuid
+  operationId: same uuid
+  status: "succeeded" | "refused" | "unknown"
+  safeCode: closed code
+  resultDigest: sha256-or-null
+  journal: JournalPositionV1-or-null
+  projection: operation-specific safe projection-or-null
+}
+```
+
+Frames are UTF-8, canonical JSON, maximum 1 MiB, maximum depth 32, maximum 4,096
+members, and have no duplicate keys, floats, non-NFC strings, unknown fields,
+unpaired Unicode, or noncanonical integers. At most 64 requests and 4 MiB of
+responses may be pending. The bridge pauses reads under backpressure. Raw
+requests, responses, stderr, evidence, and exceptions are never logged.
+
+### Canonical bytes and fixture authority
+
+`canonical-v1(value)` is RFC 8785-style JSON constrained further to the types
+above: UTF-8 NFC strings, lexicographically sorted keys by Unicode scalar value,
+base-10 integers in the signed 64-bit range, lowercase fixed-length hex digests,
+RFC 3339 UTC timestamps with millisecond precision, and no null unless the
+schema explicitly permits it. Digest domains prevent cross-record substitution:
+
+```text
+digest(domain, value) = sha256(
+  utf8("kogg:" + domain + ":v1\n") || canonical-v1(value)
+)
+```
+
+Domains are exactly `task-binding`, `authority`, `repository-state`,
+`producer`, `suite`, `check-definition`, `check-execution`, `evidence-manifest`,
+`evidence-set`, `gate-catalog`, `verdict`, `ranex-provenance`, and
+`idempotency`. Git object ids remain Git's native object ids and include object
+format (`sha1` or `sha256`); they are never reinterpreted as Kogg digests.
+
+#105 produces checked-in golden fixtures for empty/minimum/maximum records,
+Unicode normalization, key ordering, line endings, timestamp precision, every
+digest domain, Git SHA-1 and SHA-256 repositories, and every rejection. The same
+bytes and digests MUST be independently produced by TypeScript, Python, and a
+third simple fixture verifier. One-bit mutations MUST fail.
+
+### Immutable binding records
+
+```text
+record TaskExecutionBindingV1 {
+  taskId: uuid
+  taskRevision: integer
+  specificationDigest: sha256
+  approvalId: uuid
+  approvalDigest: sha256
+  authorityDigest: sha256
+  projectId: uuid
+  repositoryId: uuid
+  repositoryIdentityDigest: sha256
+  protectedSource: RepositoryStateV1
+  worktreeId: uuid
+  worktreeIdentityDigest: sha256
+  baseState: RepositoryStateV1
+  executionProfileDigest: sha256
+  expiresAt: RFC3339
+}
+
+record RepositoryStateV1 {
+  objectFormat: "sha1" | "sha256"
+  commitObjectId: exact native object id
+  treeObjectId: exact native object id
+  gitCommonDirectoryIdentity: opaque digest
+  worktreeIdentity: opaque digest
+  indexDigest: sha256
+  trackedContentDigest: sha256
+  untrackedPolicyDigest: sha256
+  isClean: boolean
+}
+
+record ProducerBindingV1 {
+  producerId: uuid
+  producerRole: "implementation"
+  adapterId: closed adapter id
+  adapterArtifactDigest: sha256
+  provider: closed provider id
+  model: exact model id
+  attemptId: uuid
+  taskBindingDigest: sha256
+  authorityDigest: sha256
+  executionProfileDigest: sha256
+}
+
+record FrozenSuiteV1 {
+  suiteId: uuid
+  suiteRevision: integer
+  manifestDigest: sha256
+  taskBindingDigest: sha256
+  subjectPolicy: "exact-commit"
+  checks: sorted nonempty CheckDefinitionV1[]
+  gateCatalogDigest: sha256
+  verifierAuthorityDigest: sha256
+}
+
+record CheckDefinitionV1 {
+  checkId: stable closed id
+  kind: "build" | "unit" | "integration" | "visible-e2e" |
+        "observability" | "diagnostics" | "source-maps" |
+        "process-cleanup" | "ranex-evidence"
+  executableArtifactDigest: sha256
+  argvTemplateDigest: sha256
+  environmentProfileDigest: sha256
+  timeoutMs: bounded integer
+  outputPolicyDigest: sha256
+  requiredProducerSeparation: boolean
+}
+```
+
+Paths and commands may be used by the execution owner but are not fields in
+these evidence-facing records. An approval is current only when authenticated,
+unrevoked, unexpired, and exact for the task revision/specification/repository/
+authority. `task.bind` recomputes all digests and Git facts from owned stores and
+the filesystem. It never trusts frontend projections.
+
+```text
+record CheckExecutionV1 {
+  executionId: uuid
+  suiteDigest: sha256
+  checkDefinitionDigest: sha256
+  subjectState: RepositoryStateV1
+  verifierId: uuid
+  verifierRole: "verification"
+  verifierArtifactDigest: sha256
+  processRegistrationId: uuid
+  executionProfileDigest: sha256
+  startedAt: RFC3339
+  finishedAt: RFC3339
+  outcome: "pass" | "fail" | "cancelled" | "timeout" | "infrastructure"
+  exitClass: "zero" | "nonzero" | "signal" | "none"
+  resultArtifactDigest: sha256
+  cleanupProofDigest: sha256
+}
+
+record EvidenceManifestV1 {
+  evidenceId: uuid
+  claimType: exact gate claim type
+  subjectStateDigest: sha256
+  taskBindingDigest: sha256
+  producerBindingDigest: sha256
+  suiteDigest: sha256
+  checkDefinitionDigest: sha256
+  checkExecutionDigest: sha256
+  resultArtifactDigest: sha256
+  authorityDigest: sha256
+  ranexProvenanceDigest: sha256
+  createdAt: RFC3339
+}
+
+record VerdictBindingV1 {
+  verdictId: uuid
+  taskBindingDigest: sha256
+  subjectStateDigest: sha256
+  gateCatalogDigest: sha256
+  evidenceSetDigest: sha256
+  authorityDigest: sha256
+  ranexProvenanceDigest: sha256
+  journalRootDigest: sha256
+  journalSequence: integer
+  decision: "pass" | "fail" | "blocked"
+  evaluatedAt: RFC3339
+}
+```
+
+Result artifacts contain bounded structured check facts, not captured source,
+stdout, stderr, prompts, or provider output. Raw execution streams are volatile
+and discarded after the authorized UI consumer and failure classifier finish.
+
+### Roles, admission, applicability, and freshness
+
+The controller may authorize work but cannot produce evidence. An
+`implementation` producer may mutate its private worktree but cannot freeze the
+suite, verify its own separated checks, admit evidence, evaluate gates, or issue
+a verdict. A `verification` identity cannot share producer attempt, adapter
+process, provider session, credential grant, or writable worktree. Ranex alone
+admits evidence and evaluates the gate catalog. Kogg only requests and projects.
+
+```text
+admitEvidence(expected, candidate):
+  verify current Ranex provenance, journal integrity, and schema digest
+  load immutable binding/suite/execution by exact digest
+  recompute current Git subject state independently
+  require candidate fields equal expected fields byte-for-byte
+  require execution outcome == pass and cleanup proof == zero residuals
+  require verifier separation where definition says true
+  require approval and authority current at execution and admission
+  require no existing evidence for idempotency key with different digest
+  append canonical evidence to Ranex journal
+  return journal position + evidence digest; never return raw body to UI
+```
+
+Evidence applies only if every bound digest equals the gate's independently
+computed expected digest. Each required claim selects exactly one admitted,
+nonsuperseded evidence item. Zero, multiple, conflicting, unknown, partially
+decoded, future-schema, failed, cancelled, or infrastructure results block.
+
+```text
+evaluateGate(expected):
+  verify journal from trusted root through current sequence
+  recompute task/approval/authority/repository/subject/suite/catalog/provenance
+  select the complete evidence set by exact claim and binding
+  reject duplicates, conflicts, gaps, producer violations, or stale timestamps
+  compute evidenceSetDigest from sorted evidence digests
+  evaluate closed policy without frontend/provider input
+  append VerdictBindingV1 and return safe projection
+```
+
+Any change to task revision, specification, approval, authority, repository
+identity, base/subject commit or tree, index/tracked state, worktree, producer,
+adapter/provider/model, execution profile, suite/check/toolchain, result,
+evidence set, gate catalog, Ranex artifact/schema, or verified journal root makes
+the previous evidence/verdict inapplicable. Historical PASS remains immutable
+and visible as stale; it is never rewritten or promoted to the new subject.
+
+### Idempotency and cross-store commit points
+
+The idempotency key is `digest("idempotency", {operation, version, immutable
+input digests})`. Client-selected UUIDs are correlation only. Repeating the same
+key and bytes returns the original safe result/journal position. The same key
+with different bytes yields `KERNEL_IDEMPOTENCY_CONFLICT`.
+
+```text
+mutatingOperation(request):
+  validate protocol, bounds, authority, bindings, and current host state
+  create Kogg intent PREPARED with request/body/idempotency digests
+  dispatch exact Ranex operation once
+  Ranex transaction checks idempotency, appends fact + hash-chain entry, commits
+  receive fact digest + journal position
+  independently read and verify committed entry
+  mark Kogg intent ACKNOWLEDGED with safe projection
+```
+
+The Ranex append is the evidence commit point. A lost acknowledgement after it
+is an `UNKNOWN` Kogg outcome, never permission to repeat side effects blindly.
+`operation.reconcile` queries only by exact idempotency/body/provenance digests,
+verifies the returned journal entry, then acknowledges the unique fact. No
+entry means the operation may be retried only if it has no external mutation;
+producer dispatch and check execution instead require process/repository
+reconciliation and usually a fresh authorized attempt. Multiple/conflicting
+entries yield `KERNEL_JOURNAL_AMBIGUOUS` and block admission.
+
+Kogg's operations database stores intent, safe lifecycle, correlations, and the
+verified Ranex digest/position only. It does not copy evidence/verdict bodies.
+SQLite transaction boundaries never claim to roll back Git, processes, or the
+Ranex journal.
+
+### Process ownership, cancellation, and recovery
+
+Kogg registers the bridge and every producer/check process before start through
+the operations supervisor. Ranex owns governed process/evidence facts; the
+qualified execution owner supplies cgroup/pidfd identity and zero-descendant
+proof. One operation has one durable state machine:
+
+```text
+REQUESTED -> VALIDATING -> PREPARED -> PROCESS_REGISTERED -> RUNNING
+RUNNING -> RESULT_OBSERVED -> JOURNAL_COMMITTED -> VERIFYING -> ACKNOWLEDGED
+any nonterminal -> CANCELLING -> CLEANING -> CANCELLED | FAILED | QUARANTINED
+PREPARED|RUNNING|RESULT_OBSERVED|JOURNAL_COMMITTED -> UNKNOWN -> RECONCILING
+RECONCILING -> ACKNOWLEDGED | FAILED | QUARANTINED
+```
+
+`RESULT_OBSERVED` and process exit are not evidence. `ACKNOWLEDGED` requires
+journal verification and cleanup proof. Absolute, idle, protocol, and cleanup
+deadlines are frozen in the request. Cancellation stops admission, revokes
+credentials, closes stdin, asks the governed owner to interrupt, sends TERM then
+KILL to the registered cgroup, drains bounded pipes, verifies zero descendants,
+and records the safe terminal result. Evidence already committed remains in the
+journal but may be inapplicable; it is never deleted.
+
+On backend startup, admission is disabled until the operation store and Ranex
+journal verify. A single recovery lease scans all nonterminal intents, reconciles
+process identities and exact journal idempotency entries, kills residual owned
+processes, verifies Git state, and chooses the unique valid state transition.
+Unknown process identity, journal corruption, duplicate fact, or residual child
+quarantines the operation and repository. Recovery never reruns a producer or
+check with uncertain side effects.
+
+### Closed failures, logs, metrics, and safe UI projection
+
+The V1 safe codes are:
+
+```text
+KERNEL_OK                       KERNEL_PROTOCOL_MISMATCH
+KERNEL_PROTOCOL_INVALID         KERNEL_PROTOCOL_OVERFLOW
+KERNEL_CAPABILITY_UNAVAILABLE   KERNEL_PROVENANCE_MISMATCH
+KERNEL_AUTHORITY_INVALID        KERNEL_TASK_BINDING_MISMATCH
+KERNEL_REPOSITORY_MISMATCH      KERNEL_SUBJECT_STALE
+KERNEL_PRODUCER_INVALID         KERNEL_ROLE_SEPARATION_FAILED
+KERNEL_SUITE_MISMATCH           KERNEL_CHECK_FAILED
+KERNEL_CHECK_TIMEOUT            KERNEL_CHECK_INFRASTRUCTURE
+KERNEL_EVIDENCE_INVALID         KERNEL_EVIDENCE_MISSING
+KERNEL_EVIDENCE_DUPLICATE       KERNEL_EVIDENCE_CONFLICT
+KERNEL_EVIDENCE_STALE           KERNEL_GATE_INCOMPLETE
+KERNEL_VERDICT_STALE            KERNEL_IDEMPOTENCY_CONFLICT
+KERNEL_JOURNAL_INTEGRITY        KERNEL_JOURNAL_AMBIGUOUS
+KERNEL_OUTCOME_UNKNOWN          KERNEL_CANCELLED
+KERNEL_CLEANUP_FAILED           KERNEL_RESIDUAL_PROCESS
+KERNEL_BACKEND_RESTARTED        KERNEL_INTERNAL
+```
+
+Unknown Python/Node/Git/provider errors map to `KERNEL_INTERNAL`; raw strings are
+discarded. Loggers are `kogg:kernel:bridge`, `kogg:kernel:binding`,
+`kogg:kernel:producer`, `kogg:kernel:checks`, `kogg:kernel:evidence`,
+`kogg:kernel:verdict`, and `kogg:kernel:recovery`. Events are closed:
+
+```text
+request.received|validated|refused
+process.registered|spawn.started|started|exit|cleanup.started|cleanup.completed
+binding.started|completed|failed
+producer.started|activity|completed|failed
+suite.freeze.started|completed|failed
+check.started|activity|completed|failed|timeout
+evidence.admit.started|committed|verified|failed
+gate.evaluate.started|completed|blocked|failed
+operation.cancel.started|completed
+recovery.started|reconciled|quarantined|completed|failed
+```
+
+Fields are restricted to timestamp, logger/event, request/operation/process/task
+correlation UUIDs, operation kind/version, lifecycle state, safe code, bounded
+duration/counts, boolean outcome, and non-content digests. Never log paths,
+commands/arguments, environments, credentials, prompts, code, diffs, captured
+streams, raw protocol/evidence/journal/provider bodies, personal data, or raw
+errors. Metrics use operation/check kind, terminal class, safe code, and bounded
+duration buckets only; UUIDs and digests are not metric labels.
+
+The UI may show task revision number, repository display reference supplied by
+the project registry, abbreviated subject id, producer/verifier roles, named
+check kinds, safe status/code, journal sequence, evidence count, verdict, and
+stale reason category. It cannot render raw evidence or treat a displayed PASS
+as merge authority. Every action revalidates backend facts.
+
+### Diagnostic and debugger contract
+
+#106 adds these exact catalog ids:
+
+| Diagnostic id | Fail-closed check |
+| --- | --- |
+| `kernel.protocol` | handshake, schema set, operation closure, frame fixtures |
+| `kernel.bridge` | artifact provenance, process registration, bounded transport |
+| `kernel.bindings` | task/approval/authority/repository cross-record integrity |
+| `kernel.producers` | producer identity, role, attempt, process ownership |
+| `kernel.suites` | frozen manifest/catalog/check-definition integrity |
+| `kernel.checks` | execution binding, deadlines, cleanup proof |
+| `kernel.evidence` | admission semantics, idempotency, exact applicability |
+| `kernel.verdicts` | complete evidence set, freshness, journal/root binding |
+| `kernel.cleanup` | cancellation escalation and zero descendants |
+| `kernel.recovery` | intent chain, lease, unknown-outcome reconciliation |
+| `kernel.source-maps` | browser/backend/Electron bridge debugger reachability |
+
+Diagnostics return only id, status, safe code, provenance/schema/profile
+digests, bounded counts/durations, and remediation id. Every operational file
+declares the matching `diagnostic-coverage` id. Failure tests cover absent and
+throwing contributors so diagnostics cannot report false health.
+
+Source maps remain enabled. Debugger proof sets breakpoints in browser task
+action, backend validation, TypeScript bridge send/decode, Python dispatch,
+process registration/cleanup, evidence admission, gate evaluation, and startup
+reconciliation. The real Python source is mapped and reachable; no generated or
+opaque layer may hide a lifecycle boundary.
+
+### #105 probe and #106 visible E2E handoff
+
+#105 uses the real pinned Ranex adapter, SQLite journal, Git repositories,
+registered subprocesses, and cross-language canonical fixtures. Its primary
+scenario loses the Kogg acknowledgement immediately after one real evidence
+append, restarts, reconciles by exact idempotency digest, returns the unique fact,
+evaluates the gate once, and proves zero residual processes. It fault-injects
+every state transition and independently mutates each binding listed above.
+
+The probe additionally covers partial/oversized/duplicate/out-of-order frames,
+stderr flood, backpressure, bridge/check crash, hung and escaped child, TERM/KILL,
+journal byte corruption, duplicate/conflicting idempotency rows, Git state races,
+approval revocation, producer/verifier collision, stale subject, Ranex provenance
+mismatch, store contention, and restart at every commit point. Expected outcome
+is a closed safe code, durable lifecycle, no false PASS, no duplicate side
+effect, no content leakage, and externally proven cleanup.
+
+#106 visible browser and Electron E2E MUST:
+
+1. create, freeze, approve, and repository-bind a task through production UI;
+2. dispatch a real producer in a qualified private worktree;
+3. freeze and run a real independent deterministic suite;
+4. admit exact evidence and display a current Ranex PASS projection;
+5. independently verify Git objects, journal chain, bindings, verdict, and
+   external process inventory;
+6. mutate each critical binding one at a time and visibly refuse stale/false
+   evidence before any merge path;
+7. cancel a hanging check and restart after a lost acknowledgement;
+8. inspect diagnostics/support export and exercise debugger/source-map points;
+9. scan browser/backend/Electron/Python logs and exports for seeded prompt,
+   source, diff, path, command, environment, credential, stream, and provider
+   canaries; and
+10. pass `yarn test`, `yarn audit:observability`, three-OS degraded/application
+    CI, qualified-Linux execution, real Ranex evidence, and zero-residual gates.
+
+Expected success trace is request validation, process registration/start,
+producer/check activity, process exit/cleanup, evidence committed/verified, gate
+completed, and safe acknowledgement. Cancellation and recovery use their named
+events and end with cleanup proof. Missing lifecycle events are test failures.
+
+No implementation choice remains for #105: operation names, schemas, digest
+domains, bindings, role rules, applicability, idempotency, commit points, process
+states, recovery, safe codes/logs, diagnostics, fault seams, and visible E2E are
+fixed. A real probe incompatibility blocks production rather than weakening the
+evidence contract.
+
+## Research and pseudocode gate verdict
 
 - Commit-pinned sources and licenses: recorded.
 - Rejected approaches: recorded.
 - Processes, logs, diagnostics, failure/recovery, security, maintenance, and E2E
   risks: explicit.
-- Findings support decision-complete pseudocode: yes, subject to the exact
-  canonical schemas and operation closure in #104.
+- Decision-complete schemas and operation closure: fixed above for #105.
 
-The highest-risk assumption for #105 is that one exact evidence admission can
+The highest-risk assumption for #105 remains that one exact evidence admission can
 remain idempotent and correctly bound across a real check process, Git subject
 observation, Ranex journal append, lost Kogg acknowledgement, backend restart,
 and subsequent gate evaluation without accepting a stale/mismatched claim or
