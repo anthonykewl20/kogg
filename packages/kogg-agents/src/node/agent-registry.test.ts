@@ -6,6 +6,7 @@ import { DatabaseSync } from 'node:sqlite';
 import test from 'node:test';
 import type { OperationLease, OperationRegistryApi, ProcessLease, StartOperation, StartProcess } from '@kogg/operations/lib/common/operations-protocol';
 import type { TaskAdmissionAuthority, TaskAdmissionSnapshot } from '@kogg/tasks/lib/common/tasks-protocol';
+import type { AdapterAttemptBindingV1, AgentAdapterFactory } from '../common/agents-protocol';
 import { AdapterRegistry } from './adapter-registry';
 import { AgentRegistry } from './agent-registry';
 import { FixtureAdapter } from './fixture-adapter';
@@ -18,13 +19,20 @@ const ADMISSION: TaskAdmissionSnapshot = { taskAdmissionId: '10000000-0000-4000-
 test('runs a real supervised fixture host through completion and proves cleanup', async () => {
   const directory = await mkdtemp(path.join(os.tmpdir(), 'kogg-agents-')); const prior = process.env.KOGG_STATE_DIR; process.env.KOGG_STATE_DIR = directory;
   const adapters = new AdapterRegistry(); const operations = new TestOperations(); const authority: TaskAdmissionAuthority = { resolveAdmission: async id => id === ADMISSION.taskAdmissionId ? ADMISSION : undefined };
-  const registry = new AgentRegistry(authority, operations, adapters, new LocalCredentialLeaseAuthority()); const fixture = new FixtureAdapter(adapters);
+  const registry = new AgentRegistry(authority, operations, adapters, new LocalCredentialLeaseAuthority()); const fixture = new FixtureAdapter(adapters); let adapterBinding: AdapterAttemptBindingV1 | undefined;
+  const create = fixture.create.bind(fixture); fixture.create = (input: Parameters<AgentAdapterFactory['create']>[0]) => { adapterBinding = input.binding; return create(input); };
   try {
     await registry.onStart(); fixture.onStart();
     const role = await registry.createRoleRevision(roleRequest('20000000-0000-4000-8000-000000000001', '0'));
     assert.equal(role.kind, 'completed'); assert.ok(role.role);
     const result = await registry.startAttempt({ schemaVersion: '1', requestId: '30000000-0000-4000-8000-000000000001', expectedRegistryRevision: role.registryRevision, taskAdmissionId: ADMISSION.taskAdmissionId, roleRevisionId: role.role.roleRevisionId, providerId: 'kogg.fixture', modelId: 'fixture.echo', adapterKey: 'kogg.fixture', adapterVersion: '1.0.0', deadlinePolicyId: 'interactive-v1' });
     assert.equal(result.kind, 'completed'); assert.ok(result.attempt);
+    assert.deepEqual(adapterBinding, {
+      schemaVersion: '1', attemptId: result.attempt.attemptId, taskId: ADMISSION.taskId, projectId: ADMISSION.projectId,
+      repositoryId: ADMISSION.repositoryId, repositoryBindingRevision: ADMISSION.bindingRevision,
+      specificationId: ADMISSION.specificationId, approvalId: ADMISSION.approvalId, runId: ADMISSION.runId,
+      roleRevisionId: role.role.roleRevisionId, deadlinePolicyId: 'interactive-v1', providerId: 'kogg.fixture', modelId: 'fixture.echo'
+    });
     const terminal = await poll(() => registry.getAttempt(result.attempt!.attemptId), value => value.state === 'cleaned');
     assert.equal(terminal.terminalCode, 'AGENT_OK'); assert.equal(terminal.ownedResourceCount, '0'); assert.deepEqual(terminal.usage, { status: 'complete', source: 'provider-cumulative', inputTokens: '1', outputTokens: '1', totalTokens: '2' });
     assert.equal(registry.diagnostics().residualCount, 0); assert.equal(operations.processes.every(process => process.cleaned), true);
@@ -41,6 +49,18 @@ test('refuses an absent exact adapter before creating an operation', async () =>
     assert.equal(result.kind, 'refused'); assert.equal(result.code, 'ADAPTER_UNAVAILABLE'); assert.equal(result.attempt?.state, 'cleaned'); assert.equal(operations.started, 0);
     const replay = await registry.startAttempt(request); assert.equal(replay.kind, 'refused'); assert.equal(replay.code, 'ADAPTER_UNAVAILABLE'); assert.equal(replay.replay, true); assert.equal(replay.attempt?.attemptId, result.attempt?.attemptId); assert.equal(operations.started, 0);
     const collision = await registry.startAttempt({ ...request, adapterVersion: '2.0.0' }); assert.equal(collision.kind, 'refused'); assert.equal(collision.code, 'REQUEST_ID_REUSED'); assert.equal(operations.started, 0);
+  } finally { await registry.onStop(); if (prior === undefined) delete process.env.KOGG_STATE_DIR; else process.env.KOGG_STATE_DIR = prior; await rm(directory, { recursive: true, force: true }); }
+});
+
+test('rechecks the immutable admission binding before credentials or process activity', async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), 'kogg-agents-')); const prior = process.env.KOGG_STATE_DIR; process.env.KOGG_STATE_DIR = directory;
+  const adapters = new AdapterRegistry(); const operations = new TestOperations(); let resolves = 0;
+  const authority: TaskAdmissionAuthority = { resolveAdmission: async () => ++resolves === 1 ? ADMISSION : { ...ADMISSION, bindingRevision: '2' } };
+  const registry = new AgentRegistry(authority, operations, adapters, new LocalCredentialLeaseAuthority()); const fixture = new FixtureAdapter(adapters);
+  try {
+    await registry.onStart(); fixture.onStart(); const role = await registry.createRoleRevision(roleRequest('20000000-0000-4000-8000-000000000012', '0')); assert.ok(role.role);
+    const result = await registry.startAttempt({ schemaVersion: '1', requestId: '30000000-0000-4000-8000-000000000012', expectedRegistryRevision: role.registryRevision, taskAdmissionId: ADMISSION.taskAdmissionId, roleRevisionId: role.role.roleRevisionId, providerId: 'kogg.fixture', modelId: 'fixture.echo', adapterKey: 'kogg.fixture', adapterVersion: '1.0.0', deadlinePolicyId: 'interactive-v1' });
+    assert.equal(result.kind, 'refused'); assert.equal(result.code, 'PROJECT_BINDING_CHANGED'); assert.equal(result.attempt?.state, 'cleaned'); assert.equal(operations.started, 0); assert.equal(operations.processes.length, 0);
   } finally { await registry.onStop(); if (prior === undefined) delete process.env.KOGG_STATE_DIR; else process.env.KOGG_STATE_DIR = prior; await rm(directory, { recursive: true, force: true }); }
 });
 

@@ -29,20 +29,20 @@ class FixtureSession implements AgentAdapterSession {
     const script = createRequire(__filename).resolve('@kogg/agents/lib/node/fixture-host.js');
     const childEnvironment: NodeJS.ProcessEnv = { PATH: process.env.PATH ?? '', SystemRoot: process.env.SystemRoot ?? '' };
     if (process.versions.electron) childEnvironment.ELECTRON_RUN_AS_NODE = '1';
-    const child = spawn(process.execPath, [script, this.input.modelId], { cwd: process.cwd(), env: childEnvironment, stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true, detached: process.platform !== 'win32' });
+    const child = spawn(process.execPath, [script, this.input.binding.modelId], { cwd: process.cwd(), env: childEnvironment, stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true, detached: process.platform !== 'win32' });
     this.child = child; if (!child.pid) { this.process.failed('PROCESS_SPAWN_FAILED', 'MissingPid'); throw new FixtureAdapterError('ADAPTER_HOST_EXITED'); }
     this.process.started(child.pid);
     this.settled = new Promise<void>((resolve, reject) => {
       const lines = createInterface({ input: child.stdout, crlfDelay: Infinity });
-      lines.on('line', line => { try { const observation = parseObservation(line); if (observation.kind === 'ready') this.process?.ready(); else this.process?.activity(); this.input.onObservation(observation); } catch (error) { /* observability-exempt: closed agentLog emits the sanitized invalid-observation boundary before rejection. */ agentLog('adapter.observation.refused', { attemptId: this.input.attemptId, resourceId: this.resourceId, safeCode: 'ADAPTER_OBSERVATION_INVALID', errorType: error instanceof Error ? error.name : 'UnknownError' }); reject(error); } });
+      lines.on('line', line => { try { const observation = parseObservation(line); if (observation.kind === 'ready') this.process?.ready(); else this.process?.activity(); this.input.onObservation(observation); } catch (error) { /* observability-exempt: closed agentLog emits the sanitized invalid-observation boundary before rejection. */ agentLog('adapter.observation.refused', { attemptId: this.input.binding.attemptId, resourceId: this.resourceId, safeCode: 'ADAPTER_OBSERVATION_INVALID', errorType: error instanceof Error ? error.name : 'UnknownError' }); reject(error); } });
       child.stderr.resume();
       child.once('error', error => { this.process?.failed('PROCESS_SPAWN_FAILED', error.name); reject(new FixtureAdapterError('ADAPTER_HOST_EXITED')); });
-      child.once('exit', (code, signal) => { this.process?.exited(signal ? 'signal' : code === 0 ? 'zero' : 'nonzero'); agentLog('adapter.host.exited', { attemptId: this.input.attemptId, resourceId: this.resourceId, exitClass: signal ? 'signal' : code === 0 ? 'zero' : 'nonzero' }); if (code === 0 || signal) resolve(); else reject(new FixtureAdapterError('ADAPTER_HOST_EXITED')); });
+      child.once('exit', (code, signal) => { this.process?.exited(signal ? 'signal' : code === 0 ? 'zero' : 'nonzero'); agentLog('adapter.host.exited', { attemptId: this.input.binding.attemptId, resourceId: this.resourceId, exitClass: signal ? 'signal' : code === 0 ? 'zero' : 'nonzero' }); if (code === 0 || signal) resolve(); else reject(new FixtureAdapterError('ADAPTER_HOST_EXITED')); });
     });
     return this.settled;
   }
   async cancel(reason: CancelAttemptRequestV1['reason']): Promise<void> { const child = this.child; if (!child || child.exitCode !== null || child.signalCode !== null) return; child.stdin.write(`${JSON.stringify({ kind: 'cancel', reason })}\n`); await Promise.race([this.settled?.catch(() => undefined) ?? Promise.resolve(), delay(1_000)]); if (child.exitCode === null && child.signalCode === null) child.kill('SIGTERM'); }
-  async cleanup(): Promise<{ readonly residualCount: number }> { if (this.input.modelId === 'fixture.cleanup-hang') await delay(1_000); const child = this.child; if (child && child.exitCode === null && child.signalCode === null) { if (process.platform !== 'win32' && child.pid) { try { process.kill(-child.pid, 'SIGTERM'); } catch { // observability-exempt: ESRCH is an expected absence proof and the residual inventory below remains authoritative.
+  async cleanup(): Promise<{ readonly residualCount: number }> { if (this.input.binding.modelId === 'fixture.cleanup-hang') await delay(1_000); const child = this.child; if (child && child.exitCode === null && child.signalCode === null) { if (process.platform !== 'win32' && child.pid) { try { process.kill(-child.pid, 'SIGTERM'); } catch { // observability-exempt: ESRCH is an expected absence proof and the residual inventory below remains authoritative.
           /* already absent */ } } else child.kill('SIGTERM'); await waitForExit(child, 2_000); } const residualCount = child && child.exitCode === null && child.signalCode === null ? 1 : 0; if (!residualCount) this.process?.cleanup(); return { residualCount }; }
 }
 

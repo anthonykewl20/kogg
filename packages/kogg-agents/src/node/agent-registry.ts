@@ -88,9 +88,20 @@ export class AgentRegistry implements KoggAgentsService, BackendApplicationContr
       if (parent) this.attachChild(parent, attemptId);
       const factory = this.adapters.resolveExact({ adapterKey: request.adapterKey, adapterVersion: request.adapterVersion, providerId: request.providerId, modelId: request.modelId, requiredCapabilities: role.providerPolicy.requiredAdapterCapabilities });
       this.transition(attemptId, 'adapter_resolved'); agentLog('adapter.resolved', { attemptId, adapterKey: factory.descriptor.adapterKey, adapterVersion: factory.descriptor.adapterVersion, protocolId: factory.descriptor.protocolId, protocolVersion: factory.descriptor.protocolVersion, providerId: request.providerId, modelId: request.modelId });
+      const currentAdmission = await this.tasks.resolveAdmission(request.taskAdmissionId);
+      if (!currentAdmission) throw new AgentError('TASK_AUTHORITY_STALE');
+      if (!sameAdmission(admission, currentAdmission)) throw new AgentError('PROJECT_BINDING_CHANGED');
       const operation = await this.operations.startOperation({ kind: 'agent-dispatch', correlations: { taskId: admission.taskId, runId: admission.runId, attemptId } }); pendingOperation = operation; operation.start();
       const credentialLease = await this.credentials.issue({ attemptId, providerId: request.providerId, modelId: request.modelId, adapterKey: request.adapterKey, adapterVersion: request.adapterVersion, capabilityIds: factory.descriptor.capabilityIds }); pendingCredentialLease = credentialLease;
-      const session = factory.create({ attemptId, taskId: admission.taskId, providerId: request.providerId, modelId: request.modelId, operation, credentialLease, onObservation: observation => this.observe(attemptId!, observation) }); pendingSession = session;
+      const session = factory.create({
+        binding: {
+          schemaVersion: '1', attemptId, taskId: admission.taskId, projectId: admission.projectId, repositoryId: admission.repositoryId,
+          repositoryBindingRevision: admission.bindingRevision, specificationId: admission.specificationId, approvalId: admission.approvalId,
+          runId: admission.runId, roleRevisionId: request.roleRevisionId, deadlinePolicyId: request.deadlinePolicyId,
+          providerId: request.providerId, modelId: request.modelId
+        },
+        operation, credentialLease, onObservation: observation => this.observe(attemptId!, observation)
+      }); pendingSession = session;
       this.registerResource(attemptId, operation.id, session); this.transition(attemptId, 'registered'); agentLog('resource.registered', { attemptId, operationId: operation.id, resourceId: session.resourceId, ownerKind: session.ownerKind, resourceKind: session.resourceKind });
       this.live.set(attemptId, { session, operation, credentialLease, cancelled: false, timers: new Map() }); const live = this.live.get(attemptId)!; this.transition(attemptId, 'starting'); this.arm(attemptId, live, 'handshake', duration('handshake'), 'HANDSHAKE_TIMEOUT'); this.arm(attemptId, live, 'absolute', duration('absolute'), 'ABSOLUTE_TIMEOUT'); pendingOperation = undefined; pendingCredentialLease = undefined; pendingSession = undefined; agentLog('adapter.start.requested', { attemptId, resourceId: session.resourceId, deadlineClass: 'handshake' }); void this.runSession(attemptId, live);
       const result: AgentMutationResult = { kind: 'completed', code: 'AGENT_OK', registryRevision: String(this.registryRevision()), attempt: await this.getAttempt(attemptId) }; this.updateRecordedResult(request.requestId, result); return result;
@@ -184,6 +195,12 @@ function requireRolePolicy(role: RoleRevisionV1, request: StartAttemptRequestV1)
 function normalizedAuthority(value: RoleRevisionV1['authority']): RoleRevisionV1['authority'] { return { ...value, capabilityIds: unique(value.capabilityIds), toolPolicyIds: unique(value.toolPolicyIds), permittedChildRoleKeys: unique(value.permittedChildRoleKeys) }; }
 function normalizedProvider(value: RoleRevisionV1['providerPolicy']): RoleRevisionV1['providerPolicy'] { return { permittedProviderIds: unique(value.permittedProviderIds), permittedModelIds: unique(value.permittedModelIds), requiredAdapterCapabilities: unique(value.requiredAdapterCapabilities) }; }
 function unique(values: readonly string[]): readonly string[] { return [...new Set(values)].sort(); }
+function sameAdmission(left: NonNullable<Awaited<ReturnType<AdmissionAuthority['resolveAdmission']>>>, right: NonNullable<Awaited<ReturnType<AdmissionAuthority['resolveAdmission']>>>): boolean {
+  return left.taskAdmissionId === right.taskAdmissionId && left.taskId === right.taskId && left.specificationId === right.specificationId
+    && left.approvalId === right.approvalId && left.projectId === right.projectId && left.repositoryId === right.repositoryId
+    && left.bindingRevision === right.bindingRevision && left.registryRevision === right.registryRevision
+    && left.taskRevision === right.taskRevision && left.runId === right.runId;
+}
 function subset(values: readonly string[], grant: readonly string[]): boolean { return values.every(value => grant.includes(value)); }
 function terminal(state: AttemptState): boolean { return ['cleaned', 'cleanup_failed', 'recovered_terminal', 'unverified_residual'].includes(state); }
 function settling(state: AttemptState): boolean { return ['completed_observed', 'failed_observed', 'cancelling', 'timed_out', 'cleaning', 'cleaned', 'cleanup_failed', 'recovery_required', 'reconciling', 'recovered_terminal', 'unverified_residual'].includes(state); }
