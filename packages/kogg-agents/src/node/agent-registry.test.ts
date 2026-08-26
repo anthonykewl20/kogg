@@ -76,6 +76,7 @@ test('classifies adapter, provider, usage, model, and deadline failures with zer
     ['fixture.model-mismatch', 'MODEL_MISMATCH'],
     ['fixture.handshake', 'HANDSHAKE_TIMEOUT'],
     ['fixture.idle', 'IDLE_TIMEOUT'],
+    ['fixture.provider-request', 'PROVIDER_REQUEST_TIMEOUT'],
     ['fixture.absolute', 'ABSOLUTE_TIMEOUT'],
     ['fixture.usage-decrease', 'AGENT_OK']
   ] as const;
@@ -101,6 +102,29 @@ test('cancels a ready streaming host and commits zero-resource cleanup', async (
     const cancelled = await registry.cancelAttempt({ schemaVersion: '1', requestId: '42000000-0000-4000-8000-000000000001', expectedRegistryRevision: ready.registryRevision, expectedAttemptRevision: ready.attemptRevision, attemptId: ready.attemptId, reason: 'user' });
     assert.equal(cancelled.kind, 'completed'); assert.equal(cancelled.code, 'CANCELLED'); assert.equal(cancelled.attempt?.state, 'cleaned'); assert.equal(cancelled.attempt?.terminalCode, 'CANCELLED'); assert.equal(cancelled.attempt?.ownedResourceCount, '0'); assert.equal(operations.processes.every(process => process.cleaned), true);
   } finally { await registry.onStop(); if (prior === undefined) delete process.env.KOGG_STATE_DIR; else process.env.KOGG_STATE_DIR = prior; await rm(directory, { recursive: true, force: true }); }
+});
+
+test('escalates an unacknowledged cancel at its persisted grace deadline', async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), 'kogg-agents-')); const priorState = process.env.KOGG_STATE_DIR; const priorDeadline = process.env.KOGG_AGENT_TEST_DEADLINES; process.env.KOGG_STATE_DIR = directory; process.env.KOGG_AGENT_TEST_DEADLINES = '1';
+  const adapters = new AdapterRegistry(); const operations = new TestOperations(); const registry = new AgentRegistry({ resolveAdmission: async () => ADMISSION }, operations, adapters, new LocalCredentialLeaseAuthority()); const fixture = new FixtureAdapter(adapters);
+  try {
+    await registry.onStart(); fixture.onStart(); const role = await registry.createRoleRevision(roleRequest('22000000-0000-4000-8000-000000000002', '0', 'fixture.cancel-grace')); assert.ok(role.role);
+    const started = await registry.startAttempt({ schemaVersion: '1', requestId: '32000000-0000-4000-8000-000000000002', expectedRegistryRevision: role.registryRevision, taskAdmissionId: ADMISSION.taskAdmissionId, roleRevisionId: role.role.roleRevisionId, providerId: 'kogg.fixture', modelId: 'fixture.cancel-grace', adapterKey: 'kogg.fixture', adapterVersion: '1.0.0', deadlinePolicyId: 'interactive-v1' }); assert.ok(started.attempt);
+    const ready = await poll(() => registry.getAttempt(started.attempt!.attemptId), value => value.state === 'ready');
+    const cancelled = await registry.cancelAttempt({ schemaVersion: '1', requestId: '42000000-0000-4000-8000-000000000002', expectedRegistryRevision: ready.registryRevision, expectedAttemptRevision: ready.attemptRevision, attemptId: ready.attemptId, reason: 'user' });
+    assert.equal(cancelled.kind, 'completed'); assert.equal(cancelled.code, 'CANCEL_GRACE_EXPIRED'); assert.equal(cancelled.attempt?.state, 'cleaned'); assert.equal(cancelled.attempt?.terminalCode, 'CANCEL_GRACE_EXPIRED'); assert.equal(cancelled.attempt?.ownedResourceCount, '0'); assert.equal(operations.processes.every(process => process.cleaned), true);
+  } finally { await registry.onStop(); if (priorState === undefined) delete process.env.KOGG_STATE_DIR; else process.env.KOGG_STATE_DIR = priorState; if (priorDeadline === undefined) delete process.env.KOGG_AGENT_TEST_DEADLINES; else process.env.KOGG_AGENT_TEST_DEADLINES = priorDeadline; await rm(directory, { recursive: true, force: true }); }
+});
+
+test('blocks admission when the persisted cleanup deadline expires', async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), 'kogg-agents-')); const priorState = process.env.KOGG_STATE_DIR; const priorDeadline = process.env.KOGG_AGENT_TEST_DEADLINES; process.env.KOGG_STATE_DIR = directory; process.env.KOGG_AGENT_TEST_DEADLINES = '1';
+  const adapters = new AdapterRegistry(); const operations = new TestOperations(); const registry = new AgentRegistry({ resolveAdmission: async () => ADMISSION }, operations, adapters, new LocalCredentialLeaseAuthority()); const fixture = new FixtureAdapter(adapters);
+  try {
+    await registry.onStart(); fixture.onStart(); const role = await registry.createRoleRevision(roleRequest('22000000-0000-4000-8000-000000000003', '0', 'fixture.cleanup-hang')); assert.ok(role.role);
+    const started = await registry.startAttempt({ schemaVersion: '1', requestId: '32000000-0000-4000-8000-000000000003', expectedRegistryRevision: role.registryRevision, taskAdmissionId: ADMISSION.taskAdmissionId, roleRevisionId: role.role.roleRevisionId, providerId: 'kogg.fixture', modelId: 'fixture.cleanup-hang', adapterKey: 'kogg.fixture', adapterVersion: '1.0.0', deadlinePolicyId: 'interactive-v1' }); assert.ok(started.attempt);
+    const terminal = await poll(() => registry.getAttempt(started.attempt!.attemptId), value => value.state === 'cleanup_failed');
+    assert.equal(terminal.terminalCode, 'CLEANUP_FAILED'); assert.equal(terminal.ownedResourceCount, '1'); assert.equal((await registry.snapshot()).admission, 'blocked'); assert.equal(registry.diagnostics().residualCount, 1);
+  } finally { await registry.onStop(); if (priorState === undefined) delete process.env.KOGG_STATE_DIR; else process.env.KOGG_STATE_DIR = priorState; if (priorDeadline === undefined) delete process.env.KOGG_AGENT_TEST_DEADLINES; else process.env.KOGG_AGENT_TEST_DEADLINES = priorDeadline; await rm(directory, { recursive: true, force: true }); }
 });
 
 function roleRequest(requestId: string, expectedRegistryRevision: string, model = 'fixture.echo') { return { schemaVersion: '1' as const, requestId, expectedRegistryRevision, roleKey: 'implementer', displayName: 'Implementer', authority: { capabilityIds: ['provider-turn'], toolPolicyIds: ['read-only'], mayCreateChildren: false, permittedChildRoleKeys: [], maxChildDepth: '0', maxDirectChildren: '0' }, providerPolicy: { permittedProviderIds: ['kogg.fixture'], permittedModelIds: [model], requiredAdapterCapabilities: ['provider-turn'] }, budgetPolicyId: 'fixture-budget' }; }
