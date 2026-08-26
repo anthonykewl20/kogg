@@ -8,12 +8,15 @@ type EventFields = {
   'process.start.requested': { operationId: string; processId: string };
   'process.started': { operationId: string; processId: string };
   'process.failed': { operationId: string; processId: string; safeCode: CodexSafeCode };
+  'protocol.phase.changed': { phase: string };
+  'protocol.frame.refused': { safeCode: CodexSafeCode };
   'diagnostics.failed': { errorType: string };
 };
 const ALLOWED: { [K in keyof EventFields]: readonly (keyof EventFields[K])[] } = {
   'release.verification.started': ['adapterVersion'], 'release.verification.completed': ['releaseId', 'target', 'adapterVersion'],
   'release.verification.failed': ['adapterVersion', 'safeCode'], 'process.start.requested': ['operationId', 'processId'],
-  'process.started': ['operationId', 'processId'], 'process.failed': ['operationId', 'processId', 'safeCode'], 'diagnostics.failed': ['errorType']
+  'process.started': ['operationId', 'processId'], 'process.failed': ['operationId', 'processId', 'safeCode'],
+  'protocol.phase.changed': ['phase'], 'protocol.frame.refused': ['safeCode'], 'diagnostics.failed': ['errorType']
 };
 let violationCount = 0;
 export function codexLog<K extends keyof EventFields>(event: K, fields: EventFields[K]): void {
@@ -25,6 +28,8 @@ export function codexLog<K extends keyof EventFields>(event: K, fields: EventFie
   else if (event === 'process.start.requested') console.info('[kogg:agents:codex-release] process.start.requested', fields);
   else if (event === 'process.started') console.info('[kogg:agents:codex-release] process.started', fields);
   else if (event === 'process.failed') console.error('[kogg:agents:codex-release] process.failed', fields);
+  else if (event === 'protocol.phase.changed') console.info('[kogg:agents:codex-protocol] protocol.phase.changed', fields);
+  else if (event === 'protocol.frame.refused') console.error('[kogg:agents:codex-protocol] protocol.frame.refused', fields);
   else console.error('[kogg:agents:codex-release] diagnostics.failed', fields);
 }
 export function codexLoggingDiagnostics(): { readonly schemaCount: number; readonly violationCount: number } { return { schemaCount: Object.keys(ALLOWED).length, violationCount }; }
