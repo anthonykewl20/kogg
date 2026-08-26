@@ -1,0 +1,26 @@
+{
+  "name": "@kogg/workflow-prototype",
+  "version": "0.0.0",
+  "private": true,
+  "license": "UNLICENSED",
+  "main": "lib/common/workflow-prototype-protocol.js",
+  "types": "lib/common/workflow-prototype-protocol.d.ts",
+  "theiaExtensions": [
+    { "frontend": "lib/browser/frontend-module", "backend": "lib/node/backend-module" }
+  ],
+  "scripts": {
+    "build": "tsc -b",
+    "clean": "rimraf lib tsconfig.tsbuildinfo",
+    "test": "node --test lib/**/*.test.js"
+  },
+  "dependencies": {
+    "@kogg/operations": "0.1.0",
+    "@theia/core": "1.74.1",
+    "inversify": "6.2.2"
+  },
+  "devDependencies": {
+    "@types/node": "22.15.3",
+    "rimraf": "6.0.1",
+    "typescript": "5.9.3"
+  }
+}
