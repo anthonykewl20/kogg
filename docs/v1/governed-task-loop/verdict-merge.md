@@ -1,14 +1,16 @@
 # Evidence, verdict, and controlled-merge experience
 
 Tracking: [#107](https://github.com/anthonykewl20/kogg/issues/107), research
-phase [#108](https://github.com/anthonykewl20/kogg/issues/108).
+phase [#108](https://github.com/anthonykewl20/kogg/issues/108), and pseudocode
+phase [#109](https://github.com/anthonykewl20/kogg/issues/109). The normative
+contract is in [`verdict-merge-pseudocode.md`](verdict-merge-pseudocode.md).
 
 ## Status
 
-Research is complete as of 2026-08-27. This packet contains no production code
-and deliberately stops before decision-complete schemas and pseudocode. Those
-belong to #109, followed by a real-boundary probe in #110 and production behavior
-plus real human-level E2E in #111.
+Research and decision-complete pseudocode are complete as of 2026-08-27. These
+packets contain no production code. #110 must probe the fixed contract at real
+Ranex/Git/store/process boundaries, followed by production behavior plus real
+human-level E2E in #111.
 
 The recommendation is an evidence-first experience that explains a Ranex
 PASS/FAIL/BLOCKED projection without re-evaluating it, continuously revalidates
@@ -353,12 +355,12 @@ boundaries, direct service-only tests, or screenshot-only assertions fail.
 | Roll back a committed ref on cancellation | Reject; recovery reports the proven result; compensating history mutation needs separate authority. |
 | Delete stale locks by timestamp | Reject; reconcile owner/process/repository identity before safe cleanup. |
 
-## Decisions required from #109
+## Decisions fixed by #109
 
-#109 must fix the typed explanation/currentness schemas; human challenge and
-allow-once authorization; identity/role proof; supported merge method and exact
-Git plumbing/config/environment; merge intent, CAS, post-verification,
-cancellation and restart state machines; canonical digests and cross-language/Git
+The normative pseudocode packet fixes the typed explanation/currentness schemas;
+human challenge and allow-once authorization; identity/role proof; the supported
+merge method and exact Git plumbing/config/environment; merge intent, CAS,
+post-verification, cancellation and restart state machines; canonical digests and
 fixtures; safe failures/events/log fields; diagnostic ids; retention/quarantine;
 and every #110 fault seam and #111 visible E2E trace.
 
