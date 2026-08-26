@@ -650,7 +650,10 @@ async function ensureTasksWidget(page) {
     const widgets = page.locator('.kogg-tasks-widget:visible');
     if (!await widgets.count()) {
         await openCommand(page, 'View: Toggle Kogg Tasks');
-        await widgets.first().waitFor({ state: 'visible', timeout: 10_000 });
+        // Windows CI can still be restoring the saved shell layout after the
+        // command has resolved. Keep this aligned with the shell-start bound
+        // used above instead of treating a slow render as a missing widget.
+        await widgets.first().waitFor({ state: 'visible', timeout: 30_000 });
     }
     const widget = widgets.first();
     const deadline = Date.now() + 10_000;
