@@ -267,7 +267,7 @@ try {
 }
 
 function launchBrowser(authToken) {
-    return launch(process.execPath, [path.join(root, 'apps/browser/lib/backend/main.js'), `--plugins=local-dir:${path.join(root, 'plugins')}`, '--hostname', '127.0.0.1', '--port', String(browserPort)], {
+    return launch(process.execPath, ['--inspect=0', path.join(root, 'apps/browser/lib/backend/main.js'), `--plugins=local-dir:${path.join(root, 'plugins')}`, '--hostname', '127.0.0.1', '--port', String(browserPort)], {
         KOGG_RUNTIME: 'browser', KOGG_ROOT: root, KOGG_STATE_DIR: state,
         THEIA_CONFIG_DIR: path.join(state, 'config'), KOGG_AUTH_TOKEN: authToken,
         KOGG_MASTER_KEY: masterKey, KOGG_REGISTRY_URL: registryUrl
@@ -598,6 +598,19 @@ async function exerciseTasks(page) {
     await tasks.getByRole('button', { name: 'Create task' }).click();
     await tasks.getByText(/Revision 1 · active · draft/iu).waitFor({ timeout: 10_000 });
     await tasks.locator('p').filter({ hasText: /bytes · CRLF/u }).waitFor();
+    await tasks.getByText(/Effective authority: plan · research-only/iu).waitFor();
+    await tasks.getByRole('button', { name: 'Probe production mutation' }).click();
+    await tasks.getByRole('status').filter({ hasText: /PLAN_MUTATION_REFUSED.*blocked by backend/iu }).waitFor();
+    await tasks.getByLabel('Mode').selectOption('build');
+    await tasks.getByRole('status').filter({ hasText: /Mode changed to build/iu }).waitFor();
+    for (const name of ['Probe evidence admission', 'Probe verdict', 'Probe merge']) {
+        await tasks.getByRole('button', { name }).click();
+        await tasks.getByRole('status').filter({ hasText: /blocked by backend/iu }).waitFor();
+    }
+    await tasks.getByLabel('Mode').selectOption('kogg');
+    await tasks.getByRole('status').filter({ hasText: /Mode changed to kogg/iu }).waitFor();
+    await tasks.getByRole('button', { name: 'Enter governed lifecycle' }).click();
+    await tasks.getByRole('status').filter({ hasText: /governed-entry allowed by backend/iu }).waitFor();
     const second = await page.context().newPage();
     await second.goto(page.url(), { waitUntil: 'domcontentloaded' });
     await second.locator('body.kogg-application').waitFor({ timeout: 20_000 });
@@ -627,6 +640,7 @@ async function exerciseTasks(page) {
     await page.waitForTimeout(2_000);
     tasks = await ensureTasksWidget(page);
     await tasks.getByText(/active · draft/iu).waitFor();
+    await tasks.getByText(/Effective authority: kogg · governed-entry-ready/iu).waitFor();
     assert.match(await tasks.locator('[data-specification]').inputValue(), /Winner edit/u);
     await openCommand(page, 'Kogg: Run Diagnostics');
     await page.getByText(/Diagnostics: FAIL.*passed/iu).first().waitFor({ timeout: 15_000 });
@@ -638,8 +652,18 @@ async function exerciseTasks(page) {
     for (const id of ['tasks.registry', 'tasks.revisions', 'tasks.bindings', 'tasks.approvals']) {
         assert.equal(supportReport.checks.find(check => check.id === id)?.status, 'pass');
     }
+    for (const id of ['interaction-modes.registry', 'interaction-modes.authority', 'interaction-modes.transitions', 'interaction-modes.source-maps']) {
+        const check = supportReport.checks.find(item => item.id === id);
+        assert.equal(check?.status, 'pass', `${id}: ${check?.summary}`);
+    }
     await page.keyboard.press('Escape');
     assert.equal(logs.join('\n').includes(canary), false);
+    assert.match(logs.join('\n'), /interaction-modes:prototype.*operation\.refused/iu);
+    assert.match(logs.join('\n'), /interaction-modes:prototype.*restoration\.completed/iu);
+    assert.match(logs.join('\n'), /Debugger listening on ws:/u);
+    for (const sourceMap of ['packages/kogg-tasks/lib/browser/tasks-widget.js.map', 'packages/kogg-tasks/lib/node/interaction-modes-prototype.js.map', 'apps/browser/lib/frontend/bundle.js.map']) {
+        assert.equal(JSON.parse(await readFile(path.join(root, sourceMap), 'utf8')).version, 3);
+    }
 }
 
 async function ensureTasksWidget(page) {

@@ -22,6 +22,10 @@
     { "id": "tasks.registry", "owner": "kogg-tasks", "description": "The task registry schema, integrity, permissions, immutable triggers, and writer state are valid." },
     { "id": "tasks.revisions", "owner": "kogg-tasks", "description": "Task specification revisions and canonical digests verify successfully." },
     { "id": "tasks.bindings", "owner": "kogg-tasks", "description": "Task repository bindings remain current and available." },
-    { "id": "tasks.approvals", "owner": "kogg-tasks", "description": "Current task approvals match immutable frozen revisions." }
+    { "id": "tasks.approvals", "owner": "kogg-tasks", "description": "Current task approvals match immutable frozen revisions." },
+    { "id": "interaction-modes.registry", "owner": "kogg-tasks", "description": "The experimental task-scoped interaction-mode registry has valid storage integrity." },
+    { "id": "interaction-modes.authority", "owner": "kogg-tasks", "description": "Experimental mode authority is limited to the closed Plan, Build, and Kogg values." },
+    { "id": "interaction-modes.transitions", "owner": "kogg-tasks", "description": "The experimental mode transition request ledger is readable." },
+    { "id": "interaction-modes.source-maps", "owner": "kogg-tasks", "description": "Experimental interaction-mode frontend and backend source maps are available." }
   ]
 }

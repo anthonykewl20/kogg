@@ -4,6 +4,7 @@ import { inject, injectable, postConstruct } from '@theia/core/shared/inversify'
 import { KoggProjectsService, type KoggProjectsService as ProjectsService } from '@kogg/projects/lib/common/projects-protocol';
 import type { ProjectRegistrySnapshot } from '@kogg/contracts';
 import { KoggTasksService, type ReviewProjection, type TaskMutationResult, type TaskProjection, type TaskSummary, type MutationPrecondition } from '../common/tasks-protocol';
+import { InteractionModesService, type InteractionModesService as ModesService, type ModeOperation, type ModeProjection } from '../common/interaction-modes-protocol';
 
 // diagnostic-coverage: tasks.registry, tasks.revisions, tasks.bindings, tasks.approvals
 
@@ -15,12 +16,14 @@ export class TasksWidget extends BaseWidget {
   private tasks: readonly TaskSummary[] = [];
   private selected: TaskProjection | undefined;
   private review: ReviewProjection | undefined;
+  private mode: ModeProjection | undefined;
   private conflictBuffer: string | undefined;
   private readonly sessionId = crypto.randomUUID();
   private status = 'Loading tasks…';
   private busy = false;
 
   constructor(@inject(KoggTasksService) private readonly service: KoggTasksService,
+    @inject(InteractionModesService) private readonly modes: ModesService,
     @inject(KoggProjectsService) private readonly projectService: ProjectsService,
     @inject(MessageService) private readonly messages: MessageService) { super(); }
 
@@ -37,6 +40,7 @@ export class TasksWidget extends BaseWidget {
       this.tasks = await this.service.list(active?.id);
       const target = taskId ?? this.selected?.taskId ?? this.tasks[0]?.taskId;
       this.selected = target ? await this.service.get(target).catch(() => undefined) : undefined;
+      this.mode = this.selected ? await this.modes.get(this.selected.taskId) : undefined;
       this.review = undefined;
       this.status = active ? (this.tasks.length ? 'Task registry ready.' : 'Create the first governed task.') : 'Open an active Kogg project before creating tasks.';
     }, false);
@@ -62,6 +66,7 @@ export class TasksWidget extends BaseWidget {
     const spec = task.currentSpecification; const editable = task.lifecycle === 'active' && spec.lifecycle === 'draft';
     let output = '<section data-task-detail="' + html(task.taskId) + '"><h3>Task ' + html(short(task.taskId)) + '</h3><p>Revision ' + html(task.taskRevision)
       + ' · ' + html(task.lifecycle) + ' · ' + html(spec.lifecycle) + ' · ' + String(spec.byteLength) + ' bytes · ' + html(spec.lineEnding.toUpperCase()) + '</p>';
+    if (this.mode) output += '<fieldset data-interaction-modes><legend>Interaction mode</legend><label>Mode<select data-mode' + (this.busy ? ' disabled' : '') + '><option value="plan"' + (this.mode.selected === 'plan' ? ' selected' : '') + '>Plan</option><option value="build"' + (this.mode.selected === 'build' ? ' selected' : '') + '>Build</option><option value="kogg"' + (this.mode.selected === 'kogg' ? ' selected' : '') + '>Kogg</option></select></label><p>Effective authority: ' + html(this.mode.effective) + ' · ' + html(this.mode.stage) + '</p><div class="kogg-package-actions"><button data-mode-probe="production-mutation">Probe production mutation</button><button data-mode-probe="evidence-admit">Probe evidence admission</button><button data-mode-probe="verdict-read">Probe verdict</button><button data-mode-probe="merge">Probe merge</button><button data-mode-probe="governed-entry">Enter governed lifecycle</button></div></fieldset>';
     output += '<label>Specification<textarea data-specification rows="16"' + (editable && !this.busy ? '' : ' readonly') + '>' + html(this.conflictBuffer ?? spec.content) + '</textarea></label>';
     if (editable) output += '<label>Save line endings<select data-save-eol><option value="lf"' + (spec.lineEnding !== 'crlf' ? ' selected' : '') + '>LF</option><option value="crlf"' + (spec.lineEnding === 'crlf' ? ' selected' : '') + '>CRLF</option></select></label>'
       + '<div class="kogg-package-actions"><button data-save>Save draft</button><button data-freeze>Freeze exact revision</button></div>';
@@ -86,7 +91,11 @@ export class TasksWidget extends BaseWidget {
     this.node.querySelector<HTMLElement>('[data-approve]')?.addEventListener('click', () => void this.approve());
     this.node.querySelector<HTMLElement>('[data-revoke]')?.addEventListener('click', () => void this.mutate('Revoking approval…', request => this.service.revoke({ ...request, taskId: this.selected!.taskId })));
     this.node.querySelector<HTMLElement>('[data-archive]')?.addEventListener('click', () => void this.mutate('Archiving task…', request => this.service.archive({ ...request, taskId: this.selected!.taskId })));
+    this.node.querySelector<HTMLSelectElement>('[data-mode]')?.addEventListener('change', event => void this.transitionMode((event.currentTarget as HTMLSelectElement).value as ModeProjection['selected']));
+    this.node.querySelectorAll<HTMLElement>('[data-mode-probe]').forEach(button => button.addEventListener('click', () => void this.probeMode(button.dataset.modeProbe as ModeOperation)));
   }
+  private async transitionMode(requested: ModeProjection['selected']): Promise<void> { if (!this.selected || !this.mode) return; await this.run(async () => { const result = await this.modes.transition({ requestId: crypto.randomUUID(), taskId: this.selected!.taskId, expectedSequence: this.mode!.sequence, requested, confirmed: true }); this.mode = result.projection; this.status = result.kind === 'completed' ? `Mode changed to ${result.projection.selected}.` : result.code; }); }
+  private async probeMode(operation: ModeOperation): Promise<void> { if (!this.selected) return; await this.run(async () => { const result = await this.modes.authorize({ requestId: crypto.randomUUID(), taskId: this.selected!.taskId, operation }); this.mode = result.projection; this.status = result.allowed ? `${operation} allowed by backend.` : `${result.code}: ${operation} blocked by backend.`; }); }
 
   private async create(repositoryId: string, content: string, lineEnding: string): Promise<void> {
     const active = this.projects.activeProjectId; if (!active) return;
