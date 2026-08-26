@@ -95,6 +95,8 @@ test('classifies adapter, provider, usage, model, and deadline failures with zer
   const adapters = new AdapterRegistry(); const operations = new TestOperations(); const registry = new AgentRegistry({ resolveAdmission: async () => ADMISSION }, operations, adapters, new LocalCredentialLeaseAuthority()); const fixture = new FixtureAdapter(adapters);
   const cases = [
     ['fixture.refuse', 'PROVIDER_REFUSED'],
+    ['fixture.auth', 'PROVIDER_AUTH_REFUSED'],
+    ['fixture.rate', 'PROVIDER_RATE_LIMITED'],
     ['fixture.transport', 'TRANSPORT_LOST'],
     ['fixture.invalid', 'ADAPTER_OBSERVATION_INVALID'],
     ['fixture.model-mismatch', 'MODEL_MISMATCH'],

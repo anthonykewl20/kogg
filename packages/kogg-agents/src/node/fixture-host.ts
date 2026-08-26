@@ -14,6 +14,8 @@ else if (scenario === 'fixture.provider-request') { emit({ kind: 'activity', act
 else if (scenario === 'fixture.idle') setTimeout(() => emit({ kind: 'activity', activityKind: 'provider' }), 25);
 else if (scenario === 'fixture.absolute') setInterval(() => emit({ kind: 'activity', activityKind: 'provider' }), 50).unref();
 else if (scenario === 'fixture.transport') setTimeout(() => { emit({ kind: 'failed', safeCode: 'TRANSPORT_LOST' }); finish(); }, 25);
+else if (scenario === 'fixture.auth') setTimeout(() => { emit({ kind: 'failed', safeCode: 'PROVIDER_AUTH_REFUSED' }); finish(); }, 25);
+else if (scenario === 'fixture.rate') setTimeout(() => { emit({ kind: 'failed', safeCode: 'PROVIDER_RATE_LIMITED' }); finish(); }, 25);
 else if (scenario === 'fixture.invalid') setTimeout(() => process.stdout.write('{"kind":"activity"}\n'), 25);
 else if (scenario === 'fixture.refuse') setTimeout(() => { emit({ kind: 'failed', safeCode: 'PROVIDER_REFUSED' }); finish(); }, 25);
 else if (scenario === 'fixture.usage-decrease') setTimeout(() => { emit({ kind: 'activity', activityKind: 'provider' }); emit({ kind: 'usage', usage: { status: 'complete', source: 'provider-cumulative', inputTokens: '2', outputTokens: '2', totalTokens: '4' } }); emit({ kind: 'usage', usage: { status: 'complete', source: 'provider-cumulative', inputTokens: '1', outputTokens: '2', totalTokens: '3' } }); emit({ kind: 'completed' }); finish(); }, 25);
