@@ -132,6 +132,25 @@ test('cancels a ready streaming host and commits zero-resource cleanup', async (
   } finally { await registry.onStop(); if (prior === undefined) delete process.env.KOGG_STATE_DIR; else process.env.KOGG_STATE_DIR = prior; await rm(directory, { recursive: true, force: true }); }
 });
 
+test('uses durable event order for cancellation and completion races', async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), 'kogg-agents-')); const prior = process.env.KOGG_STATE_DIR; process.env.KOGG_STATE_DIR = directory;
+  const adapters = new AdapterRegistry(); const operations = new TestOperations(); const registry = new AgentRegistry({ resolveAdmission: async () => ADMISSION }, operations, adapters, new LocalCredentialLeaseAuthority()); const fixture = new FixtureAdapter(adapters);
+  try {
+    await registry.onStart(); fixture.onStart();
+    const completionRole = await registry.createRoleRevision(roleRequest('24000000-0000-4000-8000-000000000001', '0', 'fixture.completion-race')); assert.ok(completionRole.role);
+    const completionStarted = await registry.startAttempt({ schemaVersion: '1', requestId: '34000000-0000-4000-8000-000000000001', expectedRegistryRevision: completionRole.registryRevision, taskAdmissionId: ADMISSION.taskAdmissionId, roleRevisionId: completionRole.role.roleRevisionId, providerId: 'kogg.fixture', modelId: 'fixture.completion-race', adapterKey: 'kogg.fixture', adapterVersion: '1.0.0', deadlinePolicyId: 'interactive-v1' }); assert.ok(completionStarted.attempt);
+    const completedFirst = await poll(() => registry.getAttempt(completionStarted.attempt!.attemptId), value => value.state === 'completed_observed');
+    const afterLateCancel = await registry.cancelAttempt({ schemaVersion: '1', requestId: '44000000-0000-4000-8000-000000000001', expectedRegistryRevision: completedFirst.registryRevision, expectedAttemptRevision: completedFirst.attemptRevision, attemptId: completedFirst.attemptId, reason: 'user' });
+    assert.equal(afterLateCancel.kind, 'completed'); assert.equal(afterLateCancel.code, 'AGENT_OK'); assert.equal(afterLateCancel.attempt?.state, 'cleaned'); assert.equal(afterLateCancel.attempt?.terminalCode, 'AGENT_OK');
+
+    const cancelRole = await registry.createRoleRevision(roleRequest('24000000-0000-4000-8000-000000000002', (await registry.snapshot()).registryRevision, 'fixture.cancel-race')); assert.ok(cancelRole.role);
+    const cancelStarted = await registry.startAttempt({ schemaVersion: '1', requestId: '34000000-0000-4000-8000-000000000002', expectedRegistryRevision: cancelRole.registryRevision, taskAdmissionId: ADMISSION.taskAdmissionId, roleRevisionId: cancelRole.role.roleRevisionId, providerId: 'kogg.fixture', modelId: 'fixture.cancel-race', adapterKey: 'kogg.fixture', adapterVersion: '1.0.0', deadlinePolicyId: 'interactive-v1' }); assert.ok(cancelStarted.attempt);
+    const ready = await poll(() => registry.getAttempt(cancelStarted.attempt!.attemptId), value => value.state === 'ready');
+    const afterLateCompletion = await registry.cancelAttempt({ schemaVersion: '1', requestId: '44000000-0000-4000-8000-000000000002', expectedRegistryRevision: ready.registryRevision, expectedAttemptRevision: ready.attemptRevision, attemptId: ready.attemptId, reason: 'user' });
+    assert.equal(afterLateCompletion.kind, 'completed'); assert.equal(afterLateCompletion.code, 'CANCELLED'); assert.equal(afterLateCompletion.attempt?.state, 'cleaned'); assert.equal(afterLateCompletion.attempt?.terminalCode, 'CANCELLED'); assert.equal(operations.processes.every(process => process.cleaned), true); assert.equal(registry.diagnostics().residualCount, 0);
+  } finally { await registry.onStop(); if (prior === undefined) delete process.env.KOGG_STATE_DIR; else process.env.KOGG_STATE_DIR = prior; await rm(directory, { recursive: true, force: true }); }
+});
+
 test('escalates an unacknowledged cancel at its persisted grace deadline', async () => {
   const directory = await mkdtemp(path.join(os.tmpdir(), 'kogg-agents-')); const priorState = process.env.KOGG_STATE_DIR; const priorDeadline = process.env.KOGG_AGENT_TEST_DEADLINES; process.env.KOGG_STATE_DIR = directory; process.env.KOGG_AGENT_TEST_DEADLINES = '1';
   const adapters = new AdapterRegistry(); const operations = new TestOperations(); const registry = new AgentRegistry({ resolveAdmission: async () => ADMISSION }, operations, adapters, new LocalCredentialLeaseAuthority()); const fixture = new FixtureAdapter(adapters);
