@@ -85,6 +85,17 @@ try {
         process.exit(0);
     }
 
+    if (process.env.KOGG_E2E_TASKS_ONLY === '1') {
+        await exerciseProjects(page);
+        await exerciseTasks(page);
+        process.stdout.write('Kogg browser governed-tasks E2E passed.\n');
+        await browser.close(); browser = undefined;
+        await stop(backend); backend = undefined;
+        await stop(registry); registry = undefined;
+        await rm(temporary, { recursive: true, force: true });
+        process.exit(0);
+    }
+
     await openCommand(page, 'Kogg: Run Diagnostics');
     await page.getByText(/Diagnostics: FAIL.*kernel\.journal/su).first().waitFor({ timeout: 15_000 });
     await page.keyboard.press('Escape');
@@ -215,6 +226,7 @@ try {
     if (process.platform !== 'win32') await exerciseNodeDebug(page, 'Kogg E2E Debug', 'KOGG_E2E_READY');
 
     await exerciseProjects(page);
+    await exerciseTasks(page);
     await exerciseOperations(page);
 
     for (let cycle = 0; cycle < 25; cycle++) {
@@ -575,6 +587,73 @@ async function ensureProjectsWidget(page) {
         await new Promise(resolve => setTimeout(resolve, 50));
     }
     assert.doesNotMatch(await widget.textContent(), /Loading projects/iu);
+    return widget;
+}
+
+async function exerciseTasks(page) {
+    const canary = 'KOGG_TASK_PRIVATE_CANARY_83';
+    let tasks = await ensureTasksWidget(page);
+    await tasks.getByLabel('Line endings').selectOption('crlf');
+    await tasks.getByLabel('Initial specification').fill(canary + '\nInitial requirement\n');
+    await tasks.getByRole('button', { name: 'Create task' }).click();
+    await tasks.getByText(/Revision 1 · active · draft/iu).waitFor({ timeout: 10_000 });
+    await tasks.locator('p').filter({ hasText: /bytes · CRLF/u }).waitFor();
+    const second = await page.context().newPage();
+    await second.goto(page.url(), { waitUntil: 'domcontentloaded' });
+    await second.locator('body.kogg-application').waitFor({ timeout: 20_000 });
+    const secondTasks = await ensureTasksWidget(second);
+    await secondTasks.locator('[data-task]').first().click();
+    await tasks.locator('[data-specification]').fill(canary + '\nWinner edit\n');
+    await tasks.getByRole('button', { name: 'Save draft' }).click();
+    await tasks.getByText(/Revision 2 · active · draft/iu).waitFor();
+    await secondTasks.locator('[data-specification]').fill(canary + '\nPreserved losing edit\n');
+    await secondTasks.getByRole('button', { name: 'Save draft' }).click();
+    await secondTasks.getByRole('status').filter({ hasText: /changed elsewhere/iu }).waitFor();
+    assert.match(await secondTasks.locator('[data-specification]').inputValue(), /Preserved losing edit/u);
+    await second.close();
+    await tasks.getByRole('button', { name: 'Freeze exact revision' }).click();
+    await tasks.getByText(/active · frozen/iu).waitFor();
+    await tasks.getByRole('button', { name: 'Review for approval' }).click();
+    await tasks.locator('.kogg-review').getByText(canary).waitFor();
+    await tasks.getByRole('button', { name: 'Approve this exact revision' }).click();
+    await tasks.getByRole('button', { name: /Revoke approval/u }).waitFor();
+    await tasks.getByRole('button', { name: /Revoke approval/u }).click();
+    await tasks.getByRole('button', { name: 'Create successor draft' }).click();
+    await tasks.getByText(/active · draft/iu).waitFor();
+    await stop(backend); backend = launchBrowser(token);
+    await waitFor(appUrl + '/kogg/auth/status', 401);
+    await page.reload({ waitUntil: 'domcontentloaded' });
+    await page.locator('body.kogg-application').waitFor({ timeout: 20_000 });
+    await page.waitForTimeout(2_000);
+    tasks = await ensureTasksWidget(page);
+    await tasks.getByText(/active · draft/iu).waitFor();
+    assert.match(await tasks.locator('[data-specification]').inputValue(), /Winner edit/u);
+    await openCommand(page, 'Kogg: Run Diagnostics');
+    await page.getByText(/Diagnostics: FAIL.*passed/iu).first().waitFor({ timeout: 15_000 });
+    const supportDirectory = path.join(state, 'support');
+    const supportCount = (await readdir(supportDirectory).catch(() => [])).length;
+    await openCommand(page, 'Kogg: Export Diagnostic Support Bundle');
+    const supportFiles = (await waitForSupportBundle(supportDirectory, supportCount + 1)).sort();
+    const supportReport = JSON.parse(await readFile(path.join(supportDirectory, supportFiles.at(-1)), 'utf8'));
+    for (const id of ['tasks.registry', 'tasks.revisions', 'tasks.bindings', 'tasks.approvals']) {
+        assert.equal(supportReport.checks.find(check => check.id === id)?.status, 'pass');
+    }
+    await page.keyboard.press('Escape');
+    assert.equal(logs.join('\n').includes(canary), false);
+}
+
+async function ensureTasksWidget(page) {
+    const widgets = page.locator('.kogg-tasks-widget:visible');
+    if (!await widgets.count()) {
+        await openCommand(page, 'View: Toggle Kogg Tasks');
+        await widgets.first().waitFor({ state: 'visible', timeout: 10_000 });
+    }
+    const widget = widgets.first();
+    const deadline = Date.now() + 10_000;
+    while (/Loading tasks/iu.test(await widget.textContent().catch(() => 'Loading tasks')) && Date.now() < deadline) {
+        await new Promise(resolve => setTimeout(resolve, 50));
+    }
+    assert.doesNotMatch(await widget.textContent(), /Loading tasks/iu);
     return widget;
 }
 

@@ -25,7 +25,7 @@ import {
 import { runOperation } from '@kogg/operations/lib/node/run-operation';
 import { BackendApplicationContribution } from '@theia/core/lib/node';
 import { inject, injectable } from '@theia/core/shared/inversify';
-import type { KoggProjectsService } from '../common/projects-protocol';
+import type { KoggProjectsService, ProjectBindingAuthority, ProjectBindingSnapshot } from '../common/projects-protocol';
 import { ProjectError, errorType } from './project-errors';
 import { ProjectRepositoryProbe, type RepositoryProbeResult } from './project-repository-probe';
 import { ProjectWorkspaceProjection } from './project-workspace-projection';
@@ -45,7 +45,7 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{1
 const SAFE_ID = /^[a-z0-9][a-z0-9._:-]{0,127}$/u;
 
 @injectable()
-export class ProjectRegistry implements KoggProjectsService, BackendApplicationContribution {
+export class ProjectRegistry implements KoggProjectsService, ProjectBindingAuthority, BackendApplicationContribution {
   private database: DatabaseSync | undefined;
   private accepting = false;
   private readonly trackedOperations = new Map<string, OperationLease>();
@@ -105,6 +105,23 @@ export class ProjectRegistry implements KoggProjectsService, BackendApplicationC
   async snapshot(): Promise<ProjectRegistrySnapshot> {
     await this.refreshRepositoryAvailability();
     return this.readSnapshot();
+  }
+
+  async resolveBinding(projectId: string, repositoryId: string): Promise<ProjectBindingSnapshot | undefined> {
+    await this.refreshRepositoryAvailability();
+    const snapshot = this.readSnapshot();
+    const project = snapshot.projects.find(item => item.id === projectId);
+    const repository = project?.repositories.find(item => item.id === repositoryId);
+    if (!project || !repository) return undefined;
+    return {
+      projectId,
+      repositoryId,
+      registryRevision: snapshot.revision,
+      bindingRevision: repository.revision,
+      available: project.lifecycle === 'available' && repository.availability === 'available',
+      active: snapshot.activeProjectId === projectId,
+      executionProfileId: project.executionProfileId ?? 'default'
+    };
   }
 
   async createProject(request: ProjectMutationExpectation & { displayName: string; repositoryPath: string }): Promise<ProjectRegistrySnapshot> {

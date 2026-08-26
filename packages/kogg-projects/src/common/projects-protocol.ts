@@ -11,6 +11,21 @@ import type {
 
 export const KoggProjectsServicePath = '/services/kogg-projects';
 export const KoggProjectsService = Symbol('KoggProjectsService');
+export const ProjectBindingAuthority = Symbol('ProjectBindingAuthority');
+
+export interface ProjectBindingSnapshot {
+  readonly projectId: string;
+  readonly repositoryId: string;
+  readonly registryRevision: number;
+  readonly bindingRevision: number;
+  readonly available: boolean;
+  readonly active: boolean;
+  readonly executionProfileId: string;
+}
+
+export interface ProjectBindingAuthority {
+  resolveBinding(projectId: string, repositoryId: string): Promise<ProjectBindingSnapshot | undefined>;
+}
 
 export interface KoggProjectsService {
   snapshot(): Promise<ProjectRegistrySnapshot>;

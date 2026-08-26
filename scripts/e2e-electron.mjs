@@ -182,6 +182,7 @@ try {
 
     await exerciseNodeDebug(page, application, 'Kogg Electron Debug', 'KOGG_ELECTRON_E2E_READY');
     await exerciseElectronProjects(page, application);
+    await exerciseElectronTasks(page, application);
     await exerciseElectronOperations(page, application);
     const visible = await page.locator('body').innerText();
     assert.doesNotMatch(visible, /Search Open VSX Registry|Learn more about Theia|custom-agent migration/iu);
@@ -313,6 +314,26 @@ async function ensureElectronProjectsWidget(page, electronApplication) {
     }
     assert.doesNotMatch(await widget.textContent(), /Loading projects/iu);
     return widget;
+}
+
+async function exerciseElectronTasks(page, electronApplication) {
+    const canary = 'KOGG_ELECTRON_TASK_PRIVATE_CANARY_83';
+    const tasks = page.locator('.kogg-tasks-widget').last();
+    if (!await tasks.count()) {
+        await openCommand(page, 'View: Toggle Kogg Tasks', electronApplication);
+        await tasks.waitFor({ state: 'attached', timeout: 10_000 });
+    }
+    await tasks.getByLabel('Line endings').selectOption('lf');
+    await tasks.getByLabel('Initial specification').fill(canary + '\nElectron requirement\n');
+    await tasks.getByRole('button', { name: 'Create task' }).click();
+    await tasks.getByText(/Revision 1 · active · draft/iu).waitFor({ timeout: 10_000 });
+    await tasks.getByRole('button', { name: 'Freeze exact revision' }).click();
+    await tasks.getByRole('button', { name: 'Review for approval' }).click();
+    await tasks.locator('.kogg-review').getByText(canary).waitFor();
+    await tasks.getByRole('button', { name: 'Approve this exact revision' }).click();
+    await tasks.getByRole('button', { name: /Revoke approval/u }).waitFor();
+    await tasks.getByRole('button', { name: /Revoke approval/u }).click();
+    assert.equal(logs.join('\n').includes(canary), false);
 }
 
 async function exerciseElectronOperations(page, electronApplication) {

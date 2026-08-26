@@ -18,6 +18,10 @@
     { "id": "operations.recovery", "owner": "kogg-operations", "description": "Startup reconciliation completed without contradictory operation state." },
     { "id": "operations.processes", "owner": "kogg-operations", "description": "No Kogg-owned process is hidden, stalled, orphaned, unverified, or residual." },
     { "id": "operations.cleanup", "owner": "kogg-operations", "description": "Every terminal operation and owned process has proved cleanup." },
-    { "id": "operations.admission", "owner": "kogg-operations", "description": "Operation admission agrees with recovery and cleanup state." }
+    { "id": "operations.admission", "owner": "kogg-operations", "description": "Operation admission agrees with recovery and cleanup state." },
+    { "id": "tasks.registry", "owner": "kogg-tasks", "description": "The task registry schema, integrity, permissions, immutable triggers, and writer state are valid." },
+    { "id": "tasks.revisions", "owner": "kogg-tasks", "description": "Task specification revisions and canonical digests verify successfully." },
+    { "id": "tasks.bindings", "owner": "kogg-tasks", "description": "Task repository bindings remain current and available." },
+    { "id": "tasks.approvals", "owner": "kogg-tasks", "description": "Current task approvals match immutable frozen revisions." }
   ]
 }
