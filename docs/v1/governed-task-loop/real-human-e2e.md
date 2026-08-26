@@ -1,13 +1,15 @@
 # Real human-level generated-feature acceptance harness
 
 Tracking: [#58](https://github.com/anthonykewl20/kogg/issues/58), research
-phase [#61](https://github.com/anthonykewl20/kogg/issues/61).
+phase [#61](https://github.com/anthonykewl20/kogg/issues/61), pseudocode phase
+[#62](https://github.com/anthonykewl20/kogg/issues/62).
 
 ## Status
 
-Research is complete as of 2026-08-26. This packet contains no production code.
-Production remains gated by the ordered pseudocode, prototype, and implementation
-issues and by Foundation [#47](https://github.com/anthonykewl20/kogg/issues/47).
+Research and production pseudocode are complete as of 2026-08-26. This packet
+contains no production code. Production remains gated by the ordered prototype
+and implementation issues and by Foundation
+[#47](https://github.com/anthonykewl20/kogg/issues/47).
 
 The research recommendation is a Playwright-driven, product-black-box acceptance
 harness with two production launch adapters: authenticated browser and native
@@ -417,3 +419,311 @@ The findings constrain #62 to closed fixture/driver/page-object interfaces,
 scenario schemas, launch/cleanup algorithms, retry/deadline policy, artifact
 manifest/scanner, capability matrix, and exact expected traces without reopening
 the source selection.
+
+## Decision-complete production pseudocode
+
+This section is normative for #65 and #70. The prototype may disprove a choice
+with real evidence; it may not silently choose a different driver, authority,
+state, retry, artifact, or cleanup policy.
+
+### Repository topology and authority
+
+Keep the harness outside production bundles:
+
+```text
+tests/e2e/generated-feature/
+  contract.ts                 closed scenario, manifest, event, result DTOs
+  harness-process-manager.ts  test-only register-before-spawn owner
+  run-controller.ts           deadline, phase, cleanup, final verdict
+  artifact-manager.ts         closed capture policy, scanner, retention result
+  capability.ts               matrix qualification and refusal assertions
+  fixtures/                   Git, registry/provider, profile, specification
+  drivers/browser.ts          browser production launch adapter
+  drivers/electron.ts         native production launch adapter
+  pages/                      visible workbench/Kogg area objects
+  oracles/                    public Git, filesystem, process, Ranex verifiers
+  scenarios/                  success and principal terminal paths
+scripts/e2e-generated-feature.mjs
+```
+
+The run controller is the sole harness lifecycle writer. The harness process
+manager owns only runner-created top-level processes and fixtures. Playwright
+owns Chromium/Electron launches. Kogg, Theia, providers, and Ranex retain their
+production ownership described by #64. Oracles are read-only and cannot cause a
+product transition. Page objects cause behavior only through rendered controls.
+
+### Closed contracts
+
+```ts
+type Runtime = 'browser' | 'electron';
+type Platform = 'linux' | 'macos' | 'windows';
+type RunState =
+  | 'requested' | 'starting' | 'active' | 'cleaning'
+  | 'completed' | 'failed' | 'timed-out' | 'cancelled';
+type FixtureState =
+  | 'registered' | 'starting' | 'ready' | 'failed'
+  | 'cleaning' | 'cleaned' | 'cleanup-failed';
+type StepState = 'pending' | 'active' | 'passed' | 'failed' | 'timed-out';
+type ArtifactDecision = 'retained' | 'refused' | 'deleted' | 'not-requested';
+type SafeCode =
+  | 'E2E_FIXTURE_START_FAILED' | 'E2E_APPLICATION_NOT_READY'
+  | 'E2E_VISIBLE_CONTROL_MISSING' | 'E2E_STEP_FAILED'
+  | 'E2E_IDLE_TIMEOUT' | 'E2E_ABSOLUTE_TIMEOUT'
+  | 'E2E_CLEANUP_FAILED' | 'E2E_RESIDUAL_PROCESS'
+  | 'E2E_ARTIFACT_UNSAFE' | 'E2E_ORACLE_MISMATCH'
+  | 'E2E_CAPABILITY_UNQUALIFIED';
+
+interface Correlations {
+  runId: string; scenarioId: string; projectId?: string; taskId?: string;
+  attemptId?: string; sessionId?: string; operationId?: string;
+  worktreeId?: string;
+}
+interface ScenarioDefinition {
+  schemaVersion: 1; id: string; runtime: Runtime;
+  requiredCapabilities: readonly Capability[];
+  totalTimeoutMs: number; steps: readonly StepDefinition[];
+  expectedTerminal: RunState; expectedProductTrace: readonly TraceMatcher[];
+  expectedHarnessTrace: readonly TraceMatcher[];
+}
+interface RunManifest {
+  schemaVersion: 1; correlations: Correlations; platform: Platform;
+  runtime: Runtime; state: RunState; safeCode?: SafeCode;
+  capabilities: readonly CapabilityResult[]; fixtures: readonly FixtureSummary[];
+  steps: readonly StepSummary[]; artifacts: readonly ArtifactSummary[];
+  productDiagnostics: readonly DiagnosticSummary[];
+  harnessChecks: readonly HarnessCheck[]; residualCount: number;
+  environment: SafeEnvironmentFacts;
+}
+```
+
+All objects reject unknown fields. IDs are random UUID v4 values. Durations are
+bucketed in shared logs and exact only in local test results. Environment facts
+are closed enums and tool versions; no path, username, hostname, environment
+map, remote URL, or runner label is admitted.
+
+### Harness state and persistence
+
+Write one manifest atomically after every transition using temporary-file plus
+rename within the run artifact directory. The previous valid manifest remains
+readable after interruption. Transitions are:
+
+```text
+run: requested -> starting -> active -> cleaning -> completed
+                                |          |------> failed
+                                |          |------> timed-out
+                                |          `------> cancelled
+                                `-----------------> cleaning
+fixture: registered -> starting -> ready -> cleaning -> cleaned
+                         |          |          `-> cleanup-failed
+                         `-> failed -> cleaning
+step: pending -> active -> passed|failed|timed-out
+```
+
+Every run reaches `cleaning` exactly once. A scenario result is successful only
+when its expected product result, independent oracles, product diagnostics,
+harness checks, artifact decision, and zero-residual assertion all pass. Cleanup
+or artifact refusal overrides an otherwise successful product outcome to
+`failed`. Conflicting terminal writes fail the run.
+
+### Register-before-spawn and cleanup algorithm
+
+For every harness fixture or top-level application:
+
+```text
+allocate opaque fixture ID
+append fixture.registered and persist manifest
+construct fixed launch configuration in memory
+append fixture.started immediately before spawn
+spawn in owned process group where supported
+bind PID privately; never persist or log it
+wait for named readiness oracle within fixture deadline
+append fixture.ready or fixture.failed(safe code, error type)
+on any terminal path, enter run.cleaning
+close Playwright contexts/windows, then application, then fixtures in reverse order
+wait for exit and stream close separately
+after grace deadline, force only the harness-owned top-level/process group
+ask product diagnostics and responsible owner about product descendants
+independently assert all harness PIDs/fingerprints absent
+append cleanup result; delete disposable state only after observation completes
+```
+
+PID-only signalling after restart is forbidden. The process manager stores a
+private platform creation fingerprint and signals only a matching owned process.
+An unverifiable identity yields `E2E_RESIDUAL_PROCESS`, preserves safe evidence,
+and fails closed. Product descendants are never killed by harness name scanning.
+
+### Production launch adapters
+
+`BrowserDriver.launch` starts the real browser backend with isolated Kogg/Theia
+state, then asks Playwright for a fresh Chromium context and drives the rendered
+authentication and workbench. `ElectronDriver.launch` uses Playwright Electron
+against the production main entrypoint with a unique user-data directory. Both
+return the same interface:
+
+```ts
+interface ProductionDriver {
+  waitForWorkbench(deadline: Deadline): Promise<WorkbenchPages>;
+  visibleCorrelations(): Promise<Correlations>;
+  screenshot(kind: 'failure'): Promise<CandidateArtifact>;
+  closeGracefully(deadline: Deadline): Promise<CloseResult>;
+  observeTopLevel(): Promise<'running'|'exited'|'unverified'>;
+}
+```
+
+Electron main-process evaluation is limited to launch facts, window enumeration,
+and observation required for cleanup. It cannot invoke commands, services, menu
+handlers, or feature code. Browser page evaluation is limited to accessibility
+and rendered-state observation that Playwright cannot expose directly; it cannot
+cause product behavior or read internal services.
+
+### Page-object and visible-action contract
+
+Page objects expose semantic actions for Authentication, Trust, Projects, Task,
+Workflow, Operations, Evidence, Diagnostics, SCM, Editor, Terminal, Debug, and
+GeneratedFeature. Each action locates by role, accessible name, label, rendered
+text, command palette, or visible menu. An app-owned test ID is permitted only
+for disambiguating repeated rendered rows and must identify no hidden control.
+
+`discover` actions may retry while a visible asynchronous contribution becomes
+available. `submit`, `freeze`, `start`, `cancel`, `accept`, `merge`, `install`,
+and `delete` execute once with an idempotency request established by product UI.
+After a click, web-first assertions wait for the next visible authoritative
+state. Arbitrary sleep and internal command/service calls are prohibited.
+
+### Deadlines and retry policy
+
+The run has a 30-minute absolute deadline on qualified Linux and 15 minutes for
+portable refusal/smoke scenarios. Fixture readiness is 60 seconds, workbench
+readiness 120 seconds, visible contribution discovery 30 seconds, ordinary UI
+steps 15 seconds, graceful application close 15 seconds, and final cleanup 30
+seconds. CI may multiply these constants once by the repository slow-runner
+factor; individual scenarios cannot invent timeouts.
+
+Discovery retry uses at most five attempts with 100, 250, 500, 1000, and 2000 ms
+delays, bounded by the step deadline. It records only attempt count and safe
+reason. A deadline aborts pending waits, enters cleanup, and emits exactly one
+idle or absolute timeout result. No timeout may leave cleanup unbounded.
+
+### Artifact manager and scanner
+
+Capture is deny-by-default. Passing runs retain only manifest, redacted lifecycle
+events, test result, diagnostic summary, residual result, and public Ranex
+evidence digest/verdict. Failure may request one screenshot per window, one
+bounded sanitized console excerpt, and one Playwright trace. Video, HAR, request/
+response bodies, terminal output, and raw process output are disabled.
+
+Before retention, the scanner recursively inspects filenames, text, structured
+values, archive members, image OCR output where available, and known canaries.
+It rejects credentials/tokens/cookies/authorization, environment assignments,
+home/workspace paths, usernames, prompts, source, diffs, terminal/provider bodies,
+Git remotes, and personal data. Rejected candidates are moved to a private
+disposal area, deleted before upload, and represented only by artifact kind and
+`E2E_ARTIFACT_UNSAFE`. Scanner errors are refusals, not passes.
+
+### Logging, diagnostics, and source maps
+
+Use the research logger prefixes and event names exactly. Every event carries
+only correlations plus the closed field allowlist. Failures include a safe code
+and error type, never an exception message or body. Lifecycle order is asserted
+from the redacted event stream.
+
+Product diagnostics are invoked through visible controls and must include all
+feature-owned catalog checks plus #64 operation registry, recovery, processes,
+cleanup, and admission checks. Harness-only manifest checks are:
+
+```text
+e2e.fixtures   all registered fixtures reached terminal cleanup
+e2e.processes  all privately bound harness identities are absent
+e2e.artifacts  every retained artifact passed the closed scanner
+e2e.oracle     UI, Git/filesystem, Ranex evidence, and product state agree
+e2e.source-map required runtime pauses map to repository source statements
+```
+
+The harness attaches the browser, backend Node inspector, Electron main/renderer,
+affected plugin/debug adapter, and Linux Python adapter at explicit breakpoint
+markers reached by the visible workflow. It records runtime and mapped source
+line only. A generated bundle frame without an original repository source fails.
+
+### Capability decisions
+
+Linux is the only V1 platform allowed to run the governed generation scenario.
+It must report qualified Ranex confinement before start. macOS and Windows run
+the full portable browser/Electron/project/Git/diagnostic/package surface and
+must visibly refuse the governed start with `E2E_CAPABILITY_UNQUALIFIED` and no
+provider/Ranex/worktree child. Windows terminal/debug coverage is required in
+native Electron; inability is a release blocker, not a skip.
+
+Capabilities are probed and recorded before scenario selection. A required
+capability that is absent runs its specified visible refusal scenario. No test
+framework skip can satisfy a product refusal or release requirement.
+
+### Exact expected traces
+
+```text
+harness success:
+  run.requested -> run.started -> fixture.registered* -> fixture.started* ->
+  fixture.ready* -> application.started -> application.ready ->
+  scenario.started -> step.completed* -> scenario.completed ->
+  artifact.capture.started -> artifact.capture.completed ->
+  residual-check.started -> residual-check.completed ->
+  application.close.started -> application.close.completed ->
+  fixture.cleanup.started* -> fixture.cleanup.completed* -> run.completed
+
+fixture failure:
+  run.requested -> run.started -> fixture.registered -> fixture.started ->
+  fixture.failed(E2E_FIXTURE_START_FAILED) -> fixture.cleanup.started ->
+  fixture.cleanup.completed -> residual-check.completed -> run.failed
+
+product timeout/cancel:
+  ... scenario.started -> step.completed(start) -> operation.stalled ->
+  operation.timeout -> cleanup.started -> process.exit -> cleanup.completed ->
+  step.completed(timeout-visible) -> scenario.completed -> harness cleanup
+
+application close timeout:
+  ... application.close.started -> application.close.timed-out ->
+  fixture.cleanup.started -> fixture.cleanup.completed ->
+  residual-check.completed -> run.failed(E2E_CLEANUP_FAILED)
+
+unsafe artifact:
+  ... artifact.capture.started -> artifact.capture.refused ->
+  residual-check.completed -> cleanup -> run.failed(E2E_ARTIFACT_UNSAFE)
+
+unqualified platform:
+  ... application.ready -> scenario.started -> step.completed(refusal-visible) ->
+  residual-check.completed(productChildCount=0) -> cleanup -> run.completed
+```
+
+Product success/refusal/failure/timeout/cancel/restart traces are those fixed by
+the owning feature packets and #64. The harness must match them by safe IDs and
+order; it cannot substitute its own events for missing product evidence.
+
+### Required scenario set and production gate
+
+Implement separate scenarios for generated-feature success, false-positive
+calibration, frozen-spec refusal, untrusted repository, provider refusal, spawn/
+readiness failure, build/test failure, idle and absolute timeout, user cancel,
+browser reload, application crash/restart recovery, cleanup failure, unsafe
+artifact refusal, and macOS/Windows unqualified execution. Each starts with a
+clean profile and disposable repository and ends with the common cleanup oracle.
+
+The success scenario freezes observable inputs, lets real configured agents
+create the successor, obtains real Ranex evidence/verdict, performs controlled
+merge, builds/launches the production surface, and uses the generated visible
+control. The negative calibration removes or breaks the successor behavior and
+must fail the same oracle even though the workbench loads.
+
+CI runs unit/contract tests for every transition, unknown field, retry class,
+scanner rule, and cleanup override; integration tests with real processes and
+atomic manifests; browser and native Electron scenarios on all three platforms;
+qualified governed scenarios on Ubuntu; packaging and packaged smoke; artifact
+scanning; source-map pauses; and zero-residual checks. Any missing required job,
+diagnostic, artifact decision, or lifecycle join blocks release.
+
+### Pseudocode gate verdict
+
+Research #61 is closed. Driver and page-object authority, state machines, DTOs,
+manifest persistence, register-before-spawn ownership, identity and cleanup,
+timeouts/retries, artifact scanning, diagnostics/logging, source maps, capability
+refusals, exact traces, scenario coverage, and release criteria are fixed. The
+Electron crash/restart and ownership-separation boundary advances to #65 with no
+unresolved implementation choice.
