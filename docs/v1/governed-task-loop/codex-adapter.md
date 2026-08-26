@@ -1,13 +1,14 @@
 # Governed Codex CLI adapter
 
 Tracking: [#86](https://github.com/anthonykewl20/kogg/issues/86), research
-phase [#89](https://github.com/anthonykewl20/kogg/issues/89).
+phase [#89](https://github.com/anthonykewl20/kogg/issues/89), pseudocode phase
+[#90](https://github.com/anthonykewl20/kogg/issues/90).
 
 ## Status
 
-Research is complete as of 2026-08-27. This packet contains no production code.
-It records the boundary and evidence needed by pseudocode issue #90, the real
-boundary probe in #91, and production implementation plus real E2E in #92.
+Research and decision-complete pseudocode are complete as of 2026-08-27. This
+packet contains no production code. Its fixed contract is the input to the real
+boundary probe in #91 and production implementation plus real E2E in #92.
 
 The recommendation is one pinned `codex app-server --listen stdio://` process
 per Kogg attempt, launched inside a qualified Linux execution scope and a
@@ -394,3 +395,529 @@ prototype. The external process inventory remains mandatory in both cases.
 Production remains blocked until #90, #91, and #92 complete in order and all
 observability, diagnostics, debugger, real E2E, Ranex evidence, verdict, and
 zero-residual-process gates pass.
+
+## Pseudocode decision record
+
+This section is normative for #91 and #92. It closes every implementation choice
+identified by research. The adapter is one versioned implementation of the shared
+role-oriented protocol specified by #78; it may translate Codex observations but
+may not redefine role authority, attempt success, cleanup, evidence, verdict, or
+merge semantics.
+
+### Production components and ownership
+
+`@kogg/codex-adapter` contributes:
+
+| Component | Owner | Responsibility |
+| --- | --- | --- |
+| `CodexReleaseRegistry` | Kogg backend | Load the signed bundled qualification manifest and resolve one exact platform binary/schema/helper set |
+| `CodexAdapterFactory` | Shared agent adapter registry | Advertise the one qualified Codex descriptor and create an attempt-bound adapter instance |
+| `CodexProcessHost` | Kogg operation supervisor plus qualified Linux execution owner | Register logical process before spawn, bind cgroup/process identity, own stdio, deadlines, signals, drain, and residual proof |
+| `CodexProtocolClient` | Attempt-bound backend object | Enforce initialize ordering, closed method/event schemas, correlation, sequence, frame/queue bounds, and typed observations |
+| `CodexCredentialBroker` | Existing credential authority | Exchange a short-lived local lease for provider requests without disclosing the provider credential to Codex |
+| `CodexContentRouter` | Existing content-appropriate Theia channel | Route prompt/output/diff/tool content to authorized UI consumers with backpressure; never lifecycle logs/diagnostics/storage |
+| `CodexDiagnosticContributor` | Kogg diagnostics | Cross-check release/schema, confinement, lifecycle/process, queue, broker, cleanup, and recovery state |
+
+The shared agent attempt owns admission and final state. The execution slice owns
+the private repository, qualified Linux scope, worktree/run binding, quarantine,
+and deletion. The operations registry owns Kogg's logical process record. The
+Codex adapter owns only its app-server protocol object and stdio handle. Ranex owns
+qualification/evidence/verdict. There is no second process, repository, evidence,
+or merge authority in this package.
+
+### Exact release and schema attestation
+
+Kogg ships a signed `codex-qualification-v1.json` manifest generated in a reviewed
+release job. One entry contains:
+
+```ts
+interface QualifiedCodexReleaseV1 {
+  manifestVersion: '1';
+  releaseId: SymbolicId;
+  codexVersion: Semver;
+  codexCommit: LowerHex40;
+  target: 'x86_64-unknown-linux-musl' | 'aarch64-unknown-linux-musl';
+  binarySha256: Sha256;
+  binarySize: Decimal;
+  appServerSchemaVersion: 'v2';
+  appServerSchemaSha256: Sha256;
+  acceptedMethodsSha256: Sha256;
+  linuxHelperSha256: Sha256;
+  adapterVersion: Semver;
+  qualificationProfileId: SymbolicId;
+  signedAt: IsoInstant;
+  signatureKeyId: SymbolicId;
+  signature: Base64;
+}
+```
+
+At startup, `CodexReleaseRegistry` verifies the manifest signature with a bundled
+release public key, platform/architecture, canonical manifest encoding, exact file
+size and SHA-256 of the binary/helper/schema/accepted-set assets, executable
+owner/mode, and that none is a symlink. It then runs `codex --version` inside the
+qualified no-network inspection scope and requires the exact declared version.
+The version subprocess is registered before start and cleaned like every other
+Kogg process. Any mismatch disables the adapter and returns
+`CODEX_RELEASE_UNQUALIFIED`; it never downloads, searches `PATH`, uses a user
+installation, or falls back.
+
+Upgrade means adding a new signed manifest entry and adapter version after #91's
+qualification suite passes. Existing active/recovering attempts retain the exact
+old binary/schema digests until cleanup. An entry cannot be removed while a
+durable attempt references it. No semver range or newest-version selection exists.
+
+### Accepted app-server protocol
+
+The only accepted outbound methods/notifications are:
+
+- `initialize`, followed by `initialized` exactly once;
+- `thread/start` with `ephemeral: true`;
+- `turn/start` for the single active turn;
+- `turn/interrupt` for cooperative cancellation;
+- the qualified stable request replies needed for explicit policy refusal; and
+- `shutdown`/stdio close only during cleanup when supported by the exact pin.
+
+The only accepted inbound lifecycle observations are the exact qualified v2
+initialize reply, thread-start reply, `turn/started`, declared item start/update/
+completion families, usage observations, approval/tool request families,
+`turn/completed`, server request replies, and JSON-RPC errors. Each is validated
+against the bundled generated schema before correlation or content routing.
+Unknown methods, notifications, fields that violate the generated closed shape,
+invalid JSON-RPC IDs, duplicate terminal events, out-of-order lifecycle events, or
+an unexpected second thread/turn fail the attempt as
+`CODEX_PROTOCOL_VIOLATION` and begin cleanup.
+
+The adapter never uses human terminal output, `codex exec`, persisted threads,
+thread resume, dynamic configuration mutation, experimental API discovery, or
+provider-native completion as outer success. One app-server process owns exactly
+one ephemeral thread and one active turn for V1.
+
+### Request, configuration, and authority snapshot
+
+```ts
+interface CodexAttemptBindingV1 {
+  schemaVersion: '1';
+  attemptId: UUID;
+  operationId: UUID;
+  processId: UUID;
+  projectId: UUID;
+  taskId: UUID;
+  runId: UUID;
+  worktreeId: UUID;
+  repositoryBindingRevision: Decimal;
+  roleRevisionId: UUID;
+  adapterKey: 'codex-app-server';
+  adapterVersion: Semver;
+  releaseId: SymbolicId;
+  binarySha256: Sha256;
+  schemaSha256: Sha256;
+  requestedProviderId: SymbolicId;
+  requestedModelId: SymbolicId;
+  permissionProfileId: 'codex-v1-workspace-write-never-approve';
+  executionProfileId: SymbolicId;
+  credentialLeaseId: UUID;
+  deadlinePolicyId: SymbolicId;
+}
+```
+
+The shared admission layer supplies immutable task/role/provider/model/budget and
+execution identities. Before spawn, the adapter rechecks that the execution owner
+reports the exact current project/task/run/worktree binding, a private full Git
+repository, qualified Linux profile, and frozen writable-root identity. Any stale
+reference refuses with `CODEX_BINDING_CHANGED` before credentials or process
+activity.
+
+The Codex process is configured with a private `CODEX_HOME`, private scratch home,
+the private repository as its only writable project root, `workspace-write`
+sandbox mode, approval policy `never`, network disabled except the local credential
+broker, ephemeral history, no user instructions/config, no MCP servers, no hooks,
+no plugins, no skills, no browser/computer-use, no collaboration/subagents, no
+shell-environment inheritance, and no experimental features. The exact generated
+configuration file is owner-readable, resides inside the private attempt state,
+contains symbolic policy plus local broker endpoint only, and is deleted during
+cleanup. Its path and contents are never logged.
+
+Codex cannot request expanded sandbox, network, approval, a different model,
+additional provider, MCP/tool capability, or external writable root. Any approval
+or permission request is answered with the qualified protocol's explicit denial
+and the attempt fails `CODEX_AUTHORITY_REQUESTED`; Kogg does not auto-approve.
+
+### Qualified Linux confinement
+
+Production is Linux-only. Admission requires the exact execution profile recorded
+in the release manifest:
+
+- user and mount namespaces with a non-root unmapped host identity;
+- private full repository mounted read/write at one stable in-sandbox location;
+- source checkout, host home, host Git metadata, Docker socket, SSH agent,
+  keyrings, device nodes, and arbitrary host paths absent;
+- read-only pinned binary/helper/runtime assets;
+- private tmpfs home, `CODEX_HOME`, `/tmp`, and bounded scratch;
+- cgroup v2 subtree created and owned before spawn with PID, memory, CPU, and
+  wall-clock controls, `pids.max`, and `cgroup.kill` support;
+- seccomp/capability/no-new-privileges policy matching the qualified digest;
+- network namespace with only loopback access to the attempt credential broker;
+  no DNS or external route; and
+- all descendants forced into the same cgroup and namespace scope.
+
+The adapter does not trust Codex's ambient Bubblewrap/helper selection as the outer
+boundary. It passes `externalSandbox: true` only in the exact protocol/config
+shape proven by #91 and refuses if Codex reports a weaker or conflicting mode.
+Failure to inspect any namespace, mount, cgroup, route, or policy identity returns
+`CODEX_CONFINEMENT_UNVERIFIED`; there is no macOS/Windows production fallback.
+Browser and Electron clients may initiate/observe a remote qualified Linux run,
+but the Codex process never runs on those desktop hosts for V1.
+
+### Credential broker
+
+The credential authority creates one reservation bound to attempt, release,
+provider, model, maximum request count, absolute expiry, and local broker instance.
+Codex receives no reusable provider key. The child receives a random one-attempt
+broker bearer in `OPENAI_API_KEY` and a loopback-only `OPENAI_BASE_URL`; the bearer
+is valid only from the attempt network/cgroup identity, is single-attempt and
+short-lived, cannot access account APIs, cannot change model, and becomes invalid
+on cancel, timeout, process exit, or broker restart. It is still authorization
+material and therefore never logged, persisted in lifecycle/diagnostics, returned
+to the frontend, placed in argv, or included in support artifacts.
+
+The broker validates the lease and exact model, injects the provider credential
+only inside its own request boundary, strips/disallows unsupported endpoints and
+headers, applies byte/request/time bounds, performs no automatic retry, and
+forwards streaming content only through the authorized content channel. It records
+safe counts and status classes, never headers, bodies, URLs with query data, prompt,
+output, reasoning, tool data, or provider errors. Revocation closes in-flight
+streams, invalidates the bearer, and returns a typed safe observation.
+
+#91 must prove this exact compatibility with the pinned Codex binary. If Codex
+cannot operate through the scoped broker without exposing or persisting the bearer,
+the prototype is blocked; production must not fall back to the real API key in the
+child environment or user `~/.codex`.
+
+### Stdio framing, content routing, and backpressure
+
+Stdio is byte-owned by `CodexProcessHost`: stdin for newline-delimited JSON-RPC,
+stdout exclusively for protocol frames, and stderr drained/discarded after safe
+byte counting. Bounds are:
+
+- maximum inbound or outbound frame: 8 MiB including newline;
+- maximum incomplete line buffer: 8 MiB;
+- maximum 256 queued decoded observations or 16 MiB queued bytes, whichever first;
+- maximum 64 outstanding Kogg requests and 64 outstanding server requests;
+- maximum 4 MiB pending stdin bytes with drain deadline 10 seconds;
+- stderr drain counter sampled per second, hard cap 64 MiB total, with content
+  never decoded or logged; and
+- content router backpressure cap 16 MiB per authorized consumer, after which the
+  turn is cancelled as `CODEX_CONTENT_BACKPRESSURE` rather than dropping lifecycle.
+
+The frame decoder rejects invalid UTF-8, oversized/incomplete JSON, non-object
+frames, duplicate IDs, unknown correlations, and messages after terminal. It
+separates safe lifecycle fields from content before dispatch. Content-bearing
+parts go only to `CodexContentRouter` as in-memory bounded objects; they are absent
+from the adapter registry, safe event ledger, logs, diagnostics, errors, and
+support bundle. Lifecycle reduction waits for content queue acceptance where
+ordering matters, so a slow consumer cannot reorder completion ahead of output.
+
+### Lifecycle and transition table
+
+The adapter uses the shared attempt states plus this private projection:
+
+```ts
+type CodexPhase =
+  | 'release-verified' | 'scope-verified' | 'registered' | 'spawn-requested'
+  | 'spawned' | 'initializing' | 'initialized' | 'thread-starting'
+  | 'thread-ready' | 'turn-starting' | 'turn-active'
+  | 'turn-terminal-observed' | 'interrupting' | 'draining'
+  | 'terminating' | 'enumerating' | 'cleaned' | 'cleanup-failed'
+  | 'recovery-required' | 'reconciling' | 'quarantined';
+```
+
+| From | Observation/action | Preconditions | To / outer observation |
+| --- | --- | --- | --- |
+| none | release and execution binding verified | exact manifest/schema/profile/binding | `scope-verified` |
+| scope-verified | operation/logical process registered | both registries read back binding | `registered` |
+| registered | spawn requested | cgroup/namespace/config/broker ready | `spawn-requested` |
+| spawn-requested | process bound | PID/start/cgroup identity matches | `spawned` |
+| spawned | send initialize | stdio ready, handshake timer active | `initializing` |
+| initializing | exact initialize reply then initialized sent | schema/capabilities/model surface allowed | `initialized`; outer adapter ready |
+| initialized | send ephemeral thread/start | no prior thread | `thread-starting` |
+| thread-starting | exact reply | ephemeral, model/policy/sandbox match | `thread-ready` |
+| thread-ready | send turn/start | authorized content handle available | `turn-starting` |
+| turn-starting | turn/started | correlation exact | `turn-active`; outer active |
+| turn-active | valid item/usage observation | sequence/correlation/bounds valid | remain active, bounded heartbeat |
+| turn-active | turn/completed | exact one terminal event | `turn-terminal-observed`; provisional completion/failure |
+| active phases | cancel/timeout | first durable cancel generation | `interrupting`; send turn/interrupt once |
+| terminal/interrupt/failure | cleanup starts | broker revoked, content input closed | `draining` |
+| draining | cooperative shutdown/stdio close settled | descendants may still exist | `terminating` |
+| terminating | SIGTERM grace expired or host still live | identity reverified | cgroup kill, then `enumerating` |
+| enumerating | cgroup empty and broker/config/stdio released | external inventory agrees | `cleaned`; outer cleanup proof |
+| enumerating | residual/unverified identity/deadline | no unsafe signal | `cleanup-failed`; block release/capability |
+
+`turn/completed`, EOF, process `exit`, process `close`, interrupt reply, and Codex
+terminal cleanup replies never skip `draining -> terminating -> enumerating`.
+Exactly one outer terminal result is committed after cleanup classification.
+
+### Deadlines and cancellation escalation
+
+Fixed adapter deadlines are: scope verification 10 seconds, spawn 20 seconds,
+initialize 30 seconds, thread start 30 seconds, turn start/first activity 60
+seconds, idle 120 seconds, stdin drain 10 seconds, interrupt acknowledgement 10
+seconds, graceful host exit 10 seconds, cgroup-empty proof 10 seconds, configuration
+and broker cleanup 10 seconds. The shared absolute deadline is policy-supplied and
+capped at 24 hours. Every timer has a durable generation; stale callbacks do
+nothing.
+
+Cancellation algorithm:
+
+```text
+persist cancel requested and revoke credential lease
+stop accepting new content/provider/server requests
+if turn correlation exists: send turn/interrupt once
+explicitly deny/resolve every pending approval or server request
+wait up to 10s for terminal observation and pending request settlement
+request app-server shutdown and close stdin
+wait up to 10s for process close
+reverify platform identity; send SIGTERM to Kogg-owned process group
+wait bounded grace; invoke cgroup.kill for the qualified owned scope
+drain stdout/stderr without logging content
+enumerate cgroup, operation registry, broker leases, stdio handles, and config
+commit cleaned only when every inventory is empty/released
+```
+
+Cancellation before provider completion wins the final `CODEX_CANCELLED` code.
+A terminal event durably reduced first retains its completed/failed class, though a
+later user cancel still accelerates cleanup. Deadline expiry wins over later
+protocol events. Cleanup failure overrides no provider result; it produces the
+terminal cleanup state/code and blocks governed success.
+
+### Background terminals and descendants
+
+V1 does not enable experimental app-server terminal-control methods as an
+authority dependency. Foreground command execution required by Codex remains
+inside the qualified cgroup. Any background terminal, MCP/helper, hook, plugin,
+subagent, shell descendant, or escaped process observation is unexpected because
+those capabilities are disabled. The external cgroup/process inventory is the
+cleanup authority and must account for every descendant even if Codex omits it.
+
+If the exact qualified stable schema exposes a read-only terminal inventory, #91
+may use it only as a cross-check. A mismatch between Codex and external inventory
+fails `CODEX_PROCESS_INVENTORY_MISMATCH`; cleanup still uses the external owner.
+An observed descendant outside the attempt cgroup is
+`CODEX_PROCESS_ESCAPE_DETECTED`, immediately cancels the attempt, blocks the
+qualification profile, and prevents release even if the process later exits.
+
+### Durable safe state and idempotency
+
+The shared attempt registry stores the immutable binding above, current Codex
+phase, safe protocol request counters/correlations, deadline generations, bounded
+activity/usage status, operation/process/cgroup logical IDs, terminal code,
+cleanup result, and append-only safe events. It never stores protocol frames,
+provider/thread/turn/item IDs in support-visible tables, content, configuration
+contents/path, PID/argv/environment, broker bearer, credential, stderr, exception,
+or raw response.
+
+Provider correlations needed during one live process remain in memory. Because
+stdio ownership cannot survive backend death safely, V1 never reattaches or
+replays a turn. Matching duplicate start/cancel request IDs return the committed
+safe result; digest collision is refused. Unknown commit outcome is reconciled
+from safe events/process inventory, never resolved by resubmitting `turn/start`.
+
+Startup verifies database/event integrity and the qualified release before
+admission, then reconciles every nonterminal binding. A live matching cgroup is
+cancelled/killed and enumerated without reconnecting to stdio. Missing resources
+become `CODEX_RECOVERED_AFTER_BACKEND_LOSS` only after zero-residual proof.
+Unmatched/reused/unreadable identity is never signalled and becomes
+`CODEX_UNVERIFIED_RESIDUAL`, blocking the adapter/profile. The private repository
+is marked quarantined through the execution owner; deletion is owned by the
+execution retention policy and never happens merely because the adapter failed.
+
+### Closed failure and refusal codes
+
+The adapter-specific closed enum is:
+
+`CODEX_OK`, `CODEX_BINDING_CHANGED`, `CODEX_RELEASE_UNQUALIFIED`,
+`CODEX_MANIFEST_INVALID`, `CODEX_BINARY_MISMATCH`, `CODEX_SCHEMA_MISMATCH`,
+`CODEX_VERSION_MISMATCH`, `CODEX_PLATFORM_UNSUPPORTED`,
+`CODEX_CONFINEMENT_UNVERIFIED`, `CODEX_PROCESS_REGISTRATION_FAILED`,
+`CODEX_PROCESS_START_FAILED`, `CODEX_PROCESS_ESCAPE_DETECTED`,
+`CODEX_PROCESS_INVENTORY_MISMATCH`, `CODEX_PROTOCOL_UNSUPPORTED`,
+`CODEX_PROTOCOL_VIOLATION`, `CODEX_FRAME_TOO_LARGE`, `CODEX_QUEUE_OVERFLOW`,
+`CODEX_STDIN_BACKPRESSURE`, `CODEX_STDERR_LIMIT`,
+`CODEX_CONTENT_BACKPRESSURE`, `CODEX_PROVIDER_MISMATCH`,
+`CODEX_MODEL_MISMATCH`, `CODEX_SANDBOX_MISMATCH`,
+`CODEX_CAPABILITY_UNEXPECTED`, `CODEX_AUTHORITY_REQUESTED`,
+`CODEX_CREDENTIAL_LEASE_REFUSED`, `CODEX_CREDENTIAL_REVOKED`,
+`CODEX_PROVIDER_AUTH_REFUSED`, `CODEX_PROVIDER_RATE_LIMITED`,
+`CODEX_PROVIDER_REFUSED`, `CODEX_TRANSPORT_LOST`, `CODEX_HOST_EXITED`,
+`CODEX_SCOPE_TIMEOUT`, `CODEX_SPAWN_TIMEOUT`, `CODEX_INITIALIZE_TIMEOUT`,
+`CODEX_THREAD_START_TIMEOUT`, `CODEX_FIRST_ACTIVITY_TIMEOUT`,
+`CODEX_IDLE_TIMEOUT`, `CODEX_ABSOLUTE_TIMEOUT`, `CODEX_CANCELLED`,
+`CODEX_INTERRUPT_TIMEOUT`, `CODEX_CLEANUP_TIMEOUT`, `CODEX_CLEANUP_FAILED`,
+`CODEX_RECOVERY_REQUIRED`, `CODEX_RECOVERED_AFTER_BACKEND_LOSS`,
+`CODEX_UNVERIFIED_RESIDUAL`, `CODEX_REGISTRY_BUSY`,
+`CODEX_REGISTRY_INTEGRITY_FAILED`, and `CODEX_INTERNAL_FAILURE`.
+
+Raw JSON-RPC errors, provider bodies/status text, stderr, exception messages, paths,
+commands, arguments, output, and content never enter mappings. Reviewed numeric
+status classes may map to auth/rate-limit/generic provider categories inside the
+broker. Unknown errors become `CODEX_INTERNAL_FAILURE` with only error type logged.
+
+### Exact safe observability
+
+Logger names are `kogg:agents:codex-release`, `kogg:agents:codex-adapter`,
+`kogg:agents:codex-protocol`, `kogg:agents:codex-supervision`, and
+`kogg:agents:codex-recovery`.
+
+| Event | Level | Allowed fields |
+| --- | --- | --- |
+| `release.verification.started/completed/failed` | info/info/error | releaseId, target, adapterVersion, safeCode? |
+| `scope.verification.started/completed/failed` | info/info/error | attemptId, operationId, executionProfileId, safeCode? |
+| `process.registered` | info | attemptId, operationId, processId, ownerKind |
+| `process.start.requested/started/failed` | debug/info/error | attemptId, operationId, processId, durationMs?, safeCode? |
+| `protocol.initialize.started/completed/failed` | debug/info/error | attemptId, schemaVersion, durationMs?, safeCode? |
+| `thread.started` / `turn.started` | info | attemptId, activityCount |
+| `protocol.activity` | debug | attemptId, activityKind, activityCount, queuedCount |
+| `broker.request.started/completed/failed` | debug/debug/warn | attemptId, providerId, modelId, requestCount, durationMs?, statusClass?, safeCode? |
+| `turn.completion.observed` / `turn.failed` | info/error | attemptId, terminalClass, activityCount, safeCode? |
+| `cancel.requested/acknowledged/escalated` | info/debug/warn | attemptId, operationId, processId, deadlineClass?, pendingCount |
+| `timeout.expired` | warn | attemptId, deadlineClass, generation, configuredMs |
+| `cleanup.started/completed/failed` | info/info/error | attemptId, operationId, processId, resourceCount, residualCount, safeCode? |
+| `recovery.started/classified/completed/failed` | info/warn/info/error | attemptId?, processId?, recoveryClass?, residualCount?, safeCode? |
+
+All schemas are compile-time closed. They reject raw protocol objects and unknown,
+content-bearing, oversized, or authorization fields without echoing values. Safe
+correlations are project/task/run/worktree/attempt/operation/process IDs where the
+event schema declares them. Binary/schema digests are used for local attestation
+but support/log output shows the symbolic release ID, not digests that could become
+unreviewed fingerprints. Lifecycle boundaries and each external provider/process
+call have requested/start/terminal/failure coverage.
+
+### Diagnostic catalog
+
+Exact runtime IDs are:
+
+- `codex.release`: signed manifest, binary/helper/schema/accepted-set versions and
+  platform qualification are exact;
+- `codex.confinement`: active/recent attempts match the qualified namespace,
+  mount, cgroup, network, seccomp, capability, and writable-root profile;
+- `codex.protocol`: initialization ordering, accepted schema, correlation, queue,
+  frame, backpressure, and terminal projections are valid;
+- `codex.credentials`: broker is scoped, current leases match active attempts and
+  model/provider grants, and no stale reservation exists;
+- `codex.processes`: every app-server/descendant is registered before start,
+  inventories agree, and no hidden/escaped/residual process exists;
+- `codex.cleanup`: every terminal attempt has closed stdio/content/broker/config
+  resources and proved empty cgroup/process inventory;
+- `codex.recovery`: startup reconciliation is complete and admission agrees with
+  quarantine/unverified state; and
+- `codex.source-maps`: backend, frontend projection, Electron, adapter host, and
+  Linux owner source maps exist and exercised failure branches are debugger-ready.
+
+The contributor fails every relevant check if inspection throws; it never omits a
+check. Operational files declare one or more IDs. Failure tests cover missing/
+tampered manifest assets, unverified scope, invalid frames/order, queue and stderr
+overflow, stale broker lease, inventory mismatch/escape/residual, cleanup timeout,
+corrupt lifecycle storage, and recovery backlog. `yarn audit:observability` remains
+release-blocking.
+
+### Visible browser and Electron behavior
+
+The shared Agents view shows `Codex app-server <qualified version>` only when
+release and remote Linux profile diagnostics permit admission. Start confirmation
+shows exact role, provider/model registry IDs, private repository binding,
+permission profile, adapter/release version, deadlines, and budget using safe
+labels. It never displays or transmits the provider key.
+
+During a run the attempt detail shows safe phases (`Preparing qualified scope`,
+`Starting Codex`, `Initializing`, `Active`, `Cancelling`, `Cleaning`, `Recovered`,
+or typed failure), bounded activity and usage, child/resource counts, and Cancel.
+Content appears only in the authorized content view. Cancel stays pending until
+backend state changes. Reload/disconnect does not cancel. Quarantine, cleanup
+failure, or unverified residual is prominent and prevents another Codex start on
+the affected profile; a diagnostic action links to the safe report, not raw logs.
+
+### Real visible-UI E2E and expected traces
+
+#92 drives browser and Electron controls while the backend uses a qualified Linux
+target. No direct service mutation, mocked process/provider success, fake patch,
+or pre-generated repository result is accepted. Required cases are:
+
+1. select an approved frozen task and exact Codex release/provider/model; start a
+   real app-server and real provider turn; observe one private-repository change,
+   terminal observation, external cleanup, and zero residuals;
+2. verify the source checkout and host/user state are absent, only the private
+   repository changes, network reaches only the broker, and model/sandbox/profile
+   observations match the frozen binding;
+3. cancel while streaming, during a denied approval, and with a real background
+   descendant attempt; prove interrupt, pending request resolution, broker revoke,
+   SIGTERM/cgroup escalation as applicable, drain, and empty inventory;
+4. force binary/schema/helper/accepted-set mismatch, unsupported platform,
+   confinement downgrade, capability/model fallback, external writable-root and
+   process escape attempts; prove refusal/failure before unsafe activity;
+5. inject malformed UTF-8/JSON/schema, oversized/incomplete/duplicate/unknown/
+   out-of-order frames, stdout stall/flood, stderr flood, stdin and content
+   backpressure, unexpected EOF, and app-server crash;
+6. force each scope/spawn/initialize/thread/first-activity/idle/absolute/interrupt/
+   cleanup deadline independently and prove correct generation/code;
+7. revoke credentials during streaming and force broker auth/rate-limit/provider
+   refusals without exposing the bearer/key/body;
+8. kill the Kogg backend with an active app-server, restart visibly, reconcile the
+   cgroup without turn replay or stdio reattachment, quarantine the repository,
+   and block admission until zero-residual proof;
+9. corrupt lifecycle storage and create process-inventory disagreement/unverified
+   identity; prove fail-closed diagnostics and no unsafe signal;
+10. seed prompt, output, reasoning, source, diff, path, command, argv, environment,
+    provider body/error, real provider key, and broker bearer canaries; scan all
+    frontend/backend/Electron/Linux-owner/broker logs, diagnostics, support and CI
+    artifacts for absence;
+11. visibly run diagnostics/export support and assert all eight exact checks plus
+    deliberate failure classifications; and
+12. attach debuggers through source maps to browser projection, Node adapter and
+    broker, Electron renderer/main, and Linux process owner at initialize,
+    malformed-frame, cancel escalation, cleanup, and recovery branches.
+
+Success trace:
+
+```text
+release.verification.started -> release.verification.completed ->
+scope.verification.started -> scope.verification.completed ->
+process.registered -> process.start.requested -> process.started ->
+protocol.initialize.started -> protocol.initialize.completed ->
+thread.started -> turn.started -> protocol.activity* ->
+turn.completion.observed -> cleanup.started -> cleanup.completed
+```
+
+Cancellation trace:
+
+```text
+cancel.requested -> credential lease revoked -> interrupt sent ->
+cancel.acknowledged? -> cancel.escalated? -> cleanup.started ->
+cgroup/process/broker/config inventories empty -> cleanup.completed
+```
+
+Recovery trace:
+
+```text
+recovery.started -> recovery.classified -> broker revoked ->
+owned cgroup terminated/enumerated -> repository quarantined ->
+cleanup.completed|cleanup.failed -> recovery.completed|recovery.failed
+```
+
+All traces are asserted in the append-only safe ledger and allowlisted logs.
+`turn/completed` without cleanup, a green test with a residual, a content leak,
+missing diagnostic, missing source map, unqualified confinement, or absent Ranex
+evidence/verdict is a failed release.
+
+### Prototype handoff and pseudocode gate
+
+#91 must test the exact pinned binary/schema/profile and decisions above. Its
+highest-risk measurements are scoped broker compatibility, external-sandbox
+reporting, disabled approval/capability behavior, real descendant inheritance and
+cgroup kill, stdio/backpressure bounds, and backend-death recovery. The prototype
+branch is preserved; only measured findings and necessary packet corrections
+merge. A happy-path chat or fake JSON-RPC peer alone cannot close #91.
+
+Research #89 is closed. Binary/schema attestation, protocol surface, model and
+approval authority, credential delivery, confinement, queues, process ownership,
+deadlines, escalation, descendants, persistence, recovery/quarantine, safe codes,
+logs, diagnostics, source maps/debugger proof, and visible real-boundary E2E now
+have exact decisions. No production implementation choice remains unresolved.
