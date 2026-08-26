@@ -18,7 +18,7 @@ export type CodexSafeObservation =
   | { readonly kind: 'response'; readonly requestMethod: string; readonly outcome: 'result' | 'error' }
   | { readonly kind: 'notification'; readonly lifecycle: 'turn-started' | 'activity' | 'turn-completed' }
   | { readonly kind: 'server-request'; readonly lifecycle: 'authority-request' };
-export interface CodexFrameSchema { validate(frame: Readonly<Record<string, unknown>>): CodexValidatedFrame | undefined; }
+export interface CodexFrameSchema { validate(frame: Readonly<Record<string, unknown>>, expectedRequestMethod?: string): CodexValidatedFrame | undefined; }
 export interface CodexContentRouter { accept(content: unknown, byteCount: number): Promise<boolean>; }
 
 export class CodexProtocolFault extends Error { constructor(readonly code: Extract<CodexSafeCode, 'CODEX_PROTOCOL_VIOLATION' | 'CODEX_PROTOCOL_UNSUPPORTED' | 'CODEX_FRAME_TOO_LARGE' | 'CODEX_QUEUE_OVERFLOW' | 'CODEX_CONTENT_BACKPRESSURE'>) { super(code); } }
@@ -69,7 +69,8 @@ export class CodexProtocolCore {
     let parsed: unknown; try { parsed = JSON.parse(DECODER.decode(line)); } catch { // observability-exempt: fault emits the closed refusal code and intentionally discards invalid UTF-8/JSON bytes.
       this.fault('CODEX_PROTOCOL_VIOLATION'); }
     if (!parsed || Array.isArray(parsed) || typeof parsed !== 'object') this.fault('CODEX_PROTOCOL_VIOLATION');
-    let validated: CodexValidatedFrame | undefined; try { validated = this.schema.validate(parsed as Readonly<Record<string, unknown>>); } catch { // observability-exempt: The closed protocol refusal below replaces schema-validator details without echoing frame content.
+    const candidate = parsed as Readonly<Record<string, unknown>>; const expectedRequest = typeof candidate.id === 'number' ? this.requests.get(candidate.id) : undefined;
+    let validated: CodexValidatedFrame | undefined; try { validated = this.schema.validate(candidate, expectedRequest); } catch { // observability-exempt: The closed protocol refusal below replaces schema-validator details without echoing frame content.
       this.fault('CODEX_PROTOCOL_VIOLATION'); } if (!validated) this.fault('CODEX_PROTOCOL_VIOLATION');
     if (validated.kind !== 'response' && !this.acceptedInboundMethods.has(validated.method)) this.fault('CODEX_PROTOCOL_UNSUPPORTED');
     const contentBytes = validated.contentBytes ?? 0; if (!Number.isSafeInteger(contentBytes) || contentBytes < 0 || contentBytes > CODEX_PROTOCOL_LIMITS.contentBytes || (contentBytes === 0) !== (validated.content === undefined)) this.fault('CODEX_PROTOCOL_VIOLATION');

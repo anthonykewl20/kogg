@@ -8,6 +8,7 @@ import { inject, injectable, unmanaged } from '@theia/core/shared/inversify';
 import { KoggOperationRegistry, type OperationRegistryApi } from '@kogg/operations/lib/common/operations-protocol';
 import type { CodexReleaseProjection, CodexSafeCode, QualifiedCodexReleaseV1 } from '../common/codex-protocol';
 import { parseAcceptedCodexMethods, validateCodexSchemaBundle } from './codex-accepted-methods';
+import { compileCodexFrameSchema } from './codex-generated-schema';
 import { codexLog } from './codex-logger';
 
 // Logs through the closed [kogg:agents:codex-release] schema in codex-logger.
@@ -44,7 +45,7 @@ export class CodexReleaseRegistry implements BackendApplicationContribution {
       await exactAsset(binary, manifest.binarySha256, Number(manifest.binarySize), MAX_BINARY_BYTES, true, 'CODEX_BINARY_MISMATCH');
       const schema = await exactAsset(path.join(releaseRoot, 'app-server-schema-v2.json'), manifest.appServerSchemaSha256, undefined, MAX_SCHEMA_BYTES, false, 'CODEX_SCHEMA_MISMATCH');
       const acceptedMethods = await exactAsset(path.join(releaseRoot, 'accepted-methods.json'), manifest.acceptedMethodsSha256, undefined, MAX_METHOD_BYTES, false, 'CODEX_SCHEMA_MISMATCH');
-      try { const accepted = parseAcceptedCodexMethods(acceptedMethods); validateCodexSchemaBundle(schema, accepted); } catch { // observability-exempt: The outer release failure emits CODEX_SCHEMA_MISMATCH without exposing signed asset content.
+      try { const accepted = parseAcceptedCodexMethods(acceptedMethods); validateCodexSchemaBundle(schema, accepted); compileCodexFrameSchema(schema, accepted); } catch { // observability-exempt: The outer release failure emits CODEX_SCHEMA_MISMATCH without exposing signed asset content.
         throw new ReleaseError('CODEX_SCHEMA_MISMATCH'); }
       await exactAsset(path.join(releaseRoot, 'linux-helper'), manifest.linuxHelperSha256, undefined, MAX_HELPER_BYTES, true, 'CODEX_BINARY_MISMATCH');
       await this.inspectVersion(binary, manifest.codexVersion);

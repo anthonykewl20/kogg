@@ -19,6 +19,7 @@
     "@kogg/contracts": "0.1.0",
     "@kogg/operations": "0.1.0",
     "@theia/core": "1.74.1",
+    "ajv": "^8.20.0",
     "inversify": "6.2.2"
   },
   "devDependencies": {
