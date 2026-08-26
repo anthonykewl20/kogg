@@ -6,9 +6,13 @@ phase [#104](https://github.com/anthonykewl20/kogg/issues/104).
 
 ## Status
 
-Research and decision-complete pseudocode are complete as of 2026-08-27. This
-packet contains no production code. It fixes the contract that #105 must probe
-at the real Ranex/Git/check boundary and #106 must ship with visible E2E.
+Research, decision-complete pseudocode, and the bounded #105 real Ranex
+compatibility probe are complete as of 2026-08-27. This packet contains no
+production code. The measurements in `kernel-evidence-prototype-findings.md`
+show that the pinned adapter is healthy enough for its legacy v1 handshake but
+implements none of the exact v2 evidence-operation contract. #106 must replace
+that advertised-but-unavailable surface before evidence admission, lost-ack
+reconciliation, gate evaluation, or visible E2E can be qualified.
 
 The recommendation is a closed Kogg-to-Ranex command protocol in which every
 request and result is bound to one immutable task revision, approved authority
