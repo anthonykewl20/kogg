@@ -6,9 +6,13 @@ phase [#95](https://github.com/anthonykewl20/kogg/issues/95).
 
 ## Status
 
-Research and decision-complete pseudocode are complete as of 2026-08-27. This
-packet contains no production code. It fixes the contract that #96 must probe at
-the real Claude boundary and that #97 must implement with real E2E evidence.
+Research, decision-complete pseudocode, and the bounded #96 artifact/legal-gate
+probe are complete as of 2026-08-27. This packet contains no production code.
+The measurements in `claude-adapter-prototype-findings.md` validate fail-closed
+admission but find no authorized commercial-use approval record. The commercial
+SDK/CLI was therefore not imported or executed, and #97 remains disabled until
+an authorized maintainer supplies the exact signed approval and the remaining
+qualified Linux/provider measurements pass.
 
 The recommendation is a pinned `@anthropic-ai/claude-agent-sdk` TypeScript
 package whose bundled Claude Code process is spawned through a Kogg-owned
