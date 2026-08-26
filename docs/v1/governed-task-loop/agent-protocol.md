@@ -2,13 +2,16 @@
 
 Tracking: [#72](https://github.com/anthonykewl20/kogg/issues/72), research
 phase [#75](https://github.com/anthonykewl20/kogg/issues/75), pseudocode phase
-[#78](https://github.com/anthonykewl20/kogg/issues/78).
+[#78](https://github.com/anthonykewl20/kogg/issues/78), and prototype findings
+[#81](https://github.com/anthonykewl20/kogg/issues/81) in
+[`agent-protocol-prototype-findings.md`](agent-protocol-prototype-findings.md).
 
 ## Status
 
-Research and decision-complete pseudocode are complete as of 2026-08-27. This
-packet contains no production code. The fixed contract below is the input to the
-real-boundary prototype in #81 and production implementation in #84.
+Research, decision-complete pseudocode, and the bounded real-boundary prototype
+are complete as of 2026-08-27. This packet contains no production code. The #81
+probe validates the core real-host supervision contract and records production
+hardening requirements for #84.
 
 The research recommendation is a backend-owned agent-attempt state machine that
 binds one immutable Kogg role snapshot to one explicitly resolved provider adapter
