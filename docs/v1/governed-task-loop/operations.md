@@ -1,14 +1,16 @@
 # Task queue, execution timeline, diagnostics, and basic metrics
 
 Tracking: [#112](https://github.com/anthonykewl20/kogg/issues/112), research
-phase [#113](https://github.com/anthonykewl20/kogg/issues/113).
+phase [#113](https://github.com/anthonykewl20/kogg/issues/113), and pseudocode
+phase [#114](https://github.com/anthonykewl20/kogg/issues/114). The normative
+contract is in [`operations-pseudocode.md`](operations-pseudocode.md).
 
 ## Status
 
-Research is complete as of 2026-08-27. This packet contains no production code
-and stops before decision-complete schemas and pseudocode. Those belong to #114,
-followed by a real-boundary probe in #115 and production behavior plus real
-human-level E2E in #116.
+Research and decision-complete pseudocode are complete as of 2026-08-27. These
+packets contain no production code. #115 must probe the fixed read-model contract
+at real owner/store/stream/process boundaries, followed by production behavior
+plus real human-level E2E in #116.
 
 The recommendation is a read-model operations experience assembled from
 authority-owned immutable facts and safe lifecycle projections. The queue,
@@ -358,14 +360,15 @@ tests, or screenshots without independent oracles do not pass.
 | Delete owner history when projection retention expires | Reject; projection has no authority over source retention. |
 | Add Kubernetes/Temporal as the local V1 scheduler/operations service | Reject; control-plane dependency is disproportionate and does not satisfy Kogg ownership. |
 
-## Decisions required from #114
+## Decisions fixed by #114
 
-#114 must fix source-event envelopes/cursors and projection schemas; queue/list/
-timeline/process/check/evidence/verdict/retry/usage/merge safe fields; deterministic
-causal ordering and coalescing; authenticated streaming/backpressure/resume;
-action routing; projection persistence/rebuild/retention; metrics definitions and
-cardinality; closed failure/log/event schemas; exact diagnostic ids; accessibility
-behavior; debugger/source-map proof; and every #115/#116 fault/E2E seam.
+The normative pseudocode packet fixes source-event envelopes/cursors and
+projection schemas; queue/list/timeline/process/check/evidence/verdict/retry/
+usage/merge safe fields; deterministic causal ordering and coalescing;
+authenticated streaming/backpressure/resume; action routing; projection
+persistence/rebuild/retention; metrics definitions and cardinality; closed
+failure/log/event schemas; exact diagnostic ids; accessibility behavior;
+debugger/source-map proof; and every #115/#116 fault/E2E seam.
 
 The largest implementation risk is keeping a live multi-owner projection complete
 and causally comprehensible across out-of-order delivery and restart without
