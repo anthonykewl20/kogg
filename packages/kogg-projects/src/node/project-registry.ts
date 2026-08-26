@@ -16,6 +16,13 @@ import type {
   ProviderRegistry
 } from '@kogg/contracts';
 import { ProviderRegistryToken } from '@kogg/contracts';
+import {
+  KoggOperationRegistry,
+  type OperationLease,
+  type OperationRegistryApi,
+  type OperationSafeCode
+} from '@kogg/operations/lib/common/operations-protocol';
+import { runOperation } from '@kogg/operations/lib/node/run-operation';
 import { BackendApplicationContribution } from '@theia/core/lib/node';
 import { inject, injectable } from '@theia/core/shared/inversify';
 import type { KoggProjectsService } from '../common/projects-protocol';
@@ -23,7 +30,7 @@ import { ProjectError, errorType } from './project-errors';
 import { ProjectRepositoryProbe, type RepositoryProbeResult } from './project-repository-probe';
 import { ProjectWorkspaceProjection } from './project-workspace-projection';
 
-// diagnostic-coverage: projects.registry, projects.repositories, projects.restoration, projects.processes
+// diagnostic-coverage: projects.registry, projects.repositories, projects.restoration, projects.processes, operations.registry, operations.cleanup
 
 type SqlRow = Record<string, SQLOutputValue>;
 type MutationRequest = ProjectMutationExpectation & object;
@@ -41,12 +48,14 @@ const SAFE_ID = /^[a-z0-9][a-z0-9._:-]{0,127}$/u;
 export class ProjectRegistry implements KoggProjectsService, BackendApplicationContribution {
   private database: DatabaseSync | undefined;
   private accepting = false;
+  private readonly trackedOperations = new Map<string, OperationLease>();
   private readonly databasePath = path.join(stateRoot(), 'projects', 'registry.sqlite3');
 
   constructor(
     @inject(ProjectRepositoryProbe) private readonly repositories: ProjectRepositoryProbe,
     @inject(ProjectWorkspaceProjection) private readonly workspaces: ProjectWorkspaceProjection,
-    @inject(ProviderRegistryToken) private readonly providers: ProviderRegistry
+    @inject(ProviderRegistryToken) private readonly providers: ProviderRegistry,
+    @inject(KoggOperationRegistry) private readonly operations: OperationRegistryApi
   ) {}
 
   async onStart(): Promise<void> {
@@ -99,13 +108,13 @@ export class ProjectRegistry implements KoggProjectsService, BackendApplicationC
   }
 
   async createProject(request: ProjectMutationExpectation & { displayName: string; repositoryPath: string }): Promise<ProjectRegistrySnapshot> {
-    this.requested('project.create', request.requestId);
-    validateExpectation(request); validateDisplayName(request.displayName);
+    await this.requested('project.create', request.requestId);
     const projectId = randomUUID();
     const repositoryId = randomUUID();
-    const probed = await this.probe(request.repositoryPath, request.requestId, repositoryId);
-    await this.workspaces.write(projectId, [probed.rootUri]);
     try {
+      validateExpectation(request); validateDisplayName(request.displayName);
+      const probed = await this.probe(request.repositoryPath, request.requestId, repositoryId);
+      await this.workspaces.write(projectId, [probed.rootUri]);
       const executed = this.mutate('project.create', request, database => {
         const now = new Date().toISOString();
         database.prepare('INSERT INTO projects(id, display_name, execution_profile_id, created_at, updated_at, revision) VALUES (?, ?, ?, ?, ?, 1)')
@@ -113,11 +122,11 @@ export class ProjectRegistry implements KoggProjectsService, BackendApplicationC
         this.insertRepository(database, projectId, repositoryId, request.displayName.trim(), probed, now);
       });
       if (!executed) await this.workspaces.remove(projectId);
-      this.completed('project.create', request.requestId, { projectId, repositoryId });
+      await this.completed('project.create', request.requestId, { projectId, repositoryId });
       return this.readSnapshot();
     } catch (error) {
       await this.workspaces.remove(projectId).catch(() => undefined);
-      this.failed('project.create', request.requestId, error);
+      await this.failed('project.create', request.requestId, error);
       throw error;
     }
   }
@@ -132,14 +141,13 @@ export class ProjectRegistry implements KoggProjectsService, BackendApplicationC
   }
 
   async removeProject(request: ProjectMutationExpectation & { projectId: string }): Promise<ProjectRegistrySnapshot> {
-    this.requested('project.remove', request.requestId, { projectId: request.projectId });
-    validateExpectation(request); validateUuid(request.projectId, 'PROJECT_NOT_FOUND');
-    const meta = this.meta();
-    if (meta.active_project_id === request.projectId || meta.pending_to_project_id === request.projectId || meta.pending_from_project_id === request.projectId) {
-      this.refused('project.remove', request.requestId, 'PROJECT_ACTIVE_REMOVE_REFUSED', { projectId: request.projectId });
-      throw new ProjectError('PROJECT_ACTIVE_REMOVE_REFUSED', 'Switch away from this project before removing its registry entry.');
-    }
+    await this.requested('project.remove', request.requestId, { projectId: request.projectId });
     try {
+      validateExpectation(request); validateUuid(request.projectId, 'PROJECT_NOT_FOUND');
+      const meta = this.meta();
+      if (meta.active_project_id === request.projectId || meta.pending_to_project_id === request.projectId || meta.pending_from_project_id === request.projectId) {
+        throw new ProjectError('PROJECT_ACTIVE_REMOVE_REFUSED', 'Switch away from this project before removing its registry entry.');
+      }
       this.mutate('project.remove', request, database => {
         this.requireProject(database, request.projectId);
         const bindings = numberValue(database.prepare('SELECT count(*) AS count FROM task_repository_bindings b JOIN repositories r ON r.id = b.repository_id WHERE r.project_id = ?').get(request.projectId), 'count');
@@ -149,20 +157,20 @@ export class ProjectRegistry implements KoggProjectsService, BackendApplicationC
         database.prepare('DELETE FROM projects WHERE id = ?').run(request.projectId);
       });
       await this.workspaces.remove(request.projectId);
-      this.completed('project.remove', request.requestId, { projectId: request.projectId });
+      await this.completed('project.remove', request.requestId, { projectId: request.projectId });
       return this.readSnapshot();
     } catch (error) {
-      this.failed('project.remove', request.requestId, error, { projectId: request.projectId });
+      await this.failed('project.remove', request.requestId, error, { projectId: request.projectId });
       throw error;
     }
   }
 
   async addRepository(request: ProjectMutationExpectation & { projectId: string; displayName: string; repositoryPath: string }): Promise<ProjectRegistrySnapshot> {
-    this.requested('repository.add', request.requestId, { projectId: request.projectId });
-    validateExpectation(request); validateUuid(request.projectId, 'PROJECT_NOT_FOUND'); validateDisplayName(request.displayName);
+    await this.requested('repository.add', request.requestId, { projectId: request.projectId });
     const repositoryId = randomUUID();
-    const probed = await this.probe(request.repositoryPath, request.requestId, repositoryId);
     try {
+      validateExpectation(request); validateUuid(request.projectId, 'PROJECT_NOT_FOUND'); validateDisplayName(request.displayName);
+      const probed = await this.probe(request.repositoryPath, request.requestId, repositoryId);
       this.mutate('repository.add', request, database => {
         this.requireProject(database, request.projectId);
         this.assertUniqueRepository(database, probed.identityDigest);
@@ -170,19 +178,19 @@ export class ProjectRegistry implements KoggProjectsService, BackendApplicationC
         database.prepare('UPDATE projects SET updated_at = ?, revision = revision + 1 WHERE id = ?').run(new Date().toISOString(), request.projectId);
       });
       await this.refreshProjection(request.projectId);
-      this.completed('repository.add', request.requestId, { projectId: request.projectId, repositoryId });
+      await this.completed('repository.add', request.requestId, { projectId: request.projectId, repositoryId });
       return this.readSnapshot();
     } catch (error) {
-      this.failed('repository.add', request.requestId, error, { projectId: request.projectId, repositoryId });
+      await this.failed('repository.add', request.requestId, error, { projectId: request.projectId, repositoryId });
       throw error;
     }
   }
 
   async relocateRepository(request: ProjectMutationExpectation & { projectId: string; repositoryId: string; repositoryPath: string }): Promise<ProjectRegistrySnapshot> {
-    this.requested('repository.relocate', request.requestId, { projectId: request.projectId, repositoryId: request.repositoryId });
-    validateExpectation(request); validateUuid(request.projectId, 'PROJECT_NOT_FOUND'); validateUuid(request.repositoryId, 'PROJECT_REPOSITORY_NOT_FOUND');
-    const probed = await this.probe(request.repositoryPath, request.requestId, request.repositoryId);
+    await this.requested('repository.relocate', request.requestId, { projectId: request.projectId, repositoryId: request.repositoryId });
     try {
+      validateExpectation(request); validateUuid(request.projectId, 'PROJECT_NOT_FOUND'); validateUuid(request.repositoryId, 'PROJECT_REPOSITORY_NOT_FOUND');
+      const probed = await this.probe(request.repositoryPath, request.requestId, request.repositoryId);
       this.mutate('repository.relocate', request, database => {
         const current = database.prepare('SELECT identity_digest FROM repositories WHERE id = ? AND project_id = ?').get(request.repositoryId, request.projectId) as SqlRow | undefined;
         if (!current) throw new ProjectError('PROJECT_REPOSITORY_NOT_FOUND', 'The repository registry entry does not exist.');
@@ -191,16 +199,16 @@ export class ProjectRegistry implements KoggProjectsService, BackendApplicationC
           .run(probed.rootUri, probed.gitDirUri, new Date().toISOString(), request.repositoryId);
       });
       await this.refreshProjection(request.projectId);
-      this.completed('repository.relocate', request.requestId, { projectId: request.projectId, repositoryId: request.repositoryId });
+      await this.completed('repository.relocate', request.requestId, { projectId: request.projectId, repositoryId: request.repositoryId });
       return this.readSnapshot();
     } catch (error) {
-      this.failed('repository.relocate', request.requestId, error, { projectId: request.projectId, repositoryId: request.repositoryId });
+      await this.failed('repository.relocate', request.requestId, error, { projectId: request.projectId, repositoryId: request.repositoryId });
       throw error;
     }
   }
 
   async removeRepository(request: ProjectMutationExpectation & { projectId: string; repositoryId: string }): Promise<ProjectRegistrySnapshot> {
-    this.requested('repository.remove', request.requestId, { projectId: request.projectId, repositoryId: request.repositoryId });
+    await this.requested('repository.remove', request.requestId, { projectId: request.projectId, repositoryId: request.repositoryId });
     try {
       this.mutate('repository.remove', request, database => {
         this.requireProject(database, request.projectId);
@@ -212,10 +220,10 @@ export class ProjectRegistry implements KoggProjectsService, BackendApplicationC
         if (result.changes !== 1) throw new ProjectError('PROJECT_REPOSITORY_NOT_FOUND', 'The repository registry entry does not exist.');
       });
       await this.refreshProjection(request.projectId);
-      this.completed('repository.remove', request.requestId, { projectId: request.projectId, repositoryId: request.repositoryId });
+      await this.completed('repository.remove', request.requestId, { projectId: request.projectId, repositoryId: request.repositoryId });
       return this.readSnapshot();
     } catch (error) {
-      this.failed('repository.remove', request.requestId, error, { projectId: request.projectId, repositoryId: request.repositoryId });
+      await this.failed('repository.remove', request.requestId, error, { projectId: request.projectId, repositoryId: request.repositoryId });
       throw error;
     }
   }
@@ -256,11 +264,11 @@ export class ProjectRegistry implements KoggProjectsService, BackendApplicationC
   async setRoleAssignment(request: ProjectMutationExpectation & {
     projectId: string; role: KoggProjectRole; assignment?: ProjectRoleAssignment;
   }): Promise<ProjectRegistrySnapshot> {
-    this.requested('role-assignment.update', request.requestId, { projectId: request.projectId });
-    validateExpectation(request); validateUuid(request.projectId, 'PROJECT_NOT_FOUND');
-    if (!ROLES.includes(request.role)) throw new ProjectError('PROJECT_ROLE_INVALID', 'Select a supported Kogg project role.');
-    if (request.assignment) this.validateAssignment(request.assignment);
+    await this.requested('role-assignment.update', request.requestId, { projectId: request.projectId });
     try {
+      validateExpectation(request); validateUuid(request.projectId, 'PROJECT_NOT_FOUND');
+      if (!ROLES.includes(request.role)) throw new ProjectError('PROJECT_ROLE_INVALID', 'Select a supported Kogg project role.');
+      if (request.assignment) this.validateAssignment(request.assignment);
       this.mutate('role-assignment.update', request, database => {
         this.requireProject(database, request.projectId);
         if (!request.assignment) database.prepare('DELETE FROM role_assignments WHERE project_id = ? AND role_id = ?').run(request.projectId, request.role);
@@ -269,24 +277,24 @@ export class ProjectRegistry implements KoggProjectsService, BackendApplicationC
           model_id = excluded.model_id, updated_at = excluded.updated_at, revision = role_assignments.revision + 1`)
           .run(request.projectId, request.role, request.assignment.providerConfigurationId, request.assignment.modelId, new Date().toISOString());
       });
-      this.completed('role-assignment.update', request.requestId, { projectId: request.projectId });
+      await this.completed('role-assignment.update', request.requestId, { projectId: request.projectId });
       return this.readSnapshot();
     } catch (error) {
-      this.failed('role-assignment.update', request.requestId, error, { projectId: request.projectId });
+      await this.failed('role-assignment.update', request.requestId, error, { projectId: request.projectId });
       throw error;
     }
   }
 
   async requestSwitch(request: ProjectMutationExpectation & { projectId: string }): Promise<ProjectSwitchTicket> {
-    this.requested('project.switch', request.requestId, { projectId: request.projectId });
-    validateExpectation(request); validateUuid(request.projectId, 'PROJECT_NOT_FOUND');
-    await this.refreshRepositoryAvailability();
-    const snapshot = this.readSnapshot();
-    const target = snapshot.projects.find(project => project.id === request.projectId);
-    if (!target) throw new ProjectError('PROJECT_NOT_FOUND', 'The project does not exist.');
-    if (target.lifecycle !== 'available') throw new ProjectError('PROJECT_SWITCH_BLOCKED', 'The project has unavailable repositories.');
-    await this.refreshProjection(request.projectId);
+    await this.requested('project.switch', request.requestId, { projectId: request.projectId });
     try {
+      validateExpectation(request); validateUuid(request.projectId, 'PROJECT_NOT_FOUND');
+      await this.refreshRepositoryAvailability();
+      const snapshot = this.readSnapshot();
+      const target = snapshot.projects.find(project => project.id === request.projectId);
+      if (!target) throw new ProjectError('PROJECT_NOT_FOUND', 'The project does not exist.');
+      if (target.lifecycle !== 'available') throw new ProjectError('PROJECT_SWITCH_BLOCKED', 'The project has unavailable repositories.');
+      await this.refreshProjection(request.projectId);
       this.mutate('project.switch', request, database => {
         const meta = this.meta(database);
         if (meta.pending_operation_id) throw new ProjectError('PROJECT_SWITCH_BLOCKED', 'Another project switch is already pending.');
@@ -300,16 +308,17 @@ export class ProjectRegistry implements KoggProjectsService, BackendApplicationC
         workspaceUri: this.workspaces.uri(request.projectId), expectedRegistryRevision: this.revision()
       };
     } catch (error) {
-      this.failed('project.switch', request.requestId, error, { projectId: request.projectId });
+      await this.failed('project.switch', request.requestId, error, { projectId: request.projectId });
       throw error;
     }
   }
 
   async reconcileWorkspace(request: { requestId: string; currentWorkspaceUri?: string }): Promise<ProjectWorkspaceReconciliation> {
-    validateUuid(request.requestId, 'PROJECT_REQUEST_INVALID');
-    console.info('[kogg:projects:switch] project.restore.started', { operationId: request.requestId });
-    await this.refreshRepositoryAvailability();
-    const meta = this.meta();
+    return runOperation(this.operations, 'project-switch', async () => {
+      validateUuid(request.requestId, 'PROJECT_REQUEST_INVALID');
+      console.info('[kogg:projects:switch] project.restore.started', { operationId: request.requestId });
+      await this.refreshRepositoryAvailability();
+      const meta = this.meta();
     if (meta.pending_operation_id && meta.pending_to_project_id) {
       const pendingTarget = this.readSnapshot().projects.find(project => project.id === meta.pending_to_project_id);
       if (!pendingTarget || pendingTarget.lifecycle !== 'available') {
@@ -328,6 +337,7 @@ export class ProjectRegistry implements KoggProjectsService, BackendApplicationC
         console.info('[kogg:projects:switch] project.switch.completed', {
           operationId: meta.pending_operation_id, projectId: meta.pending_to_project_id
         });
+        await this.completed('project.switch', meta.pending_operation_id, { projectId: meta.pending_to_project_id });
         console.info('[kogg:projects:switch] project.restore.completed', { operationId: request.requestId, projectId: meta.pending_to_project_id });
         return { snapshot: this.readSnapshot(), action: 'none' };
       }
@@ -336,6 +346,8 @@ export class ProjectRegistry implements KoggProjectsService, BackendApplicationC
       console.warn('[kogg:projects:switch] project.switch.failed', {
         operationId: meta.pending_operation_id, projectId: meta.pending_to_project_id, safeCode: 'PROJECT_RESTORE_FAILED'
       });
+      await this.failed('project.switch', meta.pending_operation_id,
+        new ProjectError('PROJECT_RESTORE_FAILED', 'The project switch could not be restored.'), { projectId: meta.pending_to_project_id });
       if (priorUri && request.currentWorkspaceUri !== priorUri) {
         console.warn('[kogg:projects:switch] project.restore.degraded', { operationId: request.requestId, safeCode: 'PROJECT_RESTORE_FAILED' });
         return { snapshot: this.readSnapshot(), action: 'open', workspaceUri: priorUri };
@@ -359,17 +371,21 @@ export class ProjectRegistry implements KoggProjectsService, BackendApplicationC
     } else {
       console.info('[kogg:projects:switch] project.restore.completed', { operationId: request.requestId });
     }
-    return { snapshot: this.readSnapshot(), action: 'none' };
+      return { snapshot: this.readSnapshot(), action: 'none' };
+    });
   }
 
   async cancelSwitch(request: { requestId: string; operationId: string }): Promise<ProjectRegistrySnapshot> {
-    validateUuid(request.requestId, 'PROJECT_REQUEST_INVALID'); validateUuid(request.operationId, 'PROJECT_SWITCH_STALE');
-    console.info('[kogg:projects:switch] project.switch.cancelled', { operationId: request.operationId });
-    const meta = this.meta();
-    if (meta.pending_operation_id !== request.operationId) throw new ProjectError('PROJECT_SWITCH_STALE', 'The project switch is no longer pending.');
-    this.clearPending();
-    console.info('[kogg:projects:switch] project.switch.cleanup.completed', { operationId: request.operationId });
-    return this.readSnapshot();
+    return runOperation(this.operations, 'project-switch', async () => {
+      validateUuid(request.requestId, 'PROJECT_REQUEST_INVALID'); validateUuid(request.operationId, 'PROJECT_SWITCH_STALE');
+      console.info('[kogg:projects:switch] project.switch.cancelled', { operationId: request.operationId });
+      const meta = this.meta();
+      if (meta.pending_operation_id !== request.operationId) throw new ProjectError('PROJECT_SWITCH_STALE', 'The project switch is no longer pending.');
+      this.clearPending();
+      await this.cancelled(request.operationId);
+      console.info('[kogg:projects:switch] project.switch.cleanup.completed', { operationId: request.operationId });
+      return this.readSnapshot();
+    });
   }
 
   diagnostics(): { integrity: boolean; foreignKeys: boolean; repositoryCount: number; unavailableCount: number; activeConsistent: boolean; pendingConsistent: boolean; activeProcesses: number } {
@@ -449,14 +465,14 @@ export class ProjectRegistry implements KoggProjectsService, BackendApplicationC
   }
 
   private async simpleProjectMutation(kind: string, request: MutationRequest & { projectId: string }, operation: (database: DatabaseSync) => void): Promise<ProjectRegistrySnapshot> {
-    this.requested(kind, request.requestId, { projectId: request.projectId });
-    validateExpectation(request); validateUuid(request.projectId, 'PROJECT_NOT_FOUND');
+    await this.requested(kind, request.requestId, { projectId: request.projectId });
     try {
+      validateExpectation(request); validateUuid(request.projectId, 'PROJECT_NOT_FOUND');
       this.mutate(kind, request, operation);
-      this.completed(kind, request.requestId, { projectId: request.projectId });
+      await this.completed(kind, request.requestId, { projectId: request.projectId });
       return this.readSnapshot();
     } catch (error) {
-      this.failed(kind, request.requestId, error, { projectId: request.projectId });
+      await this.failed(kind, request.requestId, error, { projectId: request.projectId });
       throw error;
     }
   }
@@ -529,8 +545,7 @@ export class ProjectRegistry implements KoggProjectsService, BackendApplicationC
     } catch (error) {
       console.warn('[kogg:projects:registry] repository.selection.failed', { operationId, repositoryId, errorType: errorType(error) });
     }
-    try { return await this.repositories.probe(localPath, operationId, repositoryId); }
-    catch (error) { this.failed('repository.validate', operationId, error, { repositoryId }); throw error; }
+    return this.repositories.probe(localPath, operationId, repositoryId);
   }
 
   private insertRepository(database: DatabaseSync, projectId: string, repositoryId: string, displayName: string, repository: RepositoryProbeResult, now: string): void {
@@ -627,22 +642,49 @@ export class ProjectRegistry implements KoggProjectsService, BackendApplicationC
     if (!this.accepting) throw new ProjectError('PROJECTS_SHUTTING_DOWN', 'The Kogg project registry is not accepting changes.');
   }
 
-  private requested(event: string, operationId: string, fields: Record<string, string> = {}): void {
+  private async requested(event: string, operationId: string, fields: Record<string, string> = {}): Promise<void> {
+    const operation = await this.operations.startOperation({
+      kind: event === 'project.switch' ? 'project-switch' : 'project-mutation',
+      correlations: fields.projectId ? { projectId: fields.projectId } : undefined,
+      cancellable: false
+    });
+    operation.start(); operation.active(); this.trackedOperations.set(operationId, operation);
     console.info('[kogg:projects:registry] operation.requested', { operationKind: event, operationId, ...fields });
   }
-  private completed(event: string, operationId: string, fields: Record<string, string> = {}): void {
+  private async completed(event: string, operationId: string, fields: Record<string, string> = {}): Promise<void> {
+    const operation = this.trackedOperations.get(operationId);
+    if (operation) {
+      operation.activity(); await operation.cleanup(); operation.complete('OPERATIONS_OK'); this.trackedOperations.delete(operationId);
+    }
     console.info('[kogg:projects:registry] operation.completed', { operationKind: event, operationId, ...fields });
   }
-  private refused(event: string, operationId: string, safeCode: string, fields: Record<string, string> = {}): void {
+  private async refused(event: string, operationId: string, safeCode: string, fields: Record<string, string> = {}): Promise<void> {
+    await this.finishFailed(operationId, 'OPERATIONS_REFUSED', 'ProjectError');
     console.warn('[kogg:projects:registry] operation.refused', { operationKind: event, operationId, safeCode, ...fields });
   }
-  private failed(event: string, operationId: string, error: unknown, fields: Record<string, string> = {}): void {
+  private async failed(event: string, operationId: string, error: unknown, fields: Record<string, string> = {}): Promise<void> {
     const safeCode = error instanceof ProjectError ? error.code : 'PROJECTS_UNAVAILABLE';
     if (error instanceof ProjectError && /REFUSED|CONFLICT|NOT_FOUND|ALREADY|INVALID|IN_USE/gu.test(error.code)) {
-      this.refused(event, operationId, safeCode, fields);
+      await this.refused(event, operationId, safeCode, fields);
     } else {
+      await this.finishFailed(operationId, 'OWNER_UNAVAILABLE', errorType(error));
       console.error('[kogg:projects:registry] operation.failed', { operationKind: event, operationId, safeCode, errorType: errorType(error), ...fields });
     }
+  }
+  private async finishFailed(operationId: string, code: OperationSafeCode, failureType: string): Promise<void> {
+    const operation = this.trackedOperations.get(operationId);
+    if (!operation) return;
+    try { await operation.cleanup(); }
+    catch {
+      // observability-exempt: The registry emitted and persisted cleanup failure before this terminal classification.
+      code = 'CLEANUP_FAILED';
+    }
+    operation.fail(code, failureType); this.trackedOperations.delete(operationId);
+  }
+  private async cancelled(operationId: string): Promise<void> {
+    const operation = this.trackedOperations.get(operationId);
+    if (!operation) return;
+    await operation.cancel(); this.trackedOperations.delete(operationId);
   }
 }
 

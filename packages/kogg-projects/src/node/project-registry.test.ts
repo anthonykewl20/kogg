@@ -12,6 +12,7 @@ import type { ProviderRegistry } from '@kogg/contracts';
 import { ProcessManager } from '@theia/process/lib/node/process-manager';
 import { ProjectRegistry } from './project-registry';
 import { ProjectRepositoryProbe } from './project-repository-probe';
+import type { OperationLease, OperationRegistryApi, ProcessLease } from '@kogg/operations/lib/common/operations-protocol';
 import { ProjectWorkspaceProjection } from './project-workspace-projection';
 import { ProjectError } from './project-errors';
 import { ProjectDiagnosticContributor } from './project-diagnostic-contributor';
@@ -244,7 +245,7 @@ test('registers the real Git process before start and emits bounded cleanup with
   console.error = (...args: unknown[]) => { lines.push(JSON.stringify(args)); };
   try {
     const processManager = new ProcessManager(logger());
-    const probe = new ProjectRepositoryProbe(processManager, logger());
+    const probe = new ProjectRepositoryProbe(processManager, logger(), operationRegistry());
     const result = await probe.probe(fixture.repository, randomUUID(), randomUUID());
     assert.match(result.rootUri, /^file:/u);
     assert.equal(probe.activeCount(), 0);
@@ -275,12 +276,12 @@ test('times out and cancels real hanging Git children with terminal cleanup and 
   console.warn = (...args: unknown[]) => { lines.push(JSON.stringify(args)); };
   console.error = (...args: unknown[]) => { lines.push(JSON.stringify(args)); };
   try {
-    const timeoutManager = new ProcessManager(logger()); const timeoutProbe = new ProjectRepositoryProbe(timeoutManager, logger(), 100);
+    const timeoutManager = new ProcessManager(logger()); const timeoutProbe = new ProjectRepositoryProbe(timeoutManager, logger(), operationRegistry(), 100);
     await assert.rejects(timeoutProbe.probe(fixture.repository, randomUUID(), randomUUID()),
       (error: unknown) => error instanceof ProjectError && error.code === 'PROJECT_REPOSITORY_PROBE_TIMEOUT');
     assert.equal(timeoutProbe.activeCount(), 0); timeoutManager.onStop();
 
-    const cancelManager = new ProcessManager(logger()); const cancelProbe = new ProjectRepositoryProbe(cancelManager, logger(), 30_000);
+    const cancelManager = new ProcessManager(logger()); const cancelProbe = new ProjectRepositoryProbe(cancelManager, logger(), operationRegistry(), 30_000);
     const pending = cancelProbe.probe(fixture.repository, randomUUID(), randomUUID());
     await new Promise(resolve => setTimeout(resolve, 50)); await cancelProbe.shutdown();
     await assert.rejects(pending, (error: unknown) => error instanceof ProjectError && error.code === 'PROJECT_REPOSITORY_PROBE_CANCELLED');
@@ -314,14 +315,23 @@ async function initializeRepository(repository: string): Promise<void> {
 function runtimeFor(state: string): { registry: ProjectRegistry } {
   process.env.KOGG_STATE_DIR = state;
   const processManager = new ProcessManager(logger());
-  const probe = new ProjectRepositoryProbe(processManager, logger());
+  const probe = new ProjectRepositoryProbe(processManager, logger(), operationRegistry());
   const projection = new ProjectWorkspaceProjection();
   const providers = {
     getProvider: (id: string) => id === 'ollama' ? { id: 'ollama' } : undefined
   } as unknown as ProviderRegistry;
-  return { registry: new ProjectRegistry(probe, projection, providers) };
+  return { registry: new ProjectRegistry(probe, projection, providers, operationRegistry()) };
 }
 
 function logger(): ILogger {
   return { debug: () => undefined, info: () => undefined, warn: () => undefined, error: () => undefined } as unknown as ILogger;
+}
+
+function operationRegistry(): OperationRegistryApi {
+  const processLease: ProcessLease = { id: randomUUID(), spawning() {}, started() {}, ready() {}, activity() {}, failed() {}, exited() {}, cleanup() {} };
+  const lease: OperationLease = {
+    id: randomUUID(), cancellable: true, start() {}, active() {}, waiting() {}, activity() {}, refuse() {}, complete() {}, fail() {}, timeout() {},
+    async cancel() {}, async cleanup(run) { await run?.(); }, registerProcess() { return processLease; }
+  };
+  return { async startOperation() { return lease; }, async snapshot() { throw new Error('unused'); }, async cancel() { throw new Error('unused'); }, diagnostics() { throw new Error('unused'); } };
 }

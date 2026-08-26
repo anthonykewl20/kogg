@@ -7,6 +7,7 @@ import { resolveRegistryUrl, verifyPackageManifest } from '../common/marketplace
 // diagnostic-coverage: marketplace.configuration, marketplace.registry, marketplace.installed
 
 const SAFE_SEGMENT = /^[a-z0-9][a-z0-9.-]*$/;
+const NETWORK_TIMEOUT_MS = 30_000;
 
 @injectable()
 export class KoggMarketplaceClient implements MarketplaceClient {
@@ -16,7 +17,7 @@ export class KoggMarketplaceClient implements MarketplaceClient {
         console.debug('[kogg:marketplace:client] search.requested', { queryLength: query.length });
         const url = new URL('/kogg/v1/search', resolveRegistryUrl());
         url.searchParams.set('query', query);
-        const response = await fetch(url);
+        const response = await fetch(url, { signal: AbortSignal.timeout(NETWORK_TIMEOUT_MS) });
         if (!response.ok) {
             throw new Error(`Kogg Marketplace search failed (${response.status})`);
         }
@@ -29,7 +30,7 @@ export class KoggMarketplaceClient implements MarketplaceClient {
     async details(id: string, version = 'latest'): Promise<KoggPackageManifest> {
         this.assertSafe(id, version);
         const url = new URL(`/kogg/v1/packages/${encodeURIComponent(id)}/${encodeURIComponent(version)}`, resolveRegistryUrl());
-        const response = await fetch(url);
+        const response = await fetch(url, { signal: AbortSignal.timeout(NETWORK_TIMEOUT_MS) });
         if (!response.ok) {
             throw new Error(`Kogg package lookup failed (${response.status})`);
         }
@@ -46,7 +47,7 @@ export class KoggMarketplaceClient implements MarketplaceClient {
         if (artifactUrl.origin !== resolveRegistryUrl().origin) {
             throw new Error('Package artifact is outside the configured Kogg registry');
         }
-        const response = await fetch(artifactUrl);
+        const response = await fetch(artifactUrl, { signal: AbortSignal.timeout(NETWORK_TIMEOUT_MS) });
         if (!response.ok) {
             throw new Error(`Kogg package download failed (${response.status})`);
         }
@@ -92,7 +93,7 @@ export class KoggMarketplaceClient implements MarketplaceClient {
     }
 
     async refreshRevocations(): Promise<void> {
-        const response = await fetch(new URL('/kogg/v1/revocations', resolveRegistryUrl()));
+        const response = await fetch(new URL('/kogg/v1/revocations', resolveRegistryUrl()), { signal: AbortSignal.timeout(NETWORK_TIMEOUT_MS) });
         if (!response.ok) {
             throw new Error(`Revocation refresh failed (${response.status})`);
         }

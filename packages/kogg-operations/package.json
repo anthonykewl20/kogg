@@ -1,10 +1,10 @@
 {
-  "name": "@kogg/projects",
+  "name": "@kogg/operations",
   "version": "0.1.0",
   "private": true,
   "license": "UNLICENSED",
-  "main": "lib/common/projects-protocol.js",
-  "types": "lib/common/projects-protocol.d.ts",
+  "main": "lib/common/operations-protocol.js",
+  "types": "lib/common/operations-protocol.d.ts",
   "theiaExtensions": [
     { "frontend": "lib/browser/frontend-module", "backend": "lib/node/backend-module" }
   ],
@@ -16,15 +16,13 @@
   },
   "dependencies": {
     "@kogg/contracts": "0.1.0",
-    "@kogg/operations": "0.1.0",
     "@theia/core": "1.74.1",
-    "@theia/filesystem": "1.74.1",
-    "@theia/process": "1.74.1",
-    "@theia/workspace": "1.74.1",
-    "inversify": "6.2.2"
+    "inversify": "6.2.2",
+    "react": "18.3.1"
   },
   "devDependencies": {
     "@types/node": "22.15.3",
+    "@types/react": "18.3.27",
     "rimraf": "6.0.1",
     "typescript": "5.9.3"
   }
