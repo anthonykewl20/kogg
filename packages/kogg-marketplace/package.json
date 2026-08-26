@@ -17,6 +17,7 @@
   },
   "dependencies": {
     "@kogg/contracts": "0.1.0",
+    "@kogg/operations": "0.1.0",
     "@theia/core": "1.74.1",
     "@theia/plugin-ext": "1.74.1",
     "@theia/plugin-ext-vscode": "1.74.1",

@@ -215,6 +215,7 @@ try {
     if (process.platform !== 'win32') await exerciseNodeDebug(page, 'Kogg E2E Debug', 'KOGG_E2E_READY');
 
     await exerciseProjects(page);
+    await exerciseOperations(page);
 
     for (let cycle = 0; cycle < 25; cycle++) {
         await page.reload({ waitUntil: 'domcontentloaded' });
@@ -501,6 +502,9 @@ async function exerciseProjects(page) {
     const supportReport = JSON.parse(await readFile(path.join(supportDirectory, supportFiles.at(-1)), 'utf8'));
     assert.equal(supportReport.checks.find(check => check.id === 'projects.repositories')?.status, 'warn');
     assert.equal(supportReport.checks.find(check => check.id === 'projects.processes')?.status, 'pass');
+    for (const id of ['operations.registry', 'operations.recovery', 'operations.processes', 'operations.cleanup', 'operations.admission']) {
+        assert.equal(supportReport.checks.find(check => check.id === id)?.status, 'pass');
+    }
     await page.keyboard.press('Escape');
     assert.match(logs.join('\n'), /repository\.revalidation\.completed/iu);
     assert.match(logs.join('\n'), /repository\.process\.cleanup\.completed/iu);
@@ -572,6 +576,27 @@ async function ensureProjectsWidget(page) {
     }
     assert.doesNotMatch(await widget.textContent(), /Loading projects/iu);
     return widget;
+}
+
+async function exerciseOperations(page) {
+    const widgets = page.locator('.kogg-operations-widget');
+    if (!await widgets.count()) {
+        await openCommand(page, 'Kogg: Show Operations');
+        await widgets.first().waitFor({ state: 'attached', timeout: 10_000 });
+    }
+    const active = await renderedWidget(widgets);
+    const operations = widgets.nth(active.index);
+    await operations.getByRole('button', { name: 'Refresh' }).click();
+    await operations.getByText('Admission: enabled').waitFor({ timeout: 10_000 });
+    await operations.getByText('ranex-bridge').first().waitFor({ timeout: 10_000 });
+    await operations.getByText('repository-probe').first().waitFor({ timeout: 10_000 });
+    await operations.locator('[data-operation-row]').filter({ hasText: 'provider-connection' }).filter({ hasText: 'OWNER_UNAVAILABLE' }).first().waitFor({ timeout: 10_000 });
+    await operations.locator('[data-operation-row]').filter({ hasText: 'repository-probe' }).filter({ hasText: 'PROCESS_EXIT_NONZERO' }).first().waitFor({ timeout: 10_000 });
+    const visibleOperations = await operations.innerText();
+    for (const kind of ['marketplace', 'provider-connection', 'provider-session', 'project-mutation', 'project-switch', 'diagnostics', 'support-export']) {
+        assert.match(visibleOperations, new RegExp(kind, 'u'));
+    }
+    assert.doesNotMatch(visibleOperations, /pid|argv|environment|prompt|source code/iu);
 }
 
 async function renderedWidget(widgets) {

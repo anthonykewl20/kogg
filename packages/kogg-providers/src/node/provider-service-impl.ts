@@ -3,52 +3,66 @@ import {
     CredentialStoreToken, ProviderRegistryToken,
     type CredentialStore, type ProviderRegistry
 } from '@kogg/contracts';
+import { KoggOperationRegistry, type OperationRegistryApi } from '@kogg/operations/lib/common/operations-protocol';
+import { runOperation } from '@kogg/operations/lib/node/run-operation';
 import type { AdvisoryChatRequest, KoggProviderService } from '../common/provider-service';
 
-// diagnostic-coverage: providers.registry, providers.credentials
+// diagnostic-coverage: providers.registry, providers.credentials, operations.registry, operations.cleanup
 
 @injectable()
 export class KoggProviderServiceImpl implements KoggProviderService {
     constructor(
         @inject(ProviderRegistryToken) private readonly providers: ProviderRegistry,
-        @inject(CredentialStoreToken) private readonly credentials: CredentialStore
+        @inject(CredentialStoreToken) private readonly credentials: CredentialStore,
+        @inject(KoggOperationRegistry) private readonly operations: OperationRegistryApi
     ) {}
 
-    async listProviders() { return this.providers.listProviders(); }
-    listCredentialMetadata() { return this.credentials.listMetadata(); }
-    configureCredential(provider: string, account: string, secret: string) { return this.credentials.set(provider, account, secret); }
-    deleteCredential(provider: string, account: string) { return this.credentials.delete(provider, account); }
-    credentialStatus(provider: string, account: string) { return this.providers.credentialStatus(provider, account); }
-    discoverModels(provider: string, account: string, endpoint?: string) { return this.providers.discoverModels(provider, account, endpoint); }
-    testConnection(provider: string, account: string, endpoint?: string) { return this.providers.testConnection(provider, account, endpoint); }
+    listProviders() { return this.connection(() => Promise.resolve(this.providers.listProviders())); }
+    listCredentialMetadata() { return this.connection(() => this.credentials.listMetadata()); }
+    configureCredential(provider: string, account: string, secret: string) { return this.connection(() => this.credentials.set(provider, account, secret)); }
+    deleteCredential(provider: string, account: string) { return this.connection(() => this.credentials.delete(provider, account)); }
+    credentialStatus(provider: string, account: string) { return this.connection(() => this.providers.credentialStatus(provider, account)); }
+    discoverModels(provider: string, account: string, endpoint?: string) { return this.connection(() => this.providers.discoverModels(provider, account, endpoint)); }
+    testConnection(provider: string, account: string, endpoint?: string) {
+        return runOperation(this.operations, 'provider-connection', () => this.providers.testConnection(provider, account, endpoint), {
+            failureCode: 'OWNER_UNAVAILABLE', resultFailed: result => !result.ok, resultFailureType: 'ProviderConnectionError'
+        });
+    }
 
     async advisoryChat(request: AdvisoryChatRequest): Promise<string> {
-        console.info('[kogg:providers:service] advisory-chat.requested', { providerId: request.provider });
-        const descriptor = this.providers.getProvider(request.provider);
-        if (!descriptor) throw new Error(`Unknown Kogg provider ${request.provider}`);
-        const secret = descriptor.configuration === 'local' ? undefined : await this.credentials.get(request.provider, request.account);
-        if (descriptor.configuration !== 'local' && !secret) throw new Error('Configure this provider credential before starting advisory chat.');
-        const target = chatEndpoint(request.provider, request.endpoint, request.model);
-        const headers: Record<string, string> = { 'content-type': 'application/json' };
-        if (secret) headers.authorization = `Bearer ${secret}`;
-        let body: unknown = { model: request.model, messages: [{ role: 'user', content: request.prompt }], stream: false };
-        if (request.provider === 'anthropic') {
-            delete headers.authorization;
-            headers['x-api-key'] = secret!;
-            headers['anthropic-version'] = '2023-06-01';
-            body = { model: request.model, max_tokens: 2048, messages: [{ role: 'user', content: request.prompt }] };
-        } else if (request.provider === 'google') {
-            delete headers.authorization;
-            headers['x-goog-api-key'] = secret!;
-            body = { contents: [{ role: 'user', parts: [{ text: request.prompt }] }] };
-        } else if (request.provider === 'huggingface') {
-            body = { inputs: request.prompt, parameters: { max_new_tokens: 1024, return_full_text: false } };
-        }
-        const response = await fetch(target, { method: 'POST', headers, body: JSON.stringify(body), signal: AbortSignal.timeout(60_000) });
-        if (!response.ok) throw new Error(`Kogg advisory chat failed with HTTP ${response.status}`);
-        const result = extractText(await response.json());
-        console.info('[kogg:providers:service] advisory-chat.completed', { providerId: request.provider });
-        return result;
+        return runOperation(this.operations, 'provider-session', async activity => {
+            console.info('[kogg:providers:service] advisory-chat.requested', { providerId: request.provider });
+            const descriptor = this.providers.getProvider(request.provider);
+            if (!descriptor) throw new Error(`Unknown Kogg provider ${request.provider}`);
+            const secret = descriptor.configuration === 'local' ? undefined : await this.credentials.get(request.provider, request.account);
+            if (descriptor.configuration !== 'local' && !secret) throw new Error('Configure this provider credential before starting advisory chat.');
+            const target = chatEndpoint(request.provider, request.endpoint, request.model);
+            const headers: Record<string, string> = { 'content-type': 'application/json' };
+            if (secret) headers.authorization = `Bearer ${secret}`;
+            let body: unknown = { model: request.model, messages: [{ role: 'user', content: request.prompt }], stream: false };
+            if (request.provider === 'anthropic') {
+                delete headers.authorization;
+                headers['x-api-key'] = secret!;
+                headers['anthropic-version'] = '2023-06-01';
+                body = { model: request.model, max_tokens: 2048, messages: [{ role: 'user', content: request.prompt }] };
+            } else if (request.provider === 'google') {
+                delete headers.authorization;
+                headers['x-goog-api-key'] = secret!;
+                body = { contents: [{ role: 'user', parts: [{ text: request.prompt }] }] };
+            } else if (request.provider === 'huggingface') {
+                body = { inputs: request.prompt, parameters: { max_new_tokens: 1024, return_full_text: false } };
+            }
+            const response = await fetch(target, { method: 'POST', headers, body: JSON.stringify(body), signal: AbortSignal.timeout(60_000) });
+            activity();
+            if (!response.ok) throw new Error(`Kogg advisory chat failed with HTTP ${response.status}`);
+            const result = extractText(await response.json());
+            console.info('[kogg:providers:service] advisory-chat.completed', { providerId: request.provider });
+            return result;
+        });
+    }
+
+    private connection<T>(work: () => Promise<T>): Promise<T> {
+        return runOperation(this.operations, 'provider-connection', work);
     }
 }
 

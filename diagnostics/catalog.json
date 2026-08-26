@@ -13,6 +13,11 @@
     { "id": "projects.registry", "owner": "kogg-projects", "description": "The project registry schema, integrity, foreign keys, and storage permissions are valid." },
     { "id": "projects.repositories", "owner": "kogg-projects", "description": "Registered repository availability can be evaluated without exposing paths." },
     { "id": "projects.restoration", "owner": "kogg-projects", "description": "The active project and pending switch state are internally consistent." },
-    { "id": "projects.processes", "owner": "kogg-projects", "description": "No Kogg-owned repository probe is stalled, hidden, orphaned, or residual." }
+    { "id": "projects.processes", "owner": "kogg-projects", "description": "No Kogg-owned repository probe is stalled, hidden, orphaned, or residual." },
+    { "id": "operations.registry", "owner": "kogg-operations", "description": "The operation registry schema, integrity, foreign keys, and permissions are valid." },
+    { "id": "operations.recovery", "owner": "kogg-operations", "description": "Startup reconciliation completed without contradictory operation state." },
+    { "id": "operations.processes", "owner": "kogg-operations", "description": "No Kogg-owned process is hidden, stalled, orphaned, unverified, or residual." },
+    { "id": "operations.cleanup", "owner": "kogg-operations", "description": "Every terminal operation and owned process has proved cleanup." },
+    { "id": "operations.admission", "owner": "kogg-operations", "description": "Operation admission agrees with recovery and cleanup state." }
   ]
 }

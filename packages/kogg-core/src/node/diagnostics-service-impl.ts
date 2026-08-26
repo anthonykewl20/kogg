@@ -12,17 +12,24 @@ import {
   type KoggDiagnosticsService,
   type KoggSupportBundle
 } from '@kogg/contracts';
+import { KoggOperationRegistry, type OperationRegistryApi } from '@kogg/operations/lib/common/operations-protocol';
+import { runOperation } from '@kogg/operations/lib/node/run-operation';
 
-// diagnostic-coverage: core.runtime
+// diagnostic-coverage: core.runtime, operations.registry, operations.cleanup
 
 @injectable()
 export class KoggDiagnosticsServiceImpl implements KoggDiagnosticsService {
   constructor(
     @inject(ContributionProvider) @named(KoggDiagnosticContribution)
-    private readonly contributors: ContributionProvider<KoggDiagnosticContributor>
+    private readonly contributors: ContributionProvider<KoggDiagnosticContributor>,
+    @inject(KoggOperationRegistry) private readonly operations: OperationRegistryApi
   ) {}
 
   async run(): Promise<KoggDiagnosticReport> {
+    return runOperation(this.operations, 'diagnostics', () => this.runChecks());
+  }
+
+  private async runChecks(): Promise<KoggDiagnosticReport> {
     console.info('[kogg:core:diagnostics] run.started');
     const checks: KoggDiagnosticCheck[] = [];
     for (const contributor of this.contributors.getContributions()) {
@@ -52,14 +59,16 @@ export class KoggDiagnosticsServiceImpl implements KoggDiagnosticsService {
   }
 
   async createSupportBundle(): Promise<KoggSupportBundle> {
-    const report = redact(await this.run()) as unknown as KoggDiagnosticReport;
-    const directory = path.join(stateRoot(), 'support');
-    const stamp = report.generatedAt.replace(/[:.]/gu, '-');
-    const destination = path.join(directory, `kogg-diagnostics-${stamp}.json`);
-    await fs.mkdir(directory, { recursive: true, mode: 0o700 });
-    await fs.writeFile(destination, `${JSON.stringify(report, null, 2)}\n`, { mode: 0o600 });
-    console.info('[kogg:core:diagnostics] support-bundle.created', { checkCount: report.checks.length });
-    return { uri: new URI(destination).withScheme('file').toString(), report };
+    return runOperation(this.operations, 'support-export', async activity => {
+      const report = redact(await this.run()) as unknown as KoggDiagnosticReport; activity();
+      const directory = path.join(stateRoot(), 'support');
+      const stamp = report.generatedAt.replace(/[:.]/gu, '-');
+      const destination = path.join(directory, `kogg-diagnostics-${stamp}.json`);
+      await fs.mkdir(directory, { recursive: true, mode: 0o700 });
+      await fs.writeFile(destination, `${JSON.stringify(report, null, 2)}\n`, { mode: 0o600 });
+      console.info('[kogg:core:diagnostics] support-bundle.created', { checkCount: report.checks.length });
+      return { uri: new URI(destination).withScheme('file').toString(), report };
+    });
   }
 }
 

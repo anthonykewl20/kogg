@@ -5,6 +5,7 @@ import path from 'node:path';
 import test from 'node:test';
 import type { ContributionProvider } from '@theia/core/lib/common/contribution-provider';
 import type { KoggDiagnosticContributor } from '@kogg/contracts';
+import type { OperationRegistryApi } from '@kogg/operations/lib/common/operations-protocol';
 import { KoggDiagnosticsServiceImpl } from './diagnostics-service-impl';
 
 test('diagnostics aggregate failures and export a redacted private support bundle', async context => {
@@ -30,7 +31,14 @@ test('diagnostics aggregate failures and export a redacted private support bundl
     { id: 'broken', async diagnose() { throw new Error('sensitive failure body'); } }
   ];
   const provider = { getContributions: () => contributors } as ContributionProvider<KoggDiagnosticContributor>;
-  const service = new KoggDiagnosticsServiceImpl(provider);
+  const operations = {
+    startOperation: async () => ({
+      id: 'diagnostics-test-operation', cancellable: false, start() {}, active() {}, waiting() {}, activity() {}, refuse() {},
+      complete() {}, fail() {}, timeout() {}, cancel: async () => undefined, cleanup: async () => undefined,
+      registerProcess() { throw new Error('No process is expected in this diagnostics test'); }
+    })
+  } as unknown as OperationRegistryApi;
+  const service = new KoggDiagnosticsServiceImpl(provider, operations);
 
   const report = await service.run();
   assert.equal(report.overall, 'fail');

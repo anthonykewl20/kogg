@@ -5,6 +5,7 @@ import path from 'node:path';
 import { PassThrough, type Readable, type Writable } from 'node:stream';
 import { pathToFileURL } from 'node:url';
 import { ILogger } from '@theia/core/lib/common/logger';
+import { KoggOperationRegistry, type OperationRegistryApi, type ProcessLease } from '@kogg/operations/lib/common/operations-protocol';
 import { inject, injectable, named, unmanaged } from '@theia/core/shared/inversify';
 import { Process, ProcessType, type IProcessExitEvent } from '@theia/process/lib/node/process';
 import { ProcessManager } from '@theia/process/lib/node/process-manager';
@@ -25,17 +26,22 @@ export class ProjectRepositoryProbe {
   constructor(
     @inject(ProcessManager) private readonly processManager: ProcessManager,
     @inject(ILogger) @named('kogg:projects:git') private readonly logger: ILogger,
+    @inject(KoggOperationRegistry) private readonly operations: OperationRegistryApi,
     @unmanaged() private readonly timeoutMs = 10_000
   ) {}
 
   async probe(repositoryPath: string, operationId: string, repositoryId: string = randomUUID()): Promise<RepositoryProbeResult> {
     console.info('[kogg:projects:git] repository.validate.requested', { operationId, repositoryId });
     let managed: KoggGitProcess | undefined;
+    const operation = await this.operations.startOperation({ id: operationId, kind: 'repository-probe' });
+    operation.start();
+    const processLease = operation.registerProcess({ kind: 'git', owner: 'kogg-supervisor', cancel: async () => managed?.cancel() });
     try {
       const canonicalRepositoryPath = await realpath(repositoryPath);
-      managed = new KoggGitProcess(this.processManager, this.logger, canonicalRepositoryPath, operationId, repositoryId, this.timeoutMs);
+      managed = new KoggGitProcess(this.processManager, this.logger, processLease, canonicalRepositoryPath, operationId, repositoryId, this.timeoutMs);
       this.active.set(operationId, managed);
       const output = await managed.result();
+      operation.active();
       const lines = output.trim().split(/\r?\n/gu);
       if (lines.length !== 4 || lines[2] !== 'false' || lines[3] !== 'true') {
         throw new ProjectError(
@@ -49,8 +55,12 @@ export class ProjectRepositoryProbe {
       const rootUri = pathToFileURL(root).href;
       const gitDirUri = pathToFileURL(gitDir).href;
       const identityDigest = createHash('sha256').update(`kogg-git-dir-v1\0${gitDirUri}`, 'utf8').digest('hex');
+      await operation.cleanup(); operation.complete();
       return { rootUri, gitDirUri, identityDigest };
     } catch (error) {
+      await operation.cleanup().catch(() => undefined);
+      operation.fail(error instanceof ProjectError && error.code === 'PROJECT_REPOSITORY_PROBE_TIMEOUT'
+        ? 'OPERATION_ABSOLUTE_TIMEOUT' : 'PROCESS_EXIT_NONZERO', error instanceof Error ? error.name : 'UnknownError');
       if (error instanceof ProjectError) throw error;
       const code = (error as NodeJS.ErrnoException).code;
       if (code === 'ENOENT') throw new ProjectError('PROJECT_REPOSITORY_PATH_MISSING', 'The selected repository is unavailable.', { cause: error });
@@ -84,6 +94,7 @@ class KoggGitProcess extends Process {
   constructor(
     processManager: ProcessManager,
     logger: ILogger,
+    private readonly processLease: ProcessLease,
     repositoryPath: string,
     private readonly operationId: string,
     private readonly repositoryId: string,
@@ -93,6 +104,7 @@ class KoggGitProcess extends Process {
     console.info('[kogg:projects:git] repository.process.registered', { operationId, repositoryId, processRegistrationId: this.id });
     this.completion = new Promise<string>((resolve, reject) => { this.settle = resolve; this.fail = reject; });
     try {
+      this.processLease.spawning();
       this.child = spawn('git', [
         'rev-parse', '--path-format=absolute', '--show-toplevel', '--absolute-git-dir',
         '--is-bare-repository', '--is-inside-work-tree'
@@ -105,12 +117,16 @@ class KoggGitProcess extends Process {
       this.outputStream = this.child.stdout!;
       this.errorStream = this.child.stderr!;
       this.inputStream = new PassThrough();
+      if (this.child.pid) this.processLease.started(this.child.pid);
       this.attach();
     } catch (error) {
       // observability-exempt: The asynchronously scheduled terminal handler emits the spawn failure after listeners can attach.
       const empty = new PassThrough();
       this.outputStream = empty; this.errorStream = empty; this.inputStream = empty;
-      process.nextTick(() => this.finalizeFailure(new ProjectError('PROJECT_REPOSITORY_PROBE_FAILED', 'Git could not start.', { cause: error })));
+      process.nextTick(() => {
+        this.processLease.failed('PROCESS_SPAWN_FAILED', error instanceof Error ? error.name : 'UnknownError');
+        this.finalizeFailure(new ProjectError('PROJECT_REPOSITORY_PROBE_FAILED', 'Git could not start.', { cause: error }));
+      });
     }
   }
 
@@ -148,6 +164,7 @@ class KoggGitProcess extends Process {
       processRegistrationId: this.id
     });
     this.outputStream.on('data', chunk => {
+      this.processLease.activity();
       this.stdout += String(chunk);
       if (Buffer.byteLength(this.stdout) > 16 * 1024) this.finishFailure(new ProjectError('PROJECT_REPOSITORY_OUTPUT_INVALID', 'Git output exceeded its bound.'));
     });
@@ -155,7 +172,10 @@ class KoggGitProcess extends Process {
       this.stderrBytes += chunk.length;
       if (this.stderrBytes > 16 * 1024) this.finishFailure(new ProjectError('PROJECT_REPOSITORY_OUTPUT_INVALID', 'Git output exceeded its bound.'));
     });
-    this.child!.once('error', error => this.finishFailure(new ProjectError('PROJECT_REPOSITORY_PROBE_FAILED', 'Git failed to start.', { cause: error })));
+    this.child!.once('error', error => {
+      this.processLease.failed('PROCESS_SPAWN_FAILED', error.name);
+      this.finishFailure(new ProjectError('PROJECT_REPOSITORY_PROBE_FAILED', 'Git failed to start.', { cause: error }));
+    });
     this.child!.once('close', (code, signal) => {
       if (this.terminal) return;
       if (code === 0) {
@@ -165,6 +185,7 @@ class KoggGitProcess extends Process {
           operationId: this.operationId, repositoryId: this.repositoryId, processRegistrationId: this.id, exitClass: 'zero'
         });
         this.settle?.(this.stdout);
+        this.processLease.exited('zero');
         this.cleanup();
       } else {
         this.finishFailure(new ProjectError('PROJECT_REPOSITORY_NOT_GIT', 'Select a valid Git worktree.'), signal ? 'signal' : 'nonzero');
@@ -200,6 +221,7 @@ class KoggGitProcess extends Process {
       console.error('[kogg:projects:git] repository.validate.failed', fields);
     }
     this.fail?.(error);
+    this.processLease.exited(exitClass === 'signal' || exitClass === 'timeout' || exitClass === 'cancelled' ? 'signal' : 'nonzero');
     this.cleanup();
   }
 
@@ -209,6 +231,7 @@ class KoggGitProcess extends Process {
       operationId: this.operationId, repositoryId: this.repositoryId, processRegistrationId: this.id
     });
     this.processManager.unregister(this);
+    this.processLease.cleanup();
     console.info('[kogg:projects:git] repository.process.cleanup.completed', {
       operationId: this.operationId, repositoryId: this.repositoryId, processRegistrationId: this.id
     });

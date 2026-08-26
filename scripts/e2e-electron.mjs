@@ -182,6 +182,7 @@ try {
 
     await exerciseNodeDebug(page, application, 'Kogg Electron Debug', 'KOGG_ELECTRON_E2E_READY');
     await exerciseElectronProjects(page, application);
+    await exerciseElectronOperations(page, application);
     const visible = await page.locator('body').innerText();
     assert.doesNotMatch(visible, /Search Open VSX Registry|Learn more about Theia|custom-agent migration/iu);
     assert.doesNotMatch(logs.join('\n'), /Uncaught Exception:\s+Error: transport error/iu);
@@ -312,6 +313,24 @@ async function ensureElectronProjectsWidget(page, electronApplication) {
     }
     assert.doesNotMatch(await widget.textContent(), /Loading projects/iu);
     return widget;
+}
+
+async function exerciseElectronOperations(page, electronApplication) {
+    const widget = page.locator('.kogg-operations-widget').last();
+    if (!await widget.count()) {
+        await openCommand(page, 'Kogg: Show Operations', electronApplication);
+        await widget.waitFor({ state: 'attached', timeout: 10_000 });
+    }
+    await widget.getByRole('button', { name: 'Refresh' }).click();
+    await widget.getByText('Admission: enabled').waitFor({ timeout: 10_000 });
+    await widget.getByText('ranex-bridge').first().waitFor({ timeout: 10_000 });
+    await widget.getByText('repository-probe').first().waitFor({ timeout: 10_000 });
+    await widget.locator('[data-operation-row]').filter({ hasText: 'provider-connection' }).filter({ hasText: 'OWNER_UNAVAILABLE' }).first().waitFor({ timeout: 10_000 });
+    const visibleOperations = await widget.innerText();
+    for (const kind of ['marketplace', 'provider-connection', 'provider-session', 'project-mutation', 'project-switch']) {
+        assert.match(visibleOperations, new RegExp(kind, 'u'));
+    }
+    assert.doesNotMatch(visibleOperations, /pid|argv|environment|prompt|source code/iu);
 }
 
 async function createElectronProject(page, projects, name, repository) {

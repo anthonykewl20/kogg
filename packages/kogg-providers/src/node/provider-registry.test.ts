@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import type { CredentialStore } from '@kogg/contracts';
+import type { OperationRegistryApi } from '@kogg/operations/lib/common/operations-protocol';
 import { KoggProviderRegistry } from './provider-registry';
 import { KoggProviderServiceImpl } from './provider-service-impl';
 
@@ -10,6 +11,13 @@ const credentials: CredentialStore = {
     delete: async () => true,
     listMetadata: async () => []
 };
+const operations = {
+    startOperation: async () => ({
+        id: 'provider-test-operation', cancellable: false, start() {}, active() {}, waiting() {}, activity() {}, refuse() {},
+        complete() {}, fail() {}, timeout() {}, cancel: async () => undefined, cleanup: async () => undefined,
+        registerProcess() { throw new Error('No process is expected in this provider test'); }
+    })
+} as unknown as OperationRegistryApi;
 
 test('uses the Google API-key header for discovery and advisory chat without exposing it as a bearer token', async () => {
     const originalFetch = globalThis.fetch;
@@ -25,7 +33,7 @@ test('uses the Google API-key header for discovery and advisory chat without exp
         assert.deepEqual(await registry.discoverModels('google', 'default', 'https://google.invalid/models'), [
             { id: 'gemini-test', name: 'gemini-test', provider: 'google' }
         ]);
-        const service = new KoggProviderServiceImpl(registry, credentials);
+        const service = new KoggProviderServiceImpl(registry, credentials, operations);
         assert.equal(await service.advisoryChat({
             provider: 'google', account: 'default', endpoint: 'https://google.invalid/models',
             model: 'gemini-test', prompt: 'test prompt'

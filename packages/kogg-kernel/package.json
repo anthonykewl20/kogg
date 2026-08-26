@@ -7,7 +7,9 @@
   "files": ["lib", "src", "python"],
   "dependencies": {
     "@kogg/contracts": "0.1.0",
-    "@theia/core": "1.74.1"
+    "@kogg/operations": "0.1.0",
+    "@theia/core": "1.74.1",
+    "@theia/process": "1.74.1"
   },
   "devDependencies": {
     "@types/node": "22.15.3",
