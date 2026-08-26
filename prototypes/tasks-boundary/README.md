@@ -14,6 +14,8 @@ SQLite WAL registry; two real Chromium clients using visible edit/freeze/review/
 approve/revoke controls; competing writers; idempotency replay/mismatch; forced
 `SIGKILL` before and after commit; corrupted-copy diagnostics; Node/Electron
 inspector reachability; safe lifecycle traces; and process/residual cleanup.
+The prototype CI step runs on macOS and qualified Linux; Windows skips this
+POSIX-signal probe while retaining the repository's normal verification matrix.
 
 All task content stays in a private temporary directory and explicit UI/service
 payloads. Trace fields are allowlisted and scanned for content, paths, digests,
