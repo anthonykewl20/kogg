@@ -2,13 +2,15 @@
 
 Tracking: [#58](https://github.com/anthonykewl20/kogg/issues/58), research
 phase [#61](https://github.com/anthonykewl20/kogg/issues/61), pseudocode phase
-[#62](https://github.com/anthonykewl20/kogg/issues/62).
+[#62](https://github.com/anthonykewl20/kogg/issues/62), prototype phase
+[#65](https://github.com/anthonykewl20/kogg/issues/65).
 
 ## Status
 
-Research and production pseudocode are complete as of 2026-08-26. This packet
-contains no production code. Production remains gated by the ordered prototype
-and implementation issues and by Foundation
+Research, production pseudocode, and the highest-risk native prototype are
+complete as of 2026-08-26. This findings-only packet contains neither prototype
+nor production code. Production remains gated by implementation issue
+[#70](https://github.com/anthonykewl20/kogg/issues/70) and by Foundation
 [#47](https://github.com/anthonykewl20/kogg/issues/47).
 
 The research recommendation is a Playwright-driven, product-black-box acceptance
@@ -406,6 +408,82 @@ The disposable prototype must:
 If Playwright Electron cannot reliably drive the pinned packaged/native boundary,
 the prototype must reopen #62 and select an explicitly licensed driver. It must
 not fall back to browser-only automation or main-process command invocation.
+
+## Prototype findings and production decision
+
+The disposable branch `proto/issue-65-real-human-e2e` at `74cf486` exercised the
+normal production Electron entrypoint with a clean profile, disposable real Git
+repository, local deterministic signed registry/provider, bundled Python/Ranex
+bridge, visible Operations and Diagnostics controls, and an otherwise empty
+new-work queue. The branch is evidence only and must never merge. Draft PR #130
+exists solely to retain the native matrix record.
+
+Final evidence run
+[#32970904096](https://github.com/anthonykewl20/kogg/actions/runs/32970904096)
+passed the complete repository pipeline on Ubuntu 24.04 (11m32s), macOS 15
+(10m51s), and Windows 2025 (19m43s). Each job passed 36 unit tests, branding and
+observability audits, browser E2E, the native Electron E2E plus this prototype,
+packaging, artifact audit, and packaged-application smoke. Local macOS execution
+also passed the prototype and the same 36-test/audit gate.
+
+The prototype validated these #62 decisions:
+
+- Playwright can drive the pinned native Electron boundary through rendered
+  workbench controls without invoking product services or feature commands from
+  the main process;
+- the visible operation before the crash exposes register/start/activity state,
+  and a normal relaunch preserves its short correlation ID;
+- harness fixtures remain separately owned and are joined independently;
+- an unrelated live process with a deliberately mismatched creation identity is
+  classified `PROCESS_IDENTITY_UNVERIFIED` and is never signalled;
+- the retained manifest contains only closed event names, enums, counts, opaque
+  IDs, safe check IDs, and production decisions and passes the artifact scanner;
+  and
+- source-level pauses and source maps are reachable in the Electron renderer,
+  Node backend, and real Python Ranex adapter.
+
+The prototype disproved three acceptance assumptions:
+
+1. On Ubuntu, the durable operation registry reconciles the registered Ranex
+   process, restores admission to `enabled`, shows the old operation as
+   `recovered`, and starts a replacement bridge, but the independent OS oracle
+   still observes six pre-crash Electron/Theia backend and plugin-host identities.
+   Those children are outside the operation registry, so green operation
+   diagnostics do not prove zero residuals.
+2. The same Ubuntu relaunch visibly fails `kernel.journal`. Process recovery
+   therefore does not prove durable Ranex evidence integrity.
+3. On macOS, the current registry has no restart-qualified creation fingerprint.
+   Relaunch correctly blocks admission, marks the correlated operation failed
+   with `PROCESS_IDENTITY_UNVERIFIED`, reports failing operations/kernel
+   diagnostics, preserves five unverifiable product descendants, and never uses
+   PID-only signalling. Windows instead contains the pre-crash descendants,
+   restores admission, recovers the correlated operation, and reports zero
+   residuals, but still fails `kernel.journal`; its process lifetime is validated
+   while its end-to-end evidence capability remains refused.
+
+These are product findings, not harness-owned cleanup successes. The prototype's
+branch-only finalizer terminates only the exact privately captured identities
+after the failed-closed manifest is written so CI does not leak processes; that
+finalizer is forbidden as a production fallback.
+
+The #62 Playwright driver and interface topology remain selected, so the driver
+decision is not reopened. Its zero-residual and evidence-integrity assumptions
+are reopened as mandatory #70 work. Production is approved to proceed only if
+#70:
+
+- contains every Electron/Theia product descendant in an owner-controlled
+  lifetime and independently proves the entire pre-crash set absent;
+- repairs and verifies Ranex journal continuity across crash/relaunch;
+- retains Linux boot-ID plus `/proc` identity reconciliation for registered
+  children;
+- retains the measured contained lifetime on Windows, adds native creation
+  identity or equivalent containment on macOS, and otherwise preserves visible
+  capability refusal; and
+- keeps the external process oracle authoritative when it disagrees with the
+  Operations panel or diagnostics.
+
+PID-only signalling, treating registry recovery as whole-process-tree cleanup,
+or converting failed evidence into a passing platform capability remain rejected.
 
 ## Research gate conclusion
 
