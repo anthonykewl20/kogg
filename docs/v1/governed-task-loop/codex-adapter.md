@@ -6,9 +6,12 @@ phase [#89](https://github.com/anthonykewl20/kogg/issues/89), pseudocode phase
 
 ## Status
 
-Research and decision-complete pseudocode are complete as of 2026-08-27. This
-packet contains no production code. Its fixed contract is the input to the real
-boundary probe in #91 and production implementation plus real E2E in #92.
+Research, decision-complete pseudocode, and the bounded real-boundary prototype
+are complete as of 2026-08-27. This packet contains no production code. The #91
+measurements are recorded in `codex-adapter-prototype-findings.md`; they validate
+the stdio lifecycle but refuse production qualification. Production implementation
+and real E2E in #92 remain blocked on the exact release manifest, scoped credential
+broker, and qualified Linux execution profile required below.
 
 The recommendation is one pinned `codex app-server --listen stdio://` process
 per Kogg attempt, launched inside a qualified Linux execution scope and a

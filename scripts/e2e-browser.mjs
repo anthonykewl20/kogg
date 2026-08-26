@@ -618,6 +618,10 @@ async function exerciseTasks(page) {
     await tasks.getByRole('button', { name: 'Approve this exact revision' }).click();
     await tasks.getByRole('button', { name: /Revoke approval/u }).waitFor();
     await tasks.getByRole('button', { name: /Revoke approval/u }).click();
+    // Wait for the backend-confirmed revocation projection before issuing the
+    // successor mutation. On slower Windows runners the previous test raced the
+    // two RPCs and could exercise a legitimate revision conflict instead.
+    await tasks.getByRole('button', { name: 'Review for approval' }).waitFor();
     await tasks.getByRole('button', { name: 'Create successor draft' }).click();
     await tasks.getByText(/active · draft/iu).waitFor();
     await stop(backend); backend = launchBrowser(token);
