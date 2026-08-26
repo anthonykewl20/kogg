@@ -1,14 +1,16 @@
 # Plan, Build, and Kogg interaction modes
 
 Tracking: [#118](https://github.com/anthonykewl20/kogg/issues/118), research
-phase [#119](https://github.com/anthonykewl20/kogg/issues/119).
+phase [#119](https://github.com/anthonykewl20/kogg/issues/119), and pseudocode
+phase [#120](https://github.com/anthonykewl20/kogg/issues/120). The normative
+contract is in [`interaction-modes-pseudocode.md`](interaction-modes-pseudocode.md).
 
 ## Status
 
-Research is complete as of 2026-08-27. This packet contains no production code
-and stops before decision-complete schemas and pseudocode. Those belong to #120,
-followed by a real-boundary probe in #121 and production behavior plus real
-human-level E2E in #122.
+Research and decision-complete pseudocode are complete as of 2026-08-27. These
+packets contain no production code. #121 must probe the fixed mode/transition
+contract at real task/worktree/process boundaries, followed by production
+behavior plus real human-level E2E in #122.
 
 The recommendation is an always-visible three-mode selector backed by a durable,
 task-scoped authority state machine. Plan, Build, and Kogg are not prompt personas
@@ -360,14 +362,14 @@ labels without independent authority/process/Git oracles do not pass.
 | Store prompt/plan/content in mode events | Reject; mode history contains safe facts only. |
 | Show hidden tooltip as the only blocked-action explanation | Reject; visible and accessible status/menu reason is mandatory. |
 
-## Decisions required from #120
+## Decisions fixed by #120
 
-#120 must fix exact mode/capability/transition/persistence schemas, action matrix,
-authority intersection, Plan storage/non-mutation boundary, Build worktree/handoff
-contract, Kogg stage integration, active-operation transition state machine,
-concurrent CAS/idempotency/restart recovery, result vocabulary, always-visible and
-accessible UI behavior, closed safe failures/log/events, diagnostic ids, source-
-map/debugger proof, and every #121/#122 fault/E2E seam.
+The normative pseudocode packet fixes exact mode/capability/transition/persistence
+schemas, the action matrix, authority intersection, Plan storage/non-mutation
+boundary, Build worktree/handoff contract, Kogg stage integration, active-operation
+transition state machine, concurrent CAS/idempotency/restart recovery, result
+vocabulary, always-visible accessible UI behavior, safe failures/log/events,
+diagnostic ids, source-map/debugger proof, and every #121/#122 fault/E2E seam.
 
 The largest risk is proving Plan truly non-mutating and Build unable to launder a
 successful test/agent result into governed evidence or completion across every
