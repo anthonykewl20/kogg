@@ -76,7 +76,8 @@ test('reconciles a real matching child after an interrupted backend with an empt
       await recovered.onStart();
       const snapshot = await recovered.snapshot();
       assert.equal(snapshot.admission, 'enabled'); assert.equal(snapshot.active.length, 0);
-      assert.equal(snapshot.recent[0]?.state, 'recovered'); assert.equal(snapshot.recent[0]?.cleanup, 'cleaned');
+      const recoveredOperation = snapshot.recent.find(item => item.id === operation.id);
+      assert.equal(recoveredOperation?.state, 'recovered'); assert.equal(recoveredOperation?.cleanup, 'cleaned');
       assert.equal(recovered.diagnostics().residualCount, 0);
     } finally { await recovered.onStop(); }
     await new Promise<void>(resolve => {

@@ -434,7 +434,7 @@ export class OperationRegistry implements OperationRegistryApi, BackendApplicati
   private readSnapshot(): OperationsSnapshot {
     const database = this.requireDatabase();
     const revision = Number((database.prepare('SELECT revision FROM operation_meta WHERE singleton=1').get() as SqlRow).revision);
-    const rows = database.prepare(`SELECT o.*,(SELECT count(*) FROM processes p WHERE p.operation_id=o.id) AS process_count FROM operations o ORDER BY o.updated_at DESC LIMIT 200`).all() as SqlRow[];
+    const rows = database.prepare(`SELECT o.*,(SELECT count(*) FROM processes p WHERE p.operation_id=o.id) AS process_count FROM operations o ORDER BY o.updated_at DESC,o.rowid DESC LIMIT 200`).all() as SqlRow[];
     const summaries = rows.map(row => ({
       id: String(row.id), kind: String(row.kind) as OperationsSnapshot['active'][number]['kind'],
       state: String(row.state) as OperationState, cleanup: String(row.cleanup_state) as CleanupState,
