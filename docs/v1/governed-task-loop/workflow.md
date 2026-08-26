@@ -2,14 +2,17 @@
 
 Tracking: [#87](https://github.com/anthonykewl20/kogg/issues/87), research
 phase [#98](https://github.com/anthonykewl20/kogg/issues/98), and pseudocode
-phase [#99](https://github.com/anthonykewl20/kogg/issues/99).
+phase [#99](https://github.com/anthonykewl20/kogg/issues/99). Prototype findings
+for [#100](https://github.com/anthonykewl20/kogg/issues/100) are recorded in
+[`workflow-prototype-findings.md`](workflow-prototype-findings.md).
 
 ## Status
 
-Research and decision-complete pseudocode are complete as of 2026-08-27. This
-packet contains no production code. It fixes the contract that #100 must probe
-at real scheduler/provider/process boundaries and #101 must ship with visible
-human-level E2E.
+Research, decision-complete pseudocode, and the bounded real-boundary prototype
+are complete as of 2026-08-27. This packet contains no production code. The #100
+probe validated the core Theia/backend/process/recovery contract and identified
+production hardening requirements; #101 must implement the complete contract and
+ship with visible human-level E2E.
 
 The recommendation is a versioned declarative workflow template compiled by a
 backend authority validator into an immutable run plan. The editable graph owns
@@ -358,7 +361,12 @@ process counts, and cleanup state without revealing prohibited content.
 
 ## Required prototype and E2E evidence
 
-#100 must probe the highest-risk boundaries with the real backend compiler/store
+#100 probed the highest-risk core boundaries with a real Theia frontend/backend,
+SQLite WAL store, production operation supervisor, and real child processes. Its
+exact evidence, validated decisions, reopened production requirements, and
+platform limits are in `workflow-prototype-findings.md`.
+
+#101 must extend that evidence across the complete backend compiler/store
 and at least one real provider/process node:
 
 - client bypass of validation, forged locked anchors, and unknown node kinds;
