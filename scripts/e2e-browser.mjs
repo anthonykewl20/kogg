@@ -643,7 +643,7 @@ async function exerciseTasks(page) {
     await tasks.getByText(/active · draft/iu).waitFor();
     assert.match(await tasks.locator('[data-specification]').inputValue(), /Winner edit/u);
     const agents = await ensureAgentsWidget(page);
-    await agents.getByText(/cleaned · AGENT_OK/u).waitFor();
+    await agents.getByText(/cleaned · AGENT_OK/u).first().waitFor();
     await openCommand(page, 'Kogg: Run Diagnostics');
     await page.getByText(/Diagnostics: FAIL.*passed/iu).first().waitFor({ timeout: 15_000 });
     const supportDirectory = path.join(state, 'support');
@@ -662,6 +662,7 @@ async function exerciseAgents(page, admissionId) {
     const agents = await ensureAgentsWidget(page);
     await agents.getByRole('button', { name: 'Save immutable revision' }).click();
     await agents.locator('section').filter({ hasText: 'Role Revisions' }).locator('li').filter({ hasText: /implementer · [0-9a-f-]{36}/u }).waitFor();
+    const implementerRoleId = await roleOptionValue(agents, 'implementer');
     await agents.getByLabel('Task admission ID').fill(admissionId);
     await agents.getByRole('button', { name: 'Confirm and start exact attempt' }).click();
     await agents.getByText(/cleaned · AGENT_OK.*resources 0/iu).waitFor({ timeout: 15_000 });
@@ -669,6 +670,55 @@ async function exerciseAgents(page, admissionId) {
     await agents.getByLabel('Exact adapter and version').fill('missing.adapter@1.0.0');
     await agents.getByRole('button', { name: 'Confirm and start exact attempt' }).click();
     await agents.getByText(/cleaned · ADAPTER_UNAVAILABLE.*resources 0/iu).waitFor({ timeout: 10_000 });
+
+    await agents.getByLabel('Role key', { exact: true }).fill('coordinator');
+    await agents.getByLabel('Display name').fill('Coordinator');
+    await agents.getByLabel('Model IDs').fill('fixture.hang,fixture.echo');
+    await agents.getByLabel('Child creation').selectOption('true');
+    await agents.getByLabel('Permitted child role keys').fill('implementer');
+    await agents.getByLabel('Maximum child depth').fill('2');
+    await agents.getByLabel('Maximum direct children').fill('2');
+    await agents.getByRole('button', { name: 'Save immutable revision' }).click();
+    await agents.locator('section').filter({ hasText: 'Role Revisions' }).locator('li').filter({ hasText: /coordinator · [0-9a-f-]{36}/u }).waitFor();
+    const coordinatorRoleId = await roleOptionValue(agents, 'coordinator');
+    await agents.getByLabel('Task admission ID').fill(admissionId);
+    await agents.getByLabel('Role revision').selectOption(coordinatorRoleId);
+    await agents.getByLabel('Model', { exact: true }).fill('fixture.hang');
+    await agents.getByRole('button', { name: 'Confirm and start exact attempt' }).click();
+    const parent = agents.locator('[data-attempt]').filter({ hasText: /ready.*fixture\.hang.*children 0.*resources 1/iu }).first();
+    await parent.waitFor({ timeout: 15_000 }); const parentAttemptId = await parent.getAttribute('data-attempt'); assert.ok(parentAttemptId);
+
+    await agents.getByLabel('Role key', { exact: true }).fill('implementer');
+    await agents.getByLabel('Display name').fill('Expanded implementer');
+    await agents.getByLabel('Tool policies').fill('read-only,write');
+    await agents.getByRole('button', { name: 'Save immutable revision' }).click();
+    await agents.getByLabel('Role revision').locator('option').nth(2).waitFor({ state: 'attached' });
+    await agents.getByLabel('Task admission ID').fill(admissionId);
+    const expandedRoleId = await roleOptionValue(agents, 'implementer', new Set([implementerRoleId]));
+    await agents.getByLabel('Role revision').selectOption(expandedRoleId);
+    await agents.getByLabel('Parent attempt').selectOption(parentAttemptId);
+    await agents.getByLabel('Model', { exact: true }).fill('fixture.echo');
+    await agents.getByRole('button', { name: 'Confirm and start exact attempt' }).click();
+    await agents.locator('[data-attempt]').filter({ hasText: /cleaned · CHILD_AUTHORITY_EXPANSION.*resources 0/iu }).waitFor({ timeout: 10_000 });
+    await agents.locator(`[data-attempt="${parentAttemptId}"]`).filter({ hasText: /children 0.*resources 1/iu }).waitFor();
+
+    await agents.getByLabel('Task admission ID').fill(admissionId);
+    await agents.getByLabel('Role revision').selectOption(implementerRoleId);
+    await agents.getByLabel('Parent attempt').selectOption(parentAttemptId);
+    await agents.getByLabel('Model', { exact: true }).fill('fixture.echo');
+    await agents.getByRole('button', { name: 'Confirm and start exact attempt' }).click();
+    await agents.locator('[data-attempt]').filter({ hasText: new RegExp(`cleaned · AGENT_OK.*parent ${parentAttemptId.slice(0, 8)}.*resources 0`, 'iu') }).waitFor({ timeout: 15_000 });
+    const currentParent = agents.locator(`[data-attempt="${parentAttemptId}"]`); await currentParent.filter({ hasText: /children 1.*resources 1/iu }).waitFor(); await currentParent.getByRole('button', { name: 'Cancel' }).click();
+    await agents.locator(`[data-attempt="${parentAttemptId}"]`).filter({ hasText: /cleaned · CANCELLED.*children 1.*resources 0/iu }).waitFor({ timeout: 15_000 });
+}
+
+async function roleOptionValue(agents, roleKey, excluded = new Set()) {
+    const options = agents.getByLabel('Role revision').locator('option');
+    const count = await options.count();
+    for (let index = 0; index < count; index++) {
+        const option = options.nth(index); if ((await option.textContent())?.startsWith(`${roleKey} ·`)) { const value = await option.getAttribute('value'); if (value && !excluded.has(value)) return value; }
+    }
+    throw new Error(`Role option ${roleKey} is missing`);
 }
 
 async function ensureAgentsWidget(page) {
