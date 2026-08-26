@@ -1,14 +1,14 @@
 # Governed Claude Code adapter
 
 Tracking: [#93](https://github.com/anthonykewl20/kogg/issues/93), research
-phase [#94](https://github.com/anthonykewl20/kogg/issues/94).
+phase [#94](https://github.com/anthonykewl20/kogg/issues/94), and pseudocode
+phase [#95](https://github.com/anthonykewl20/kogg/issues/95).
 
 ## Status
 
-Research is complete as of 2026-08-27. This packet contains no production code
-and stops before decision-complete schemas and pseudocode. Those belong to #95,
-followed by a real-boundary probe in #96 and production implementation plus real
-E2E in #97.
+Research and decision-complete pseudocode are complete as of 2026-08-27. This
+packet contains no production code. It fixes the contract that #96 must probe at
+the real Claude boundary and that #97 must implement with real E2E evidence.
 
 The recommendation is a pinned `@anthropic-ai/claude-agent-sdk` TypeScript
 package whose bundled Claude Code process is spawned through a Kogg-owned
@@ -397,23 +397,472 @@ Ranex evidence and verdict remain independently required.
 | Persist raw SDK stream for debugging | Reject; it contains prompts, code, tool data, paths, reasoning, output, and personal/provider state. |
 | Trust Claude cost/telemetry as evidence | Reject; usage is optional/provider-derived and telemetry is not lifecycle or verdict authority. |
 
-## Decisions required from #95
+## Decision-complete adapter contract and pseudocode
 
-#95 must resolve exact package/type/bundled attestation; legal/reuse approval;
-custom spawn and process binding; accepted initialization projection; effective
-settings verification; exact tool/permission/sandbox policy; provider/model
-verification and fallback prohibition; brokered credentials; content-channel
-bounds; command/background lifecycle handling; idle/absolute/permission/cleanup
-deadlines; queue cancellation; signal escalation; durable recovery lease;
-quarantine/deletion ownership; closed lifecycle/failure/log schemas; diagnostic
-catalog contract; and every #96 fault-injection seam.
+The following contract is normative for #96 and #97. `MUST`, `MUST NOT`, and
+`FAIL` denote release-blocking behavior. Names are stable schema names, not an
+instruction to copy the illustrative TypeScript literally.
 
-The largest open risk is credential delivery compatible with the commercial
-runtime without a reusable environment or user credential store. The second is
-whether the custom SDK spawn seam exposes enough process identity and stdio
-control to meet register-before-spawn and cleanup proof without unsupported
-runtime modification. #95 must name exact mechanisms or explicitly block #96;
-it may not hide either gap behind the SDK's convenience API.
+### Artifact, types, and legal gate
+
+The only accepted package is `@anthropic-ai/claude-agent-sdk@0.3.246` with npm
+SHA-512 integrity
+`FtR0HoHHNqeqJWjZN8qLUAzZVFUI9ztXYNPPwv98Ecmv9qq2QTauI8IzkY26CC0mleWAqb9RQEW2C0OtiUliug==`
+and tarball SHA-1 `0009206e79ee0ae25f68ebb526584031cb5db048`.
+The checked-in lockfile, installed tarball, `package.json`, `sdk.d.ts`,
+`sdk-tools.d.ts`, `bridge.d.ts`, bundled Claude executable manifest, and the
+adapter's generated compatibility projection MUST hash to a signed manifest.
+The manifest key is a Kogg release key, not an Anthropic credential.
+
+```text
+record ClaudeArtifactManifestV1 {
+  schema = "kogg.claude-artifact/v1"
+  packageName = "@anthropic-ai/claude-agent-sdk"
+  packageVersion = "0.3.246"
+  npmIntegritySha512: exact string
+  tarballSha1: exact string
+  fileDigests: sorted map<relativePath, sha256>
+  bundledCliVersion: exact string
+  typeProjectionSha256: sha256
+  adapterSchemaSha256: sha256
+  createdAt: RFC3339
+  signingKeyId: release key id
+  signature: detached signature over canonical record
+}
+
+verifyArtifact():
+  reject symlinks, extra executable candidates, missing files, or path escape
+  hash bytes without importing or executing the package
+  verify manifest signature and every exact field
+  derive the supported declaration projection and compare its digest
+  run bundled CLI version probe inside the qualified empty execution scope
+  if any mismatch: FAIL CLAUDE_ARTIFACT_MISMATCH before credential mint or spawn
+```
+
+Use is additionally gated by a repository-controlled
+`ClaudeCommercialUseApprovalV1` containing the exact package integrity,
+approved product/use, approver identity reference, decision timestamp, expiry,
+and detached signature. It contains no contract text or personal data. Missing,
+expired, mismatched, or invalid approval yields `CLAUDE_LEGAL_APPROVAL_REQUIRED`.
+Kogg MUST NOT copy, patch, de-minify, redistribute separately, or claim to audit
+the commercial runtime. #96 may proceed only after this record is supplied by
+an authorized maintainer; otherwise it records the closed blocker and #97 stays
+disabled.
+
+### Owned components and trust boundaries
+
+```text
+ClaudeArtifactRegistry  owns byte/type/version/legal attestation
+ClaudeAdapterFactory    accepts one frozen authorized attempt
+ClaudeAttemptStore      owns durable non-content lifecycle and recovery lease
+ClaudeProcessHost       owns cgroup, uid, mount, network, stdio, signals, cleanup
+ClaudeSdkBridge         owns one query iterator and typed message validation
+ClaudeCredentialBroker  owns short-lived local proxy grants and revocation
+ClaudeContentRouter     keeps content in bounded volatile UI channels only
+ClaudeDiagnostics       exposes safe checks and support projections
+ClaudeAdapterFrontend   renders status/permission/cancel without raw logging
+```
+
+The task controller is authority for role, provider, model, repository revision,
+permission profile, budgets, and admission. `ClaudeAdapterFactory` MUST accept
+only an immutable `GovernedClaudeAttemptV1` whose digest is already bound to an
+approved task revision. The adapter never edits that record.
+
+```text
+record GovernedClaudeAttemptV1 {
+  attemptId: uuid
+  taskRevisionDigest: sha256
+  repositoryBindingDigest: sha256
+  privateRepoObjectId: opaque id
+  baseCommit: 40-hex object id
+  role = "implementation"
+  provider = "anthropic"
+  model: exact allowlisted Anthropic model id
+  artifactManifestDigest: sha256
+  legalApprovalDigest: sha256
+  permissionProfileDigest: sha256
+  executionProfileDigest: sha256
+  budgets: { inputTokens, outputTokens, toolCalls, bytesIn, bytesOut }
+  deadlines: DeadlineProfileV1
+  authorityDigest: sha256
+}
+```
+
+Unknown fields, duplicate map keys, noncanonical encodings, unsupported schema
+versions, mutable references, symbolic model aliases, or a mismatch to current
+task authority yield `CLAUDE_ATTEMPT_INVALID` before side effects.
+
+### Isolation and effective settings
+
+V1 runs only on a qualified Linux worker. macOS and Windows may render/control
+the task but MUST NOT host Claude. Each attempt receives a new uid, cgroup v2
+subtree, mount namespace, PID namespace, private `/tmp`, read-only runtime and
+certificate mounts, writable private Git worktree, and no host checkout, Git
+common directory, Docker socket, SSH agent, browser socket, keyring, home, or
+user configuration. Seccomp/AppArmor/landlock enforcement and cgroup accounting
+are release-profile requirements; an unavailable control fails admission with
+`CLAUDE_CONFINEMENT_UNAVAILABLE`.
+
+The child environment is constructed exactly from this positive projection:
+
+```text
+HOME=/run/kogg/claude/<attempt>/home
+TMPDIR=/run/kogg/claude/<attempt>/tmp
+PATH=<read-only qualified runtime paths>
+LANG=C.UTF-8
+LC_ALL=C.UTF-8
+NO_COLOR=1
+CI=1
+CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1
+ANTHROPIC_BASE_URL=http://<private-broker-socket-authority>/v1
+ANTHROPIC_API_KEY=<one-attempt opaque bearer>
+```
+
+No value is inherited from `process.env`. `settingSources: []` is mandatory.
+The private home begins empty and remains attempt-scoped. Project/user/local
+settings, `.claude`, `CLAUDE.md`, memory, sessions, hooks, plugins, skills,
+agents, MCP, IDE integration, telemetry exporters, and remote control are not
+mounted or loaded. The accepted initialization projection is:
+
+```text
+record ClaudeInitializationProjectionV1 {
+  model: exact requested model
+  permissionMode: "default"
+  tools: sorted exact V1 tool ids
+  mcpServers: []
+  plugins: []
+  slashCommands: []
+  agents: []
+  accountOrganization: absent-or-redacted-equality-token
+  cliVersion: exact attested version
+}
+```
+
+Initialization is decoded with a closed schema. Any fallback model, added tool,
+setting source, MCP server, plugin, agent, command, hook, or version mismatch
+causes immediate cancellation and `CLAUDE_INITIALIZATION_MISMATCH`.
+
+### Tool and permission policy
+
+The closed V1 tool set is `Read`, `Edit`, `Write`, `Glob`, `Grep`, and `Bash`.
+Their presence does not grant every invocation. `Task`, subagents, notebooks,
+web search/fetch, browser/computer use, MCP, hooks, plugins, skills, remote
+control, background commands, and provider-defined future tools are denied.
+
+```text
+decidePermission(request, frozenPolicy):
+  decode request with closed schema; unknown/duplicate => deny + protocol fail
+  require request.attemptId == active attempt
+  require toolId in frozenPolicy.toolIds
+  canonicalize every path beneath private repository using openat2-style rules
+  reject symlink, device, procfs, sysfs, socket, mount, or repository escape
+  for Bash:
+    parse against frozen command policy
+    reject shell indirection, daemonization, network clients, privilege changes,
+      namespace changes, backgrounding, process-control escape, and unknown bin
+  require remaining tool-call and byte budgets
+  present a content-bearing request only through the authorized volatile UI
+  wait at most permissionDecisionMs for an explicit decision bound to request id
+  revalidate authority, freeze state, request digest, paths, and budgets
+  return allow-once or deny; never widen future authority
+```
+
+The callback MUST NOT trust SDK path normalization, suggested permission
+updates, or provider display text. It MUST NOT log request content. A duplicate,
+late, unknown, or already-decided request fails with
+`CLAUDE_PERMISSION_PROTOCOL`; timeout is `CLAUDE_PERMISSION_TIMEOUT`; a valid
+denial is `CLAUDE_PERMISSION_DENIED` and is visible but not an adapter fault.
+
+Outer Linux confinement remains authoritative even for allowed calls. The
+Claude sandbox is enabled as defense in depth with network and escape hatches
+disabled. If the runtime reports sandbox degradation or an attempt asks to
+bypass it, fail `CLAUDE_SANDBOX_DEGRADED`.
+
+### Credential delivery and network policy
+
+The credential gap is resolved with a loopback/private-namespace broker, not a
+reusable provider key. Immediately before spawn, `ClaudeCredentialBroker`
+mints a random bearer that authorizes only one attempt, cgroup identity,
+provider, exact model, request direction, byte/token ceilings, and expiry. The
+bearer appears in the child environment because the supported runtime requires
+an API-key-shaped value, but it is useless at Anthropic and outside the private
+broker. The broker holds the upstream credential in protected memory, injects
+authorization only on the outbound hop, validates response model identity when
+available, and never exposes upstream headers or bodies.
+
+```text
+mintGrant(attempt):
+  require active authority + qualified scope + registered cgroup
+  expiresAt = min(now + absoluteDeadline, configured grant maximum)
+  persist only sha256(bearer), binding digests, expiry, and revoked flag
+  return bearer once through parent-owned anonymous pipe/environment builder
+
+proxy(request):
+  authenticate bearer hash and peer/cgroup identity
+  require active attempt, exact endpoint family, exact model, and budgets
+  stream body without logging or persistence; enforce bounded backpressure
+  forward with upstream secret held only by broker
+  validate status/content framing and account usage conservatively
+  revoke on terminal state, authority loss, budget exhaustion, or anomaly
+```
+
+Network policy permits only the private broker endpoint and required name-less
+local transport. Direct external DNS/IP traffic is denied. The broker is the
+only component allowed Anthropic egress. Startup rotates its in-memory upstream
+handle. A leaked child bearer expires and is revoked; it cannot be exchanged
+after terminal cleanup. Failures use `CLAUDE_CREDENTIAL_UNAVAILABLE`,
+`CLAUDE_CREDENTIAL_REVOKED`, or `CLAUDE_PROVIDER_PROTOCOL`, never secret text.
+
+### Register-before-spawn and SDK bridge
+
+Exactly one SDK `query()` with streaming input is created per attempt. The SDK
+receives the private repository path, exact model, `settingSources: []`, closed
+tools, permission callback, sandbox enabled, no resume/session id, and the
+Kogg-owned `spawnClaudeCodeProcess` implementation.
+
+```text
+spawnClaudeCodeProcess(options):
+  require state == SPAWN_RESERVED and single-use spawn nonce
+  validate executable digest, argv shape, cwd, env keys, and stdio contract
+  create durable process reservation with attempt/cgroup/uid/profile digests
+  create cgroup and attach stopped bootstrap process before runtime exec
+  persist process identity using pidfd + start-time token
+  transition SPAWN_RESERVED -> SPAWN_REGISTERED
+  release bootstrap to exec exact attested executable
+  return SDK-compatible transport over bounded parent-owned pipes
+```
+
+Any second spawn request, executable/argument/environment mutation, failed
+registration, identity ambiguity, or process outside the cgroup fails closed.
+The host never logs argv, environment, cwd, stderr, or raw spawn errors.
+
+The bridge has bounded queues: 256 control messages, 4 MiB aggregate volatile
+content, 1 MiB per decoded frame, and 64 KiB safe stderr counter window with no
+retained bytes. Backpressure pauses reads before limits. Exceeding a bound yields
+`CLAUDE_PROTOCOL_OVERFLOW`. Every SDK message is decoded into either a safe
+lifecycle projection or volatile content; unknown type, invalid order, duplicate
+terminal, missing correlation, or schema mismatch is `CLAUDE_PROTOCOL_INVALID`.
+
+```text
+runBridge(attempt, promptHandle):
+  query = sdk.query({ prompt: one bounded AsyncIterable(promptHandle), options })
+  for await message of query:
+    reset idle deadline only after a valid expected progress message
+    project safe lifecycle fields to AttemptStore
+    route prompt/output/tool content to volatile ContentRouter
+    account conservative usage without persisting provider text
+    process permission/control messages through closed handlers
+    stop accepting messages after first terminal result
+  observe iterator end; do not infer cleanup
+```
+
+The initial prompt is consumed once. Kogg does not persist it through this
+adapter. Output is rendered to the authorized live client with bounded memory;
+disconnect discards it or applies upstream controller policy, never silently
+persists it. Provider session ids are held only in volatile memory and are not
+accepted for resume, fork, or replay.
+
+### Lifecycle, cancellation, and deadlines
+
+Durable states are closed:
+
+```text
+ADMITTED -> SPAWN_RESERVED -> SPAWN_REGISTERED -> INITIALIZING -> RUNNING
+RUNNING -> PERMISSION_WAIT -> RUNNING
+RUNNING|PERMISSION_WAIT -> CANCELLING
+RUNNING -> RESULT_OBSERVED
+any nonterminal -> CLEANING
+RESULT_OBSERVED -> CLEANING
+CLEANING -> SUCCEEDED | CANCELLED | FAILED | QUARANTINED
+```
+
+Only `SUCCEEDED`, `CANCELLED`, `FAILED`, and `QUARANTINED` are terminal. A result
+cannot transition directly to success. Success requires: expected result,
+provider/model match, valid protocol, budgets satisfied, authority still valid,
+query iterator ended, `close()` observed, credential revoked, zero live cgroup
+members, private Git repository intact, and durable cleanup proof committed.
+
+```text
+DeadlineProfileV1 {
+  spawnMs = 10_000
+  initializeMs = 30_000
+  firstProgressMs = 60_000
+  idleMs = 120_000
+  permissionDecisionMs = 60_000
+  interruptReceiptMs = 5_000
+  gracefulExitMs = 10_000
+  terminateMs = 5_000
+  killMs = 5_000
+  closeMs = 5_000
+  cgroupEmptyMs = 10_000
+  absoluteMs = controller-authorized, max 3_600_000
+}
+```
+
+An operator cancel, authority revocation, deadline, budget failure, client
+shutdown, protocol failure, or broker anomaly enters `CANCELLING` exactly once:
+
+```text
+cancel(reason):
+  stop prompt/control admission and deny pending permissions
+  revoke broker grant
+  call query.interrupt(); wait interruptReceiptMs
+  call query.stopTask for every observed foreground/background task id
+  call query.close(); wait closeMs
+  send SIGTERM to cgroup; wait gracefulExitMs + terminateMs total bound
+  send SIGKILL to remaining cgroup members; wait killMs
+  verify cgroup empty externally using pidfd/start-time-safe inventory
+  close pipes, discard volatile content, persist safe terminal projection
+```
+
+Cancellation operations are idempotent and monotonic. SDK `interrupt()`,
+`stopTask`, iterator completion, process exit, `close()`, and an empty SDK task
+snapshot are observations only. If the external inventory is nonempty or
+identity cannot be proven, terminal state is `QUARANTINED` with
+`CLAUDE_RESIDUAL_PROCESS`; never delete or reuse the private repository.
+
+### Crash recovery and repository disposition
+
+The store writes each transition and reservation in one SQLite transaction with
+an idempotency key, previous-state digest, monotonic sequence, and non-content
+safe code. One backend owns a renewable recovery lease. On startup it scans all
+nonterminal Claude attempts before admitting new ones.
+
+```text
+recover(attempt):
+  acquire lease using compare-and-swap
+  validate event chain and process reservation
+  revoke any broker grant by stored bearer hash
+  inventory matching cgroup + pidfd/start-time identities externally
+  perform TERM/KILL escalation; require zero members
+  mark FAILED(CLAUDE_BACKEND_RESTARTED) only after cleanup proof
+  quarantine repository on any ambiguity, corruption, or residual process
+```
+
+No automatic query resume, replay, or retry exists. A process without a valid
+reservation is killed and reported as `CLAUDE_UNREGISTERED_PROCESS`. A
+reservation without a process still follows cleanup/reconciliation. A new
+attempt requires fresh authority and a new private repository. Only the task
+controller may later archive/delete a clean terminal repository; quarantined
+repositories require explicit incident disposition and remain inaccessible to
+Claude.
+
+### Closed safe failure and observability schemas
+
+The adapter exposes only these failure codes in V1:
+
+```text
+CLAUDE_ARTIFACT_MISMATCH          CLAUDE_LEGAL_APPROVAL_REQUIRED
+CLAUDE_ATTEMPT_INVALID            CLAUDE_CONFINEMENT_UNAVAILABLE
+CLAUDE_INITIALIZATION_MISMATCH    CLAUDE_PERMISSION_PROTOCOL
+CLAUDE_PERMISSION_TIMEOUT         CLAUDE_PERMISSION_DENIED
+CLAUDE_SANDBOX_DEGRADED           CLAUDE_CREDENTIAL_UNAVAILABLE
+CLAUDE_CREDENTIAL_REVOKED         CLAUDE_PROVIDER_PROTOCOL
+CLAUDE_SPAWN_FAILED               CLAUDE_SPAWN_PROTOCOL
+CLAUDE_PROTOCOL_OVERFLOW          CLAUDE_PROTOCOL_INVALID
+CLAUDE_MODEL_MISMATCH             CLAUDE_BUDGET_EXCEEDED
+CLAUDE_IDLE_TIMEOUT               CLAUDE_ABSOLUTE_TIMEOUT
+CLAUDE_INTERRUPTION_FAILED        CLAUDE_CLOSE_FAILED
+CLAUDE_RESIDUAL_PROCESS           CLAUDE_UNREGISTERED_PROCESS
+CLAUDE_BACKEND_RESTARTED          CLAUDE_STORE_INTEGRITY
+CLAUDE_AUTHORITY_REVOKED          CLAUDE_INTERNAL
+```
+
+Unknown internal/provider errors map to `CLAUDE_INTERNAL`; their raw messages
+are discarded. Logs use Theia `ILogger` names `kogg:claude:artifact`,
+`kogg:claude:adapter`, `kogg:claude:process`, `kogg:claude:credentials`, and
+`kogg:claude:recovery`. The closed events are:
+
+```text
+artifact.verify.start|success|failure
+legal.verify.success|failure
+attempt.admit.success|failure
+process.reserve|spawn|exit|signal|cleanup
+protocol.initialize|progress|result|failure
+permission.request|decision|timeout
+credential.mint|proxy.start|proxy.finish|revoke|failure
+attempt.cancel.start|finish
+recovery.start|reconciled|quarantine|failure
+attempt.terminal
+```
+
+Every event contains only timestamp, event name, attempt correlation id,
+component, lifecycle state, safe code, bounded duration, bounded counters, and
+boolean outcome. It MUST NOT contain credentials, authorization values, bearer
+hashes, prompts, reasoning, model output, source, diffs, paths, commands,
+arguments, environments, tool inputs/results, session ids, personal/account
+data, stderr, SDK messages, provider bodies, or raw errors. Tests seed a unique
+canary in every prohibited channel and scan backend/frontend/Electron logs and
+support exports for plaintext, encoded, fragmented, and error-wrapped forms.
+
+### Diagnostic catalog and debugger contract
+
+#97 MUST add these exact catalog ids; #96 supplies probe evidence for the same
+contracts rather than inventing temporary diagnostic names:
+
+| Catalog id | Safe check and failure meaning |
+| --- | --- |
+| `claude.artifact` | Signature, exact package/files/types/bundled CLI mismatch. |
+| `claude.legal` | Commercial-use approval absent, expired, or mismatched. |
+| `claude.settings` | Effective initialization differs from the closed projection. |
+| `claude.protocol` | Decoder, ordering, queue, backpressure, or model failure. |
+| `claude.credentials` | Broker readiness, grant binding, revocation, or egress failure. |
+| `claude.processes` | Reservation, identity, cgroup, or descendant-accounting failure. |
+| `claude.cleanup` | Interrupt/close/escalation or zero-member proof failure. |
+| `claude.recovery` | Store chain, lease, startup reconciliation, or quarantine failure. |
+| `claude.source-maps` | Browser/backend/Electron/adapter mapping or breakpoint failure. |
+
+Diagnostics return status, catalog id, safe code, bounded counts/durations,
+artifact/profile digests, and remediation id only. They never return content or
+raw provider/runtime data. Every operational implementation file declares the
+relevant `diagnostic-coverage` id. Pure declarations use a specific exemption.
+
+Source maps remain enabled for browser, backend, Electron, and adapter bundles.
+#97 debugger proof sets breakpoints in UI admission/cancel, backend lifecycle,
+permission decision, custom spawn, broker proxy metadata validation, protocol
+decoder, cleanup, and recovery. The commercial child is treated as an opaque
+boundary; debugger reachability is required up to both sides of that boundary,
+not inside minified vendor code.
+
+### #96 probe and #97 visible E2E handoff
+
+#96 MUST use the exact approved artifact and qualified Linux profile. Its
+fixture supplies deterministic seams for every deadline, message type, spawn
+mutation, settings mismatch, permission outcome, broker revoke, provider model
+mismatch, crash, stderr flood, backpressure, descendant escape attempt, and
+restart point. It also performs one explicitly authorized real-provider edit
+and command in a disposable private repository. Every case asserts the closed
+safe code, event sequence, credential revocation, and external zero-process
+proof. A legal gate failure is a valid blocker, not permission to substitute an
+unattested binary or fake the real-boundary result.
+
+#97 visible browser and Electron E2E MUST:
+
+1. create and approve a governed Claude task through the UI;
+2. show the exact fixed provider/model and safe lifecycle status;
+3. complete one real edit and allowed command only in the private repository;
+4. visibly deny one out-of-policy tool/path request;
+5. cancel a streaming attempt and prove it reaches clean terminal state;
+6. restart the backend during a separate attempt and show safe reconciliation;
+7. inspect diagnostics/support export and external process inventory;
+8. verify no source checkout mutation, ambient Claude state, reusable secret,
+   residual process, retry/resume, or canary leakage;
+9. pass `yarn test`, `yarn audit:observability`, source-map checks, and real Ranex
+   evidence/verdict/controlled-merge gates.
+
+The expected safe trace for success is `attempt.admit.success`,
+`process.reserve`, `process.spawn`, `protocol.initialize`, zero or more bounded
+`protocol.progress`/permission events, `protocol.result`, credential revoke,
+process cleanup, and `attempt.terminal`. Cancellation and recovery replace the
+result path with their named events and still end in cleanup proof. Any missing
+lifecycle boundary is test failure because it would prevent incident diagnosis.
+
+No implementation choice remains for #96: artifact and legal gating, process
+ownership, settings, permissions, credentials, lifecycle, deadlines, queues,
+failure codes, diagnostics, debugger points, fault seams, and visible E2E are
+fixed here. A probe may prove the supported runtime cannot satisfy a contract;
+that result blocks production and returns to design rather than weakening the
+contract.
 
 ## Research gate conclusion
 
@@ -425,7 +874,7 @@ it may not hide either gap behind the SDK's convenience API.
 - Process, capability, logging, diagnostics, credentials, failure, recovery,
   confinement, observability, and E2E risks are enumerated.
 - The selected boundary and required decisions are specific enough for #95 to
-  write decision-complete pseudocode without reopening the adapter topology.
+  hand #96 a decision-complete probe contract without reopening topology.
 
 Production remains blocked until #95, #96, and #97 complete in order and all
 observability, diagnostics, debugger, real E2E, Ranex evidence, verdict,
