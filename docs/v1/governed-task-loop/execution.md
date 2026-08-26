@@ -1,16 +1,16 @@
 # Qualified execution targets and isolated Git worktrees
 
 Tracking: [#73](https://github.com/anthonykewl20/kogg/issues/73), research
-phase [#76](https://github.com/anthonykewl20/kogg/issues/76).
+phase [#76](https://github.com/anthonykewl20/kogg/issues/76), pseudocode phase
+[#79](https://github.com/anthonykewl20/kogg/issues/79).
 
 ## Status
 
-Research is complete as of 2026-08-27. This packet contains no production code.
-Decision-complete schemas and pseudocode belong to
-[#79](https://github.com/anthonykewl20/kogg/issues/79), followed by a disposable
-real-boundary probe in #82 and production implementation and E2E in #85.
+Research and decision-complete pseudocode are complete as of 2026-08-27. This
+packet contains no production code. A disposable real-boundary probe follows in
+#82 and production implementation plus real human-level E2E follows in #85.
 
-The research recommendation is one controller-owned, private Git repository and
+The selected design is one controller-owned, private Git repository and
 working tree per governed run, with one opaque run branch, seeded from the exact
 approved source commit without shared writable Git metadata. The run never writes
 the registered source repository or its checkout. It executes only on a currently
@@ -506,6 +506,553 @@ process, stale qualification, unsafe log, or unknown cleanup result is a failure
     deletion failure without blind adoption or destructive cleanup.
 12. Freeze lifecycle/event/error schemas, diagnostics, source-map/debugger proof,
     real fault injection, canary privacy scan, and #70 artifact fields.
+
+## Decision-complete production contract for #79
+
+The remaining implementation choices are closed below. Names are normative for
+the production slice unless the #82 probe disproves a boundary and this packet is
+reopened with measured evidence.
+
+### Platform and confinement decision
+
+Governed V1 execution is admitted only on `linux/amd64` with all of these facts
+fresh for the current boot and helper/profile digests:
+
+- Linux kernel 6.6 or newer with user, mount, PID, IPC, UTS, and network
+  namespaces enabled;
+- Landlock ABI 4 or newer with every filesystem right supported by that ABI plus
+  TCP bind/connect mediation; unsupported requested rights refuse admission;
+- unified cgroup v2 with a delegated Kogg subtree supporting `pids`, `cpu`,
+  `memory`, `io`, `cgroup.freeze`, `cgroup.kill`, and reliable `populated` readback;
+- unprivileged Bubblewrap at the packet-pinned digest, no-new-privileges, a pinned
+  seccomp program, and a Kogg-owned PID-1 reaper;
+- a dedicated XFS state filesystem mounted with project quotas; each allocation
+  receives an exclusive project ID and byte/inode limits before materialization;
+- the pinned Kogg native launcher/helper opened and verified by descriptor, with
+  root ownership and non-writable parent chain; and
+- an authenticated kernel-owned Unix-socket capability broker when provider
+  network is required. The sandbox has no general host network interface, DNS
+  configuration, credential file, SSH agent, or host socket.
+
+There is no partial profile and no Docker-as-qualification shortcut. A check-only
+attempt uses Ranex's existing strict-local read-only profile. A writable producer
+uses a new Ranex-owned `kogg-writable-agent-v1` confinement profile. Ranex owns
+construction, descendant confinement, watchdog, cgroup kill/drain, and the
+profile attestation; Kogg owns the private Git tree and registers one logical
+parent process. This extends the existing Ranex authority instead of creating a
+second sandbox/evidence implementation in Kogg.
+
+The provider broker accepts a preauthorized opaque capability over its inherited
+descriptor, resolves only the provider endpoint set frozen in the run plan,
+enforces HTTPS, DNS response/address allowlists, redirect count and target policy,
+request/response/time/connection bounds, and injects credentials outside the
+sandbox. It exposes no generic CONNECT, arbitrary URL, proxy environment, raw
+credential, or response body to Kogg logs. Offline tools and deterministic checks
+receive no broker descriptor.
+
+Qualification is valid for at most five minutes and is invalidated immediately
+by boot ID, kernel, mount, cgroup delegation, helper, Bubblewrap, seccomp,
+Landlock, quota, broker, or profile change. Admission recomputes it immediately
+before allocation and again before process release. An existing run is stopped
+and marked `qualification-lost` when monitored facts drift.
+
+### Git seed, repository, and candidate decision
+
+The controller resolves one approved base commit using the registered source
+repository with the pinned Git executable. It creates a temporary Git bundle
+containing the exact base and all reachable ancestors, then initializes the
+private repository from that bundle using `git clone --no-local --no-hardlinks`
+semantics. The bundle is controller-only, quota-counted scratch and is removed
+after independent-object verification. V1 intentionally includes complete
+history reachable from the base; shallow and partial histories, promisor objects,
+submodule recursion, LFS smudge, alternates, and shared object caches are refused.
+
+All controller Git invocations use the verified Git binary descriptor and this
+closed environment/config policy:
+
+- empty environment followed by only `PATH` to the verified tool directory,
+  fixed `LANG=C.UTF-8`, `LC_ALL=C.UTF-8`, `TZ=UTC`, and an empty private HOME;
+- `GIT_CONFIG_NOSYSTEM=1`, `GIT_CONFIG_GLOBAL` pointing to an empty controller
+  file, `GIT_TERMINAL_PROMPT=0`, `GIT_ASKPASS` and `SSH_ASKPASS` to a refusing
+  helper, and no inherited `GIT_*`, proxy, SSH, credential, pager, editor, or
+  locale variables;
+- per-command `-c` settings disabling hooks path, credential helpers, pager,
+  editor, fsmonitor, optional locks where unsafe, replace refs, and external
+  diff/textconv; filters and attributes are not evaluated during controller
+  object/tree inspection;
+- argument vectors selected from a closed command catalog, no shell, aliases,
+  `-C`, arbitrary config, URL, refspec, revision expression, or user string; and
+- 30-second idle, 120-second absolute, 8 MiB drained-output and 1,000-record
+  porcelain bounds unless a narrower command definition applies. Bound breach
+  kills the registered process group and returns a closed code.
+
+The private repository has no remote, hooks, alternates, replace refs, grafts,
+promisor configuration, sparse checkout, fsmonitor, worktree extensions, or
+submodules initialized. It uses the source object format and refuses unknown
+extensions. `git fsck --strict --full --no-reflogs` and independent inode/link,
+config, ref, object-root, and filesystem-boundary checks precede `ready`.
+
+The run branch is `refs/heads/kogg-run/<base32(run-id)>`; its only initial value
+is the exact base. The filesystem allocation name is `r-<base32(worktree-id)>`.
+Both IDs are 128-bit random values recorded before use; no task/user/repository
+text enters a path or ref. Branch creation uses compare-and-swap from absence.
+
+Producer mutation policy allows ordinary files, directories, symlinks that remain
+relative within the worktree, and executable-bit changes. It rejects absolute or
+escaping symlinks, hardlinks to an inode outside the allocation, device/FIFO/socket
+nodes, nested Git repositories, submodule/gitlink entries, case-fold or Unicode-
+normalization collisions, reserved platform names, `.git` file/directory changes,
+objects over 100 MiB, trees over 100,000 entries, and total candidate growth over
+the run quota. Repository `.gitattributes` may be edited as content but controller
+inspection never invokes its filters or external drivers.
+
+One attempt may create any finite commit history rooted at the exact base. Seal
+requires HEAD to be a descendant of base, no merge commit, every parent reachable
+within the private store, a clean index/worktree, valid strict object graph, and
+at least one tree change. History rewrite inside the private branch is permitted
+before seal because no other authority consumes it; after seal all run writes are
+removed. The exact sealed HEAD and tree are the candidate. `no-change`, detached
+HEAD, multiple heads, merge commit, missing object, dirty state, or base mismatch
+is a typed refusal.
+
+Candidate transfer creates a controller-only bundle from `base..candidate` plus
+the candidate ref, imports it into the registered repository under
+`refs/kogg/quarantine/<base32(candidate-id)>`, and verifies the base, candidate,
+tree, object closure, mutation policy, and source identity again. Import holds the
+repository mutation lease and uses compare-and-swap from an absent quarantine
+ref. Active branches, HEAD, index, worktree, config, remotes, hooks, and existing
+refs cannot change. Failure deletes only a newly created, exact-CAS quarantine ref
+when its identity is proved; otherwise it retains and quarantines the result.
+Promotion is outside this slice.
+
+### Safe state-root and deletion decision
+
+The state root is a configured absolute directory on the qualified XFS project-
+quota filesystem, owned by the Kogg service identity, mode `0700`, and opened once
+with a held directory descriptor. All traversal uses a pinned native helper with
+`openat2(RESOLVE_BENEATH|RESOLVE_NO_SYMLINKS|RESOLVE_NO_MAGICLINKS|
+RESOLVE_NO_XDEV)` relative to that descriptor. The helper accepts only validated
+opaque allocation names, fixed child names, and closed operation codes.
+
+Allocation creates a directory with `mkdirat`, mode `0700`, assigns an unused XFS
+project ID and limits, writes an `allocation.json` containing only schema version,
+worktree ID, random 256-bit allocation nonce, owner instance, and creation time,
+fsyncs file and directory, and commits the same identity in SQLite. A resource is
+usable only when the open descriptor's device/inode/owner/mode/mount/project ID
+and nonce exactly match the durable record.
+
+Cleanup freezes/kills/drains the cgroup, closes every controller handle, reopens
+the exact allocation by descriptor, revalidates every identity, removes entries
+without following links using descriptor-relative enumeration/unlink, fsyncs each
+directory boundary, verifies the allocation is absent, releases the project ID,
+and only then commits `cleaned`. No recursive pathname API, glob, `$HOME`, temp
+root, user string, force worktree removal, or unverified mount crossing is used.
+Any mismatch becomes `quarantined`; it is not deleted automatically.
+
+### Closed data contracts
+
+All records use canonical RFC 8785-style JSON restricted to strings, booleans,
+bounded integers, arrays, and closed objects; no floats, null/absent ambiguity, or
+unknown keys. Digests are domain-separated SHA-256 strings. Times are UTC RFC3339
+with millisecond precision for display/deadlines but never identity. Revisions are
+monotonic 64-bit integers represented as decimal strings across JSON.
+
+```ts
+type ExecutionState =
+  | 'requested' | 'refused' | 'admitted' | 'allocated' | 'seeding'
+  | 'verified' | 'ready' | 'leased' | 'executing' | 'stopping'
+  | 'sealed' | 'candidate-imported' | 'retained' | 'cleaning' | 'cleaned'
+  | 'failed' | 'timed-out' | 'cancelled' | 'cleanup-failed'
+  | 'quarantined' | 'recovery-required' | 'reconciling';
+
+interface ExecutionBindingV1 {
+  schemaVersion: 1;
+  projectId: string;
+  projectRevision: string;
+  repositoryId: string;
+  repositoryBindingRevision: string;
+  taskId: string;
+  taskRevisionId: string;
+  taskRevisionDigest: string;
+  approvalDigest: string;
+  runId: string;
+  attemptId: string;
+  workflowPlanDigest: string;
+  baseCommit: string;
+  baseTree: string;
+  gitObjectFormat: 'sha1' | 'sha256';
+  targetId: string;
+  qualificationId: string;
+  qualificationDigest: string;
+  profileId: 'kogg-writable-agent-v1';
+  profileDigest: string;
+}
+
+interface ExecutionAllocationV1 {
+  schemaVersion: 1;
+  worktreeId: string;
+  allocationName: string;
+  allocationNonceDigest: string;
+  filesystemIdentityDigest: string;
+  quotaProjectId: string;
+  quotaBytes: string;
+  quotaInodes: string;
+  branchRefDigest: string;
+  ownerInstanceId: string;
+  state: ExecutionState;
+  revision: string;
+  cleanupState: 'required' | 'cleaning' | 'cleaned' | 'failed';
+}
+
+interface ExecutionLeaseV1 {
+  schemaVersion: 1;
+  leaseId: string;
+  worktreeId: string;
+  attemptId: string;
+  ownerInstanceId: string;
+  fencingToken: string;
+  issuedAt: string;
+  expiresAt: string;
+  revision: string;
+}
+
+interface CandidateBindingV1 {
+  schemaVersion: 1;
+  candidateId: string;
+  worktreeId: string;
+  runId: string;
+  attemptId: string;
+  baseCommit: string;
+  baseTree: string;
+  candidateCommit: string;
+  candidateTree: string;
+  objectClosureDigest: string;
+  mutationPolicyDigest: string;
+  quarantineRefDigest?: string;
+  sealedAt: string;
+  retentionClass: 'pending-evidence' | 'rejected' | 'incident' | 'completed';
+  retentionUntil: string;
+}
+
+interface TargetQualificationV1 {
+  schemaVersion: 1;
+  qualificationId: string;
+  targetId: string;
+  bootIdDigest: string;
+  kernelRelease: string;
+  architecture: 'amd64';
+  landlockAbi: string;
+  cgroupProfileDigest: string;
+  mountQuotaDigest: string;
+  launcherDigest: string;
+  bubblewrapDigest: string;
+  seccompDigest: string;
+  brokerDigest: string;
+  ranexCommit: string;
+  profileDigest: string;
+  checkedAt: string;
+  expiresAt: string;
+  status: 'qualified' | 'refused';
+  refusalCodes: readonly ExecutionCode[];
+}
+```
+
+`allocationName` and approved Git object IDs may cross the backend/controller
+boundary but are not returned to the browser. The browser receives opaque IDs,
+finite states, progress counts, safe codes, and candidate commit/tree only where
+the product explicitly needs them. Filesystem paths, ref text, qualification host
+facts, and raw policy records remain backend-private.
+
+### Command and persistence contract
+
+The backend exposes these closed commands; every mutating request includes a
+UUIDv4 `requestId`, expected record revision, exact binding digest, and optional
+user cancellation token:
+
+```ts
+interface ExecutionServiceV1 {
+  qualify(request: QualifyRequestV1): Promise<TargetQualificationSummaryV1>;
+  allocate(request: AllocateRequestV1): Promise<ExecutionSummaryV1>;
+  start(request: StartAttemptRequestV1): Promise<ExecutionSummaryV1>;
+  cancel(request: CancelExecutionRequestV1): Promise<ExecutionSummaryV1>;
+  seal(request: SealCandidateRequestV1): Promise<CandidateSummaryV1>;
+  importCandidate(request: ImportCandidateRequestV1): Promise<CandidateSummaryV1>;
+  release(request: ReleaseExecutionRequestV1): Promise<ExecutionSummaryV1>;
+  get(runId: string): Promise<ExecutionSummaryV1>;
+  list(projectId: string): Promise<readonly ExecutionSummaryV1[]>;
+}
+```
+
+The frontend cannot supply paths, refs, Git commands, profile settings, resource
+limits outside a named policy, environment, executable, network endpoint, or
+cleanup override. `start` consumes a previously compiled workflow node grant and
+an exclusive ready allocation; it does not accept a provider credential.
+
+SQLite is the lifecycle/control authority. Mutations use `BEGIN IMMEDIATE`,
+compare expected revision and request-id ledger, append one lifecycle event,
+update the projection, and commit. Filesystem/Git/Ranex operations use durable
+intent rows with this protocol:
+
+```text
+transaction:
+  validate immutable bindings, revision, admission and idempotency
+  append intent(operationId, type, resourceId, expectedIdentity, phase=requested)
+  reserve quota/project/ref/lease identity
+  commit
+
+perform external step through registered bounded operation
+
+transaction:
+  reopen intent and compare fencing token + expected resource identity
+  record closed outcome and observed identity digest
+  advance exactly one legal state, append event, commit
+```
+
+No transaction is held across a process or filesystem call. A repeated request ID
+with the same canonical request returns its committed result. The same ID with a
+different digest refuses. A lost response resumes from intent/outcome identity;
+it never repeats an unknown seed/import/delete/start side effect.
+
+Repository mutation leases use SQLite fencing tokens and a source-side lock file
+opened by descriptor in the Kogg-private repository metadata namespace. Seed
+source reads share a read lease; candidate import is exclusive. A source project
+revision/base change invalidates pending admission but does not delete a private
+candidate. Lease expiry alone never authorizes a second owner; startup recovery
+must prove the first operation/process is terminal.
+
+### Legal state machine
+
+Only these forward transitions are legal:
+
+```text
+requested -> refused | admitted
+admitted -> allocated | failed
+allocated -> seeding | cleaning | quarantined
+seeding -> verified | failed | timed-out | recovery-required
+verified -> ready | cleaning | quarantined
+ready -> leased | cleaning | quarantined
+leased -> executing | cancelled | recovery-required
+executing -> stopping | timed-out | failed | recovery-required
+stopping -> sealed | cancelled | timed-out | failed | cleanup-failed
+sealed -> candidate-imported | retained | cleaning | recovery-required
+candidate-imported -> retained | cleaning | recovery-required
+retained -> cleaning
+cleaning -> cleaned | cleanup-failed | quarantined
+cleanup-failed -> cleaning | quarantined
+recovery-required -> reconciling
+reconciling -> one proved prior/forward terminal state | quarantined
+```
+
+`refused` creates no allocation and is terminal. `failed`, `timed-out`, and
+`cancelled` describe the attempt result but remain nonterminal while cleanup is
+required; their projection carries `cleanupState` and transitions through
+`cleaning` to `cleaned` without erasing the outcome. `sealed`, `candidate-imported`,
+and `retained` have zero live processes. `cleaned` is terminal only after the
+allocation is absent and all leases/quota/process facts are closed. `quarantined`
+is terminal for automatic action and requires an authenticated operator recovery
+flow outside normal execution.
+
+Completion and cancellation race on the durable state revision. If producer exit
+was observed first, `stopping` still closes network and joins all descendants;
+cancellation may change the user-visible requested outcome but cannot interrupt
+seal inspection once no run process remains. If cancel commits first, candidate
+seal is not started. A timeout commits stop intent, closes broker capability,
+freezes then kills the cgroup, waits for `populated 0`, drains handles, and records
+`timed-out`; it cannot be converted to success by a late exit.
+
+### Startup and crash recovery pseudocode
+
+Before any qualification is reused or allocation/start admitted:
+
+```text
+recover(instance):
+  set global executionAdmission = blocked
+  verify SQLite integrity and state-root descriptor identity
+  acquire single recovery lease with fencing token
+  load every non-cleaned allocation, incomplete intent and active lease
+  enumerate state-root children, quota project IDs, quarantine refs,
+            operation processes and Ranex-owned run scopes as safe identities
+  if an enumerated resource lacks exactly one durable owner:
+      quarantine affected target/repository; never adopt/delete
+  for each owned record in stable ID order:
+      requalify current boot/profile before process action
+      compare allocation descriptor identity + nonce + quota + ref/object facts
+      ask operation/Ranex owner for complete process-scope status
+      classify by last committed intent:
+        allocate/seed: verify exact output; advance if uniquely complete,
+                       else clean only exact proved partial resource
+        start/execute: never restart; cancel/join proved owned scope,
+                       mark interrupted or quarantine unknown ownership
+        seal/import: recompute immutable candidate/quarantine CAS result;
+                     record unique result, never repeat ambiguous import
+        cleanup: continue descriptor-relative removal only after full reproof
+      append recovery event and terminal/blocked outcome idempotently
+  run all execution diagnostics
+  enable admission only for scopes with no fail/quarantine/unknown/recovery item
+```
+
+After reboot, every qualification and process lease is stale. An empty cgroup path
+is not enough; recovery correlates boot ID, durable intent, filesystem identities,
+and source/quarantine state, then cleans or retains. A possible process residual,
+open mount, changed allocation identity, unknown ref, or failed journal/database
+integrity blocks automatic action.
+
+Retention defaults are: pending evidence/verdict until the owning authority
+releases it; rejected/cancelled 24 hours; completed 24 hours after controlled
+merge; incident 30 days or explicit operator release. Limits are policy values,
+not user inputs. Disk pressure blocks new allocation and requests explicit
+release; it never shortens a live retention fact. Product evidence records retain
+candidate object/digest bindings even after private filesystem cleanup.
+
+### Safe codes, logging, and expected traces
+
+`ExecutionCode` is a closed catalog. Required groups are `ADMISSION_*`,
+`QUALIFICATION_*`, `ALLOCATION_*`, `GIT_SEED_*`, `GIT_INDEPENDENCE_*`,
+`CONFINEMENT_*`, `PROCESS_*`, `LIMIT_*`, `SEAL_*`, `IMPORT_*`, `RETENTION_*`,
+`CLEANUP_*`, `RECOVERY_*`, and `INTERNAL_*`. One concrete code exists for every
+row in the failure matrix; unknown external errors map to the phase-specific
+`*_FAILED` without their message.
+
+Normative loggers are `kogg:execution:service`, `:target`, `:allocation`, `:git`,
+`:confinement`, `:candidate`, `:cleanup`, and `:recovery`. Event names are:
+
+```text
+request.received | request.refused | request.completed | request.failed
+qualification.started | qualification.completed | qualification.invalidated
+allocation.requested | allocation.created | allocation.failed
+seed.started | seed.completed | independence.verified | ready
+lease.acquired | lease.released | attempt.starting | attempt.started
+attempt.activity | attempt.stopping | attempt.timed-out | attempt.cancelled
+process.registered | process.started | process.exited
+cgroup.kill.started | cgroup.empty | process.cleanup.failed
+seal.started | seal.completed | seal.refused
+import.started | import.completed | import.refused
+retention.started | retention.released
+cleanup.started | cleanup.completed | cleanup.failed
+recovery.started | recovery.resource.classified | recovery.completed
+resource.quarantined
+```
+
+Every event has `eventVersion`, opaque operation/run/attempt/worktree/process/
+target IDs as applicable, finite phase/state/code, bounded count/duration, and
+record revision. Only `seal.completed` and `import.completed` may include approved
+candidate commit/tree. Unknown fields are rejected at the logger adapter. Activity
+is rate-limited and contains only monotonic count and elapsed bucket.
+
+Expected successful trace:
+
+```text
+request.received -> qualification.started -> qualification.completed
+-> allocation.requested -> allocation.created -> seed.started -> seed.completed
+-> independence.verified -> ready -> lease.acquired -> attempt.starting
+-> process.registered -> process.started -> attempt.started -> attempt.activity*
+-> process.exited -> attempt.stopping -> cgroup.empty -> seal.started
+-> seal.completed -> import.started -> import.completed -> retention.started
+```
+
+Expected timeout trace:
+
+```text
+attempt.activity -> attempt.timed-out -> attempt.stopping
+-> cgroup.kill.started -> process.exited* -> cgroup.empty
+-> lease.released -> cleanup.started -> cleanup.completed
+```
+
+Expected crash trace begins with `recovery.started`, emits exactly one
+`recovery.resource.classified` per durable/unknown identity, then either advances
+to a proved state or `resource.quarantined`; `recovery.completed` includes only
+bounded recovered/quarantined/blocked counts.
+
+### Diagnostic catalog and debugger proof
+
+The exact catalog IDs are:
+
+- `execution.target-qualification`
+- `execution.worktree-registry`
+- `execution.git-independence`
+- `execution.source-integrity`
+- `execution.process-cleanup`
+- `execution.capacity`
+- `execution.recovery`
+- `execution.source-maps`
+
+Each ID is added to `diagnostics/catalog.json` in #85 and gets one contributor
+whose fail-closed exception path returns that same check as `fail`. Contributors
+are read-only, bounded to five seconds individually and 20 seconds collectively,
+return only finite codes/counts/digests, and cannot start Git, a producer, or a
+cleanup mutation. Operational files declare the closest ID; files spanning two
+authorities declare the release-blocking one and tests cover the companion check.
+
+Debugger proof uses the production browser and Electron source maps and the real
+TypeScript backend/native-launcher/Ranex Python source. The E2E sets breakpoints at
+allocation intent, pre-spawn registration, target refusal, timeout kill, seal
+validation, import CAS, cleanup identity refusal, and recovery classification.
+It verifies original source locations and safe local variables without capturing
+content-bearing values in retained artifacts.
+
+### UI and real E2E pseudocode
+
+The run panel shows safe target qualification, allocation, execution, stopping,
+candidate, retention, cleanup, and recovery states. Start is disabled with a
+specific safe reason until task approval, repository/base binding, compiled run
+plan, and current Linux qualification agree. Cancel remains available while a
+live attempt can stop. “Open run worktree” is offered only through a backend-issued
+one-use opaque handle and only to an explicitly trusted local operator; the raw
+path is never placed in application state, URL, logs, telemetry, or support data.
+
+Cleanup/recovery failure is prominent, keyboard reachable, announced through an
+ARIA live region, and never represented by color alone. The UI cannot force
+delete, bypass qualification, retry an unknown side effect, change resource
+limits/profile, or promote a quarantine ref. Focus moves predictably after start,
+cancel, terminal result, and recovery. Reduced motion and screen-reader state
+labels cover the live timeline.
+
+Production E2E follows this public path:
+
+```text
+launch packaged Kogg -> create/open disposable project -> approve frozen task
+-> choose qualified Linux target -> start governed run -> observe allocated/active
+-> producer edits and commits in private tree -> stop/join -> seal candidate
+-> import quarantine -> show retained candidate -> cancel/release cleanup
+-> run diagnostics -> close app -> independent Git/filesystem/cgroup oracle
+```
+
+The independent oracle compares a pre-run snapshot of source HEAD/index/worktree,
+every ref/config/hook/object inode, and mount identity; proves the private store
+has no alternate/hardlink/common-dir/remote; verifies candidate ancestry/tree and
+quarantine-only import; and proves zero cgroup/process/descriptor/allocation/quota
+residue after release. Captured console/log/support artifacts are scanned for
+seeded canary path, ref, file name, prompt, code, diff, command, environment,
+credential, provider body, and Git error values.
+
+Fault injection executes once at every external-intent boundary: after durable
+allocation intent, after directory creation, mid-bundle, after seed before
+acknowledgement, after cgroup creation, after child spawn, after child exit,
+during kill/drain, after seal, after quarantine ref creation, and mid-cleanup.
+Each restart uses a new backend instance and must produce the expected recovery
+trace with no duplicate allocation/process/import, blind retry, source mutation,
+unproved deletion, hidden residual, or leaked canary.
+
+The linked-worktree red control must successfully mutate a disposable source
+common ref/config through `.git/commondir`. The selected private-profile green
+control repeats the attack set and proves source absence, kernel denials, useful
+private Git editing/commit, exact candidate import, and complete cleanup. #82 is
+invalid if it tests only happy-path `git status` or mocks the confinement owner.
+
+## Pseudocode gate verdict
+
+- Research #76: closed and merged.
+- Every success/refusal/failure/timeout/cancel/cleanup/restart/recovery state:
+  closed above with legal transitions and external commit points.
+- Interfaces, persistence, Git, confinement, process, and authority decisions:
+  closed; no production choice is delegated to #82 or #85.
+- Loggers, events, correlations, safe codes, metrics boundaries, diagnostic IDs,
+  source maps, and debugger proof: normative.
+- Visible-UI E2E: uses packaged Kogg plus real Git/filesystem/Ranex/Linux/process
+  boundaries and independent negative controls.
+
+The packet advances to prototype #82. The prototype may invalidate the selected
+boundary with evidence; it may not silently widen authority or choose a fallback.
 
 ## Prototype recommendation for #82
 
