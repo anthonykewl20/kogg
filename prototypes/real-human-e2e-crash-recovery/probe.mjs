@@ -79,12 +79,19 @@ try {
   await openCommand(second.page, 'Kogg: Run Diagnostics', application);
   const diagnosticsMessage = second.page.getByText(/Diagnostics: (?:PASS|WARN|FAIL)/u).first();
   await diagnosticsMessage.waitFor({ timeout: 30_000 });
-  const diagnosticsOverall = (await diagnosticsMessage.innerText()).match(/Diagnostics: (PASS|WARN|FAIL)/u)?.[1]?.toLowerCase();
+  const diagnosticsText = await diagnosticsMessage.innerText();
+  const diagnosticsOverall = diagnosticsText.match(/Diagnostics: (PASS|WARN|FAIL)/u)?.[1]?.toLowerCase();
+  const failedCheckIds = diagnosticsText.match(/Failed: ([a-z0-9., -]+)\./u)?.[1].split(', ') ?? [];
   assert.ok(diagnosticsOverall);
-  if (recoveryOutcome === 'recovered') assert.notEqual(diagnosticsOverall, 'fail', 'successful reconciliation must not produce failing diagnostics');
-  else assert.equal(diagnosticsOverall, 'fail', 'blocked admission must produce failing diagnostics');
+  if (recoveryOutcome === 'recovered') {
+    const recoveryFailures = failedCheckIds.filter(id => id.startsWith('operations.') || id.startsWith('kernel.'));
+    assert.deepEqual(recoveryFailures, [], `successful reconciliation has recovery diagnostic failures: ${recoveryFailures.join(',')}`);
+  } else {
+    assert.equal(diagnosticsOverall, 'fail', 'blocked admission must produce failing diagnostics');
+    assert.ok(failedCheckIds.some(id => id.startsWith('operations.')), 'blocked admission must identify an operations diagnostic failure');
+  }
   await second.page.keyboard.press('Escape');
-  events.push({ eventName: 'scenario.step.completed', stepId: 'diagnostics-visible', diagnosticsOverall });
+  events.push({ eventName: 'scenario.step.completed', stepId: 'diagnostics-visible', diagnosticsOverall, failedCheckIds });
 
   await identityMismatchCalibration();
   const productResidualCount = await liveIdentityCount(preCrashDescendants);
