@@ -3,6 +3,7 @@
 
 export const KoggTasksServicePath = '/services/kogg-tasks';
 export const KoggTasksService = Symbol('KoggTasksService');
+export const TaskAdmissionAuthority = Symbol('TaskAdmissionAuthority');
 
 export type TaskResultKind = 'completed' | 'refused' | 'conflict' | 'failed';
 export type TaskLifecycle = 'active' | 'archived';
@@ -42,9 +43,10 @@ export interface ReviewProjection {
   readonly kind: TaskResultKind; readonly code: TaskSafeCode; readonly challenge?: string; readonly expiresAt?: string; readonly projection?: TaskProjection;
 }
 export interface TaskAdmissionSnapshot {
-  readonly taskId: string; readonly specificationId: string; readonly approvalId: string; readonly projectId: string;
+  readonly taskAdmissionId: string; readonly taskId: string; readonly specificationId: string; readonly approvalId: string; readonly projectId: string;
   readonly repositoryId: string; readonly bindingRevision: string; readonly registryRevision: string; readonly taskRevision: string; readonly runId: string;
 }
+export interface TaskAdmissionAuthority { resolveAdmission(taskAdmissionId: string): Promise<TaskAdmissionSnapshot | undefined>; }
 
 export interface KoggTasksService {
   list(projectId?: string): Promise<readonly TaskSummary[]>;

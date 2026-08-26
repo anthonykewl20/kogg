@@ -22,6 +22,12 @@
     { "id": "tasks.registry", "owner": "kogg-tasks", "description": "The task registry schema, integrity, permissions, immutable triggers, and writer state are valid." },
     { "id": "tasks.revisions", "owner": "kogg-tasks", "description": "Task specification revisions and canonical digests verify successfully." },
     { "id": "tasks.bindings", "owner": "kogg-tasks", "description": "Task repository bindings remain current and available." },
-    { "id": "tasks.approvals", "owner": "kogg-tasks", "description": "Current task approvals match immutable frozen revisions." }
+    { "id": "tasks.approvals", "owner": "kogg-tasks", "description": "Current task approvals match immutable frozen revisions." },
+    { "id": "agents.adapters", "owner": "kogg-agents", "description": "Agent adapters are uniquely and exactly registered without ambient fallback." },
+    { "id": "agents.attempts", "owner": "kogg-agents", "description": "Agent attempt state, revisions, event chains, idempotency, deadlines, and usage are internally consistent." },
+    { "id": "agents.processes", "owner": "kogg-agents", "description": "Every agent resource has one qualified owner and no hidden or residual process exists." },
+    { "id": "agents.recovery", "owner": "kogg-agents", "description": "Agent startup reconciliation completed and admission agrees with recovery state." },
+    { "id": "agents.logging", "owner": "kogg-agents", "description": "Agent lifecycle logging uses the closed safe event and field schemas." },
+    { "id": "agents.source-maps", "owner": "kogg-agents", "description": "Agent frontend, backend, Electron, and adapter-host bundles retain source maps and debugger reachability." }
   ]
 }
