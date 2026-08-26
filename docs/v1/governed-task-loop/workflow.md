@@ -1,14 +1,15 @@
 # Customizable autonomous Kogg Mode workflow
 
 Tracking: [#87](https://github.com/anthonykewl20/kogg/issues/87), research
-phase [#98](https://github.com/anthonykewl20/kogg/issues/98).
+phase [#98](https://github.com/anthonykewl20/kogg/issues/98), and pseudocode
+phase [#99](https://github.com/anthonykewl20/kogg/issues/99).
 
 ## Status
 
-Research is complete as of 2026-08-27. This packet contains no production code
-and deliberately stops before decision-complete schemas and pseudocode. Those
-belong to #99, followed by a real-boundary prototype in #100 and production
-implementation plus real human-level E2E in #101.
+Research and decision-complete pseudocode are complete as of 2026-08-27. This
+packet contains no production code. It fixes the contract that #100 must probe
+at real scheduler/provider/process boundaries and #101 must ship with visible
+human-level E2E.
 
 The recommendation is a versioned declarative workflow template compiled by a
 backend authority validator into an immutable run plan. The editable graph owns
@@ -404,23 +405,521 @@ every case must fail closed visibly and diagnostically.
 | Persist raw node payloads/events for debugging | Reject; durable control store contains safe facts and references only. |
 | Offer only a spatial drag-and-drop editor | Reject; require keyboard and structured outline parity. |
 
-## Decisions required from #99
+## Decision-complete workflow contract and pseudocode
 
-#99 must resolve exact schemas for drafts, template versions, compiled plans,
-run snapshots, node kinds/ports/config, typed conditions, grants, attempts,
-transitions, approvals, retries/timeouts, group expansion, canonicalization and
-digests; the trust-spine injection/path-proof algorithm; catalog/version
-compatibility; optimistic editing; durable leases/outbox/recovery; process and
-external-call intents; cancel-all-then-join; safe event/log/diagnostic schemas;
-accessibility behavior; and every #100 fault-injection seam.
+This section is normative for #100 and #101. `MUST` and `MUST NOT` are release
+gates. The pseudocode fixes ownership and behavior; production naming may follow
+repository conventions without weakening it.
 
-The hardest decision is a static authority analysis expressive enough for useful
-parallel/conditional workflows but closed enough to prove every merge path
-crosses mandatory anchors. The second is upgrade compatibility for active runs.
-#99 must define both algorithms and refusal behavior; it cannot defer them to UI
-conventions or production implementation judgment.
+### Canonical records and version ownership
 
-## Research gate conclusion
+All workflow records use the repository canonical JSON profile: UTF-8 NFC,
+lexicographically sorted keys, signed 64-bit integers, fixed lowercase digests,
+no floats, no duplicate/unknown keys, and explicit schema versions. Digest is
+`sha256(utf8("kogg:workflow:<domain>:v1\n") || canonicalJson(record))`.
+Domains are `draft`, `template`, `catalog`, `trust-spine`, `compiled-plan`,
+`run-snapshot`, `grant`, `condition`, `node-attempt`, and `event`.
+
+```text
+record WorkflowDraftV1 {
+  draftId: uuid
+  baseTemplateVersionId: uuid-or-null
+  revision: positive integer
+  projectId: uuid
+  displayName: bounded user text (not logged)
+  nodes: sorted EditableNodeV1[]
+  edges: sorted EditableEdgeV1[]
+  groups: sorted GroupV1[]
+  layout: EditorLayoutV1
+  updatedAt: RFC3339
+}
+
+record WorkflowTemplateVersionV1 {
+  templateId: uuid
+  versionId: uuid
+  versionNumber: positive integer
+  parentVersionDigest: sha256-or-null
+  projectId: uuid
+  canonicalGraphDigest: sha256
+  catalogDigest: sha256
+  createdAt: RFC3339
+  createdByAuthorityDigest: sha256
+  migrationLineage: MigrationRecordV1[]
+}
+```
+
+Drafts are mutable only by optimistic compare-and-swap on `(draftId, revision,
+baseTemplateVersionId)`. Conflict returns the current revision and safe conflict
+code, never overwrites dirty client state. Save validates the whole graph and
+appends a new immutable template version in one SQLite transaction. Template
+versions, compiled plans, run snapshots, attempts, and events are append-only.
+Deleting a draft cannot delete a template or run.
+
+Templates import/export only canonical declarative records plus catalog/spine
+compatibility requirements. Signatures or repository ownership do not make an
+import executable. Import creates a draft, strips layout fields unknown to V1,
+rejects unknown executable fields, and requires normal backend compilation.
+
+### Closed catalog, nodes, ports, and configuration
+
+The signed `NodeCatalogV1` binds each node kind/version to exact input/output
+ports, configuration schema, executor artifact, grant ceiling, retry class,
+side-effect class, deadline limits, diagnostic id, and compatibility range.
+Runtime plugin or npm node installation is absent in V1.
+
+Editable node kinds are closed:
+
+```text
+research.agent         advisory research, no repository mutation
+pseudocode.agent       decision packet update, bounded private worktree
+probe.agent            real-boundary probe, qualified target required
+implementation.agent   production mutation, approved specification required
+tool.git               closed Git operation from catalog
+tool.build             closed build operation from catalog
+check.deterministic    independently owned exact-subject check
+approval.specification explicit human approval boundary
+approval.continue      optional human pause boundary
+control.condition      closed typed branch
+control.parallel       fork into statically declared branches
+control.join           all|all-settled join for exact fork
+control.group          compile-time visual/organizational expansion only
+control.finally        cleanup/failure convergence
+```
+
+Policy-owned nodes are not editable and are injected by the compiler:
+
+```text
+anchor.spec-frozen
+anchor.spec-approved
+anchor.producer-separated
+anchor.checks-complete
+anchor.evidence-admitted
+anchor.ranex-pass-current
+anchor.merge-preflight
+anchor.controlled-merge
+anchor.cleanup-complete
+```
+
+Each node id is a UUID stable within one template lineage. Ports have stable
+catalog ids and cardinality `one`, `optional-one`, or `many`. Edges bind exact
+source/output and target/input ports and may carry only safe typed references,
+not prompt/code/output bodies. A group has members and nested display order but
+no runtime semantics, grant, condition, or hidden edge; compilation expands it
+to its visible member graph.
+
+Node configuration is a tagged closed record. Agent nodes bind role id,
+provider id, exact model id, adapter artifact/profile digests, input reference
+ids, repository target policy, timeout, and bounded retry policy. Tool/check
+nodes bind catalog operation/check ids and immutable configuration digests.
+Approval nodes bind approver role and expiry. Control nodes bind only the closed
+condition/fork/join schemas below. Prompts and source content live in separately
+authorized content stores and are referenced opaquely; they are not stored in
+workflow records, logs, diagnostics, or metrics.
+
+### Editor command and template interface
+
+The backend accepts these exact draft commands, all with draft revision CAS:
+
+```text
+draft.create
+draft.node.add | draft.node.configure | draft.node.remove
+draft.edge.connect | draft.edge.disconnect
+draft.group.create | draft.group.configure | draft.group.remove
+draft.layout.update
+draft.validate
+template.version.save
+template.version.fork
+template.import-as-draft | template.export
+```
+
+Every structural command performs local schema validation, then whole-graph
+validation before commit. A command that would make an invalid intermediate
+graph may be stored only in `draft` validation state and cannot be versioned or
+run. Remove explains dependent edges/groups and asks explicit confirmation in
+the UI; the backend still treats the final requested record as untrusted.
+
+The editor provides spatial canvas and structured outline parity. Keyboard users
+can add, configure, connect, disconnect, reorder, group, validate, version, and
+start without drag-and-drop. Every node/port/edge has an accessible name and
+relationship. Validation focuses the first error and exposes the complete list;
+focus returns to the invoking control after dialogs. Runtime updates use polite
+announcements except approval, failure, and cancellation, which are assertive
+but deduplicated. Reduced motion disables animated edges; zoom, high contrast,
+non-color state, and virtualization preserve semantic order.
+
+### Conditions, parallelism, retries, and deadlines
+
+Conditions are data, not code:
+
+```text
+ConditionV1 =
+  { op: "and" | "or", terms: ConditionV1[1..16] } |
+  { op: "not", term: ConditionV1 } |
+  { op: "eq" | "neq", left: SafeRefV1, right: SafeLiteralV1 } |
+  { op: "in", left: SafeRefV1, values: SafeLiteralV1[1..32] } |
+  { op: "status-is", nodeId: uuid, value: closed terminal status } |
+  { op: "safe-code-is", nodeId: uuid, value: closed safe code }
+```
+
+Depth is at most 8 and total predicates at most 64. Safe references address only
+typed status, safe code, boolean, bounded integer, or catalog enum outputs from
+dominating nodes. No strings containing content, time/randomness, filesystem,
+environment, network, dynamic property access, regex, arithmetic, functions, or
+model output participate. Both possible branch paths are compiled and proven.
+
+`control.parallel` declares 2–8 branch ids. Its matching join names the exact
+fork and is either `all` (all must succeed) or `all-settled` (failure router sees
+every terminal branch). Nested parallel depth is 4 and maximum expanded nodes
+is 256. No free cycle is legal. The only repetition is per-node retry:
+
+```text
+RetryPolicyV1 {
+  maxAttempts: 1..3
+  retryableSafeCodes: subset fixed by node catalog
+  backoffMs: one of 0, 1000, 5000, 15000
+  sideEffectPolicy: "none" | "idempotent-exact-key" | "fresh-authority"
+}
+```
+
+An attempt is retried only after terminal cleanup, unchanged plan/authority/
+subject preconditions, and catalog approval for the safe failure. Each retry has
+a new attempt id and process/credential scope. `fresh-authority` pauses for an
+explicit new authorization; unknown outcomes never retry automatically.
+
+Each node has catalog-bounded spawn, first-progress, idle, absolute, cancel,
+cleanup, and approval deadlines. Run deadline is no greater than the sum of the
+longest statically possible path plus bounded pauses and is frozen in the run
+snapshot. Deadline expiry follows the declared failure edge after cleanup; it
+cannot skip a required anchor or extend itself.
+
+### Static graph compilation and trust-spine proof
+
+```text
+compile(template, requestedRun):
+  verify canonical bytes, template lineage, catalog/spine signatures/versions
+  expand groups; reject hidden nodes/edges and expansion > 256
+  validate closed configs, ports, cardinality, edge types, targets, and grants
+  reject cycles, dangling/unreachable nodes, ambiguous forks/joins, dead ends,
+    unbounded behavior, missing failure/finally routes, and unsafe conditions
+  compute dominators and post-dominators on every possible branch outcome
+  inject policy-owned trust-spine nodes and edges
+  prove every production-mutation node is dominated by frozen+approved spec
+  prove every evidence node is dominated by separated deterministic checks
+  prove every merge path is dominated in order by all mandatory anchors
+  prove cleanup post-dominates every process/external-call node
+  intersect every requested grant with task, role, catalog, project, repository,
+    provider/model, execution-target, and trust-spine ceilings
+  reject unused/widened/ambiguous grant or identity collision
+  emit immutable CompiledPlanV1 with proof witnesses and exact digests
+```
+
+The injected spine is semantic, not merely a visual chain. The compiler builds
+a product graph across success, refusal, failure, timeout, cancellation, retry,
+and recovery edges. `anchor.controlled-merge` has exactly one incoming route
+whose dominator sequence is frozen specification, authenticated approval,
+producer separation, exact deterministic checks, admitted evidence, current
+Ranex PASS, and merge preflight. All other terminal routes go through cleanup
+and cannot emit merge authority.
+
+Backend runtime rechecks the relevant proof witness and current external facts
+before every authority-bearing transition. Forged UI anchors, manipulated stored
+graphs, direct RPC calls, or catalog drift fail. The UI cannot create an anchor
+or mark it satisfied.
+
+### Role, provider, model, project, and worktree binding
+
+```text
+record NodeGrantV1 {
+  runId: uuid
+  nodeId: uuid
+  attemptId: uuid
+  roleId: closed role
+  providerId: closed provider
+  modelId: exact model
+  adapterArtifactDigest: sha256
+  projectId: uuid
+  repositoryId: uuid
+  repositoryBindingDigest: sha256
+  worktreePolicy: "read-only-snapshot" | "private-writable" |
+                  "independent-verifier"
+  baseCommit: native Git object id
+  allowedOperations: sorted catalog ids
+  credentialGrantDigest: sha256-or-null
+  executionProfileDigest: sha256
+  expiresAt: RFC3339
+}
+```
+
+Research defaults read-only. Pseudocode/probe/implementation mutate only a new
+private worktree owned by the attempt; production implementation additionally
+requires current specification approval. Deterministic verification uses a
+separate read-only/execution worktree at the exact subject commit and a verifier
+identity distinct from producer, approver, credential, adapter process, and
+writable worktree. Project/repository selection comes from the project registry
+and must equal the task binding. Model aliases and provider fallback are absent.
+
+The scheduler mints no authority. It requests an attempt grant from the owning
+controller, verifies its signed digest, passes only that node's subset to the
+executor, and revokes it on any terminal transition. A node cannot delegate,
+spawn another graph node, change provider/model/target, or retain credentials.
+
+### Immutable run snapshot and compatibility
+
+```text
+record WorkflowRunSnapshotV1 {
+  runId: uuid
+  templateVersionDigest: sha256
+  compiledPlanDigest: sha256
+  catalogDigest: sha256
+  trustSpineDigest: sha256
+  taskRevisionDigest: sha256
+  specificationApprovalDigest: sha256
+  projectRepositoryBindingDigest: sha256
+  roleBindings: sorted map<roleId, bindingDigest>
+  providerModelBindings: sorted map<nodeId, bindingDigest>
+  executorArtifacts: sorted map<nodeKindVersion, sha256>
+  executionProfiles: sorted map<nodeId, sha256>
+  createdAt: RFC3339
+  absoluteDeadline: RFC3339
+}
+```
+
+Admission copies no mutable template state; it stores exact immutable digests and
+proof witnesses. Editing/versioning afterward cannot affect the run. A backend
+upgrade may resume an active run only if it retains exact decoders/executors for
+every snapshot version and their artifact digests match. Compatible migration is
+allowed only before run admission and appends a new template version with a
+signed deterministic migration record. There is no in-place active-run migration
+or best-effort interpretation. Missing historical executor yields
+`WORKFLOW_EXECUTOR_INCOMPATIBLE` and cleanup/quarantine, not replay.
+
+### Scheduling and lifecycle state machines
+
+One durable scheduler lease owns a run. Ready nodes are selected in canonical
+node-id order, limited by the snapshot concurrency ceiling. Parallel branches
+may run concurrently only when their worktree/write/resource grants do not
+conflict; otherwise admission refuses rather than silently serializing semantics.
+
+```text
+RunState =
+  ADMITTED | RUNNING | PAUSING | PAUSED | CANCELLING | CLEANING |
+  SUCCEEDED | FAILED | CANCELLED | QUARANTINED
+
+AttemptState =
+  BLOCKED | READY | INTENT_RECORDED | DISPATCHED | ACTIVE |
+  WAITING_APPROVAL | RESULT_OBSERVED | CLEANING |
+  SUCCEEDED | FAILED | CANCELLED | UNKNOWN | QUARANTINED
+```
+
+```text
+schedulerTick(run):
+  acquire/renew compare-and-swap lease
+  verify event chain, snapshot, spine proof, authority, and process inventory
+  derive projection by deterministic replay of safe events
+  for each READY node in canonical order within concurrency/resource limits:
+    append external/process intent and idempotency key before dispatch
+    mint exact NodeGrantV1 and register intended process before start
+    dispatch once; append transition in same transaction as outbox record
+  publish safe outbox projections after commit
+```
+
+Provider completion is `RESULT_OBSERVED`; the attempt succeeds only after result
+qualification, credential revocation, process cleanup, and required repository
+state capture. External calls and side effects use intent-before-dispatch plus
+exact idempotency where supported. Lost acknowledgements enter `UNKNOWN` and a
+node-specific reconciler determines the unique outcome. It never guesses or
+replays an unknown non-idempotent effect.
+
+Pause stops new scheduling after active attempts reach safe boundaries. Resume
+requires the same snapshot, unexpired authority, exact executor compatibility,
+and fresh external preconditions. Approval pause persists only request digest,
+approver-role requirement, expiry, and safe status; approval is signed and bound
+to run/node/attempt/input digest. Duplicate/late approval is refused.
+
+Failure routing begins only after the failed attempt cleans up. One declared
+failure edge may lead to bounded remediation or `control.finally`; it cannot
+enter the success port of an anchor. Unhandled failure cancels all live siblings,
+joins cleanup, and fails the run.
+
+```text
+cancelRun(reason):
+  atomically set CANCELLING and stop new node admission
+  revoke pending approvals, credentials, and unused grants
+  signal every active node owner in parallel
+  each owner interrupts, TERM/KILL escalates, drains, and proves zero descendants
+  wait bounded cancel-all-then-join across every branch
+  quarantine any ambiguous/residual attempt and its worktree
+  append one terminal run event only after all branches report cleanup
+```
+
+### Persistence, outbox, restart recovery, and deletion
+
+SQLite WAL tables contain immutable template versions, compiled plans, snapshots,
+attempt/event chains, leases, intents, safe results, approvals, and outbox rows.
+Every event has run sequence, previous digest, idempotency key, timestamp,
+transition, safe code, and correlation ids. Content is referenced, never copied.
+Foreign keys, unique constraints, quick/full integrity, event-chain replay, and
+snapshot digest validation run before admission.
+
+Outbox publication is at-least-once with projection idempotency ids. Duplicate
+UI events cannot duplicate scheduler state. UI acknowledgement is never a commit
+point. On restart:
+
+```text
+recoverRun(run):
+  acquire recovery lease; validate stores and immutable snapshot
+  disable scheduling for run
+  reconcile every intent against process registry, executor, Git, provider,
+    evidence, verdict, and merge owner using exact ids/digests
+  kill and drain residual owned processes before state advancement
+  classify unique completed, safe retryable, failed, unknown, or quarantined
+  revalidate trust spine and current external anchors
+  append recovery transitions; enable only proven READY nodes
+```
+
+Recovery after a provider terminal but before durable acknowledgement qualifies
+the exact attempt if independently discoverable; otherwise it remains UNKNOWN.
+After evidence or verdict, Ranex is queried by exact immutable binding. After
+merge intent, only the controlled-merge owner may reconcile repository state;
+the scheduler never repeats merge.
+
+Draft deletion is immediate if unreferenced. Template archival hides it from new
+runs but preserves versions referenced by history. Run/worktree deletion requires
+terminal cleanup, retention expiry, no evidence/verdict/merge hold, and explicit
+controller disposition. Quarantined state is never auto-deleted.
+
+### Closed safe failures, events, logs, and metrics
+
+Safe codes are closed:
+
+```text
+WORKFLOW_OK                         WORKFLOW_SCHEMA_INVALID
+WORKFLOW_VERSION_CONFLICT           WORKFLOW_CATALOG_MISMATCH
+WORKFLOW_GRAPH_INVALID              WORKFLOW_CYCLE
+WORKFLOW_PORT_INVALID               WORKFLOW_UNREACHABLE
+WORKFLOW_JOIN_AMBIGUOUS             WORKFLOW_BOUND_EXCEEDED
+WORKFLOW_CONDITION_INVALID          WORKFLOW_ANCHOR_BYPASS
+WORKFLOW_AUTHORITY_EXPANSION        WORKFLOW_ROLE_SEPARATION
+WORKFLOW_TARGET_MISMATCH            WORKFLOW_EXECUTOR_INCOMPATIBLE
+WORKFLOW_APPROVAL_REQUIRED          WORKFLOW_APPROVAL_INVALID
+WORKFLOW_DEADLINE                   WORKFLOW_RETRY_REFUSED
+WORKFLOW_OUTCOME_UNKNOWN            WORKFLOW_EXTERNAL_FAILURE
+WORKFLOW_PROCESS_FAILED             WORKFLOW_CLEANUP_FAILED
+WORKFLOW_RESIDUAL_PROCESS           WORKFLOW_RECOVERY_FAILED
+WORKFLOW_STALE_EVIDENCE             WORKFLOW_STALE_VERDICT
+WORKFLOW_MERGE_REFUSED              WORKFLOW_STORE_INTEGRITY
+WORKFLOW_CANCELLED                  WORKFLOW_INTERNAL
+```
+
+Loggers are `kogg:workflow:editor`, `kogg:workflow:compiler`,
+`kogg:workflow:engine`, `kogg:workflow:executor`,
+`kogg:workflow:recovery`, and `kogg:ui:mode-selector`. Closed events are:
+
+```text
+draft.command.requested|completed|refused
+template.version.requested|created|failed
+compile.started|completed|refused
+run.admission.started|completed|refused
+run.started|paused|resumed|cancel.started|cancel.completed|terminal
+node.ready|intent.recorded|dispatch.started|active|activity|result.observed
+node.approval.requested|received|expired|refused
+node.retry.scheduled|refused
+node.cleanup.started|completed|failed|terminal
+anchor.validation.started|satisfied|refused
+recovery.started|node.reconciled|run.reconciled|quarantined|failed
+```
+
+Allowed fields: timestamp, logger/event, workflow/template/version/run/node/
+attempt/operation/process correlation ids, node kind/version, transition, attempt
+number, safe code, boolean outcome, bounded duration/count, and non-content
+digests. Never log names/free text, prompts, source/code/diffs, credentials,
+paths, tool/command arguments/results, environments, provider bodies, raw errors,
+or event payloads. Metrics use node kind, transition class, safe code, terminal
+class, and bounded duration/concurrency buckets only; ids/digests are not labels.
+
+Seeded canary tests cover direct, encoded, fragmented, nested-error, provider,
+process, approval, content-reference, and support-bundle paths. Unknown errors map
+to `WORKFLOW_INTERNAL` after discarding raw strings.
+
+### Diagnostic and debugger contract
+
+#101 adds these exact runtime diagnostic ids:
+
+| Diagnostic id | Fail-closed check |
+| --- | --- |
+| `workflow.schema` | canonical records, decoder versions, migration fixtures |
+| `workflow.catalog` | signed catalog, executor artifacts, compatibility |
+| `workflow.graph` | ports, reachability, bounds, fork/join, conditions |
+| `workflow.anchors` | injected spine, dominator proof, runtime freshness |
+| `workflow.authority` | grant intersection, role separation, target binding |
+| `workflow.scheduler` | lease, ready derivation, outbox, concurrency |
+| `workflow.processes` | intent/registration/attempt/process correspondence |
+| `workflow.cleanup` | cancel-all-then-join and zero descendants |
+| `workflow.recovery` | event chain, unknown outcomes, restart reconciliation |
+| `workflow.accessibility` | outline parity and semantic graph relationships |
+| `workflow.source-maps` | browser/backend/Electron/executor breakpoints |
+
+Diagnostics return only id, status, safe code, schema/catalog/spine/profile
+digests, bounded counts/durations, and remediation id. Every operational file
+declares relevant `diagnostic-coverage`. Missing/throwing contributors fail the
+entire workflow diagnostic projection.
+
+Source maps remain enabled. Debugger proof reaches editor command, compiler
+validation and anchor injection, admission, scheduler selection, intent/outbox,
+executor dispatch, approval, cleanup, and restart reconciliation from browser,
+backend, Electron, and node executor code. Breakpoint mapping is automated in CI
+for deterministic seams and manually evidenced for the real-boundary probe.
+
+### #100 probe and #101 visible E2E handoff
+
+#100 uses the real compiler/store/scheduler, process registry, private Git
+worktree, one real provider node, one deterministic check, and real Ranex
+evidence/verdict lookup. It checks golden canonical digests and fault-injects
+every lifecycle transition. Exact negative fixtures include forged UI anchors,
+direct backend requests, deleted/reordered anchors, self-verification, cycles,
+dangling/unreachable graphs, ambiguous joins, condition abuse, grant widening,
+stale approval/evidence/verdict, branch drift, catalog/executor mismatch, concurrent
+draft writes, outbox duplicates, lease theft/expiry, provider terminal loss,
+hung/escaped child, cleanup residual, and restart around every intent/commit.
+
+The principal probe runs parallel producer/check preparation with one hung child,
+cancels all, TERM/KILL escalates, joins cleanup, restarts, and proves no node or
+merge path advances. A second run loses acknowledgement after an idempotent
+external boundary and reconciles exactly once. Every outcome asserts the safe
+code/event sequence, immutable history, no prohibited canary, and external zero
+process proof.
+
+#101 visible browser and Electron E2E MUST:
+
+1. start with an idea and build a graph using both canvas and keyboard outline;
+2. configure serial and parallel nodes, a condition, failure/finally route,
+   bounded retry, timeout, approval, two roles/providers/models, and target;
+3. validate and save two immutable versions while provoking one CAS conflict;
+4. run research, pseudocode, real probe, approved production implementation,
+   independent deterministic check, evidence, current Ranex verdict, and
+   controlled merge through visible controls;
+5. visibly handle one approval, retryable failure, cancellation, and restart;
+6. independently verify template/snapshot digests, Git/worktree state, Ranex
+   evidence/verdict, merged product behavior, diagnostics, and process inventory;
+7. attempt anchor removal/reorder, forged completion, self-verification, stale
+   evidence/verdict, active-template mutation, and merge after cancel; and
+8. pass accessibility, source-map/debugger, canary log/export,
+   `yarn test`, `yarn audit:observability`, real E2E, Ranex verdict,
+   controlled-merge, and zero-residual-process gates.
+
+The safe success trace is draft/version, compile, admission, node intent/start/
+activity/result/cleanup/terminal in dependency order, anchor satisfaction,
+current verdict, merge preflight, controlled merge, cleanup, and run terminal.
+Failure, cancel, and recovery traces use their named events and cannot omit a
+lifecycle boundary whose absence would prevent diagnosis.
+
+No implementation choice remains for #100: schemas, catalog, editor commands,
+conditions, parallel/retry/deadline semantics, compiler proof, grants/targets,
+snapshots/compatibility, scheduler states, persistence/recovery, safe logs,
+diagnostics, accessibility, fault seams, and visible E2E are fixed. A real probe
+incompatibility blocks production rather than weakening a trust anchor.
+
+## Research and pseudocode gate conclusion
 
 - Public graph editor, durable scheduler, agent orchestration, and workflow
   engine sources are commit-pinned with paths, licenses, maintenance/security
@@ -429,8 +928,8 @@ conventions or production implementation judgment.
   failure recovery, cancellation, and process observability are compared.
 - Mandatory trust anchors are represented as a policy-owned compiled spine and
   enforced independently of editable UI state at compile and runtime boundaries.
-- The selected architecture and unresolved decisions are specific enough for
-  #99 to produce decision-complete pseudocode without reopening the topology.
+- The selected architecture and all formerly unresolved decisions now hand #100
+  a decision-complete real-boundary probe contract.
 
 Production remains blocked until #99, #100, and #101 complete in order and all
 observability, diagnostics, accessibility, debugger, real E2E, Ranex evidence,
