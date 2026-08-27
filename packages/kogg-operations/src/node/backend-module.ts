@@ -11,7 +11,7 @@ import { OperationsReadModelService } from './operations-read-model-service';
 import { OperationsSupportExporter } from './operations-support-export';
 import { OperationsActionRouter } from './operations-action-router';
 import { OperationsOwnerWiring } from './operations-owner-wiring';
-import { KoggOperationsReadModelServicePath, type KoggOperationsReadModelClient } from '../common/operations-read-model-protocol';
+import { KoggOperationsOwnerSink, KoggOperationsReadModelServicePath, type KoggOperationsReadModelClient } from '../common/operations-read-model-protocol';
 
 export default new ContainerModule(bind => {
   bind(OperationRegistry).toSelf().inSingletonScope();
@@ -20,6 +20,7 @@ export default new ContainerModule(bind => {
   bind(OperationDiagnosticContributor).toSelf().inSingletonScope();
   bind(KoggDiagnosticContribution).toService(OperationDiagnosticContributor);
   bind(OperationsReadModel).toSelf().inSingletonScope();
+  bind(KoggOperationsOwnerSink).toService(OperationsReadModel);
   bind(BackendApplicationContribution).toService(OperationsReadModel);
   bind(OperationsReadModelDiagnosticContributor).toSelf().inSingletonScope();
   bind(KoggDiagnosticContribution).toService(OperationsReadModelDiagnosticContributor);

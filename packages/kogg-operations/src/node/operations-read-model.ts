@@ -258,7 +258,7 @@ export class OperationsReadModel implements BackendApplicationContribution {
       integrity: String((db.prepare('PRAGMA integrity_check').get() as Row).integrity_check) === 'ok',
       foreignKeys: db.prepare('PRAGMA foreign_key_check').all().length === 0,
       lifecycle: String(this.meta().lifecycle) as ProjectionLifecycle,
-      ownerCount: this.ownerCount(), faultCount: this.faultCount(),
+      ownerCount: this.ownerCount(), acceptedEventCount: this.count('SELECT count(*) AS count FROM accepted_events'), faultCount: this.faultCount(),
       causalGapCount: this.count("SELECT count(*) AS count FROM projection_faults WHERE safe_code LIKE 'CAUSAL_%'"),
       processAbnormalCount: this.count('SELECT count(*) AS count FROM process_projection WHERE abnormal=1'),
       metricViolationCount: 0

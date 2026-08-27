@@ -23,6 +23,8 @@ import {
   type OperationSafeCode
 } from '@kogg/operations/lib/common/operations-protocol';
 import { runOperation } from '@kogg/operations/lib/node/run-operation';
+import type { OperationsOwnerSink, OwnerEventV1, SafeOwnerPayloadV1 } from '@kogg/operations/lib/common/operations-read-model-protocol';
+import { OperationsReadModel } from '@kogg/operations/lib/node/operations-read-model';
 import { BackendApplicationContribution } from '@theia/core/lib/node';
 import { inject, injectable } from '@theia/core/shared/inversify';
 import type { KoggProjectsService, ProjectBindingAuthority, ProjectBindingSnapshot } from '../common/projects-protocol';
@@ -50,6 +52,7 @@ export class ProjectRegistry implements KoggProjectsService, ProjectBindingAutho
   private accepting = false;
   private readonly trackedOperations = new Map<string, OperationLease>();
   private readonly databasePath = path.join(stateRoot(), 'projects', 'registry.sqlite3');
+  private ownerSink: OperationsOwnerSink | undefined;
 
   constructor(
     @inject(ProjectRepositoryProbe) private readonly repositories: ProjectRepositoryProbe,
@@ -101,6 +104,15 @@ export class ProjectRegistry implements KoggProjectsService, ProjectBindingAutho
       throw error;
     }
   }
+  setOwnerSink(sink?: OperationsOwnerSink): void { this.ownerSink = sink; if (sink && this.database) this.publishOwnerEvents(); }
+  publishOwnerEvents(): void {
+    if (!this.ownerSink || !this.database) return; const database = this.db(); const meta = database.prepare('SELECT owner_id,owner_epoch_id FROM registry_meta WHERE singleton=1').get() as SqlRow; let previous = '0'.repeat(64);
+    for (const row of database.prepare('SELECT * FROM project_events ORDER BY event_sequence').all() as SqlRow[]) {
+      const mapped = mapProjectOwnerEvent(row, stringValue(meta, 'owner_id'), stringValue(meta, 'owner_epoch_id'), previous); previous = mapped.eventDigest;
+      try { this.ownerSink.ingest(mapped); }
+      catch (error) { console.warn('[kogg:projects:registry] owner.publish.failed', { ownerKind: 'project', ownerSequence: mapped.sequence, safeCode: 'OWNER_PUBLISH_FAILED', errorType: errorType(error) }); break; }
+    }
+  }
 
   async snapshot(): Promise<ProjectRegistrySnapshot> {
     await this.refreshRepositoryAvailability();
@@ -137,7 +149,7 @@ export class ProjectRegistry implements KoggProjectsService, ProjectBindingAutho
         database.prepare('INSERT INTO projects(id, display_name, execution_profile_id, created_at, updated_at, revision) VALUES (?, ?, ?, ?, ?, 1)')
           .run(projectId, request.displayName.trim(), 'default', now, now);
         this.insertRepository(database, projectId, repositoryId, request.displayName.trim(), probed, now);
-      });
+      }, { projectId, subjectId: projectId });
       if (!executed) await this.workspaces.remove(projectId);
       await this.completed('project.create', request.requestId, { projectId, repositoryId });
       return this.readSnapshot();
@@ -339,7 +351,7 @@ export class ProjectRegistry implements KoggProjectsService, ProjectBindingAutho
     if (meta.pending_operation_id && meta.pending_to_project_id) {
       const pendingTarget = this.readSnapshot().projects.find(project => project.id === meta.pending_to_project_id);
       if (!pendingTarget || pendingTarget.lifecycle !== 'available') {
-        this.clearPending();
+        this.clearPending(meta.pending_to_project_id, meta.pending_operation_id);
         console.warn('[kogg:projects:switch] project.restore.degraded', {
           operationId: request.requestId, projectId: meta.pending_to_project_id, safeCode: 'PROJECT_REPOSITORY_UNAVAILABLE'
         });
@@ -350,6 +362,7 @@ export class ProjectRegistry implements KoggProjectsService, ProjectBindingAutho
         this.transaction(database => {
           database.prepare(`UPDATE registry_meta SET active_project_id = pending_to_project_id, pending_operation_id = NULL,
             pending_from_project_id = NULL, pending_to_project_id = NULL, pending_started_at = NULL, revision = revision + 1 WHERE singleton = 1`).run();
+          this.appendProjectEvent(database, 'project.switch-completed', meta.pending_to_project_id!, meta.pending_operation_id!);
         });
         console.info('[kogg:projects:switch] project.switch.completed', {
           operationId: meta.pending_operation_id, projectId: meta.pending_to_project_id
@@ -359,7 +372,7 @@ export class ProjectRegistry implements KoggProjectsService, ProjectBindingAutho
         return { snapshot: this.readSnapshot(), action: 'none' };
       }
       const priorUri = meta.pending_from_project_id ? this.workspaces.uri(meta.pending_from_project_id) : undefined;
-      this.clearPending();
+      this.clearPending(meta.pending_to_project_id, meta.pending_operation_id);
       console.warn('[kogg:projects:switch] project.switch.failed', {
         operationId: meta.pending_operation_id, projectId: meta.pending_to_project_id, safeCode: 'PROJECT_RESTORE_FAILED'
       });
@@ -398,7 +411,7 @@ export class ProjectRegistry implements KoggProjectsService, ProjectBindingAutho
       console.info('[kogg:projects:switch] project.switch.cancelled', { operationId: request.operationId });
       const meta = this.meta();
       if (meta.pending_operation_id !== request.operationId) throw new ProjectError('PROJECT_SWITCH_STALE', 'The project switch is no longer pending.');
-      this.clearPending();
+      this.clearPending(meta.pending_to_project_id!, meta.pending_operation_id);
       await this.cancelled(request.operationId);
       console.info('[kogg:projects:switch] project.switch.cleanup.completed', { operationId: request.operationId });
       return this.readSnapshot();
@@ -407,7 +420,7 @@ export class ProjectRegistry implements KoggProjectsService, ProjectBindingAutho
 
   diagnostics(): { integrity: boolean; foreignKeys: boolean; repositoryCount: number; unavailableCount: number; activeConsistent: boolean; pendingConsistent: boolean; activeProcesses: number } {
     const database = this.db();
-    const integrity = stringValue(database.prepare('PRAGMA quick_check').get() as SqlRow, 'quick_check') === 'ok';
+    const integrity = stringValue(database.prepare('PRAGMA quick_check').get() as SqlRow, 'quick_check') === 'ok' && this.projectEventChainIsValid(database);
     const foreignKeys = numberValue(database.prepare('PRAGMA foreign_keys').get(), 'foreign_keys') === 1;
     const repositoryCount = numberValue(database.prepare('SELECT count(*) AS count FROM repositories').get(), 'count');
     const unavailableCount = numberValue(database.prepare("SELECT count(*) AS count FROM repositories WHERE availability != 'available'").get(), 'count');
@@ -421,10 +434,21 @@ export class ProjectRegistry implements KoggProjectsService, ProjectBindingAutho
     const database = this.db();
     const version = numberValue(database.prepare('PRAGMA user_version').get(), 'user_version');
     if (version > 1) throw new ProjectError('PROJECT_REGISTRY_SCHEMA_UNSUPPORTED', 'The project registry was created by a newer Kogg version.');
-    if (version === 1) return;
+    if (version === 1) { this.ensureOperationsOwnerSchema(); return; }
     console.info('[kogg:projects:registry] registry.migration.started', { fromVersion: version, toVersion: 1 });
     this.transaction(db => db.exec(SCHEMA));
+    this.ensureOperationsOwnerSchema();
     console.info('[kogg:projects:registry] registry.migration.completed', { schemaVersion: 1 });
+  }
+
+  private ensureOperationsOwnerSchema(): void {
+    const db = this.db(); const columns = new Set((db.prepare('PRAGMA table_info(registry_meta)').all() as SqlRow[]).map(row => stringValue(row, 'name')));
+    if (!columns.has('owner_id')) db.exec('ALTER TABLE registry_meta ADD COLUMN owner_id TEXT');
+    if (!columns.has('owner_epoch_id')) db.exec('ALTER TABLE registry_meta ADD COLUMN owner_epoch_id TEXT');
+    db.prepare("UPDATE registry_meta SET owner_id=COALESCE(owner_id,?),owner_epoch_id=COALESCE(owner_epoch_id,?) WHERE singleton=1").run(randomUUID(), randomUUID());
+    db.exec(`CREATE TABLE IF NOT EXISTS project_events(event_sequence INTEGER PRIMARY KEY AUTOINCREMENT,event_id TEXT NOT NULL UNIQUE,event_kind TEXT NOT NULL,project_id TEXT NOT NULL,subject_id TEXT NOT NULL,registry_revision INTEGER NOT NULL,observed_at TEXT NOT NULL,previous_fact_digest TEXT NOT NULL,fact_digest TEXT NOT NULL UNIQUE);
+      CREATE TRIGGER IF NOT EXISTS project_events_immutable_update BEFORE UPDATE ON project_events BEGIN SELECT RAISE(ABORT,'immutable event'); END;
+      CREATE TRIGGER IF NOT EXISTS project_events_immutable_delete BEFORE DELETE ON project_events BEGIN SELECT RAISE(ABORT,'immutable event'); END;`);
   }
 
   private assertIntegrity(): void {
@@ -433,8 +457,10 @@ export class ProjectRegistry implements KoggProjectsService, ProjectBindingAutho
     const result = stringValue(database.prepare('PRAGMA integrity_check').get() as SqlRow, 'integrity_check');
     const foreignKeyRows = database.prepare('PRAGMA foreign_key_check').all();
     const enabled = numberValue(database.prepare('PRAGMA foreign_keys').get(), 'foreign_keys') === 1;
-    if (result !== 'ok' || foreignKeyRows.length || !enabled) {
-      console.error('[kogg:projects:registry] registry.integrity.failed', { foreignKeyFailureCount: foreignKeyRows.length });
+    const ownerChainValid = this.projectEventChainIsValid(database);
+    const immutableTriggerCount = numberValue(database.prepare("SELECT count(*) AS count FROM sqlite_master WHERE type='trigger' AND name IN ('project_events_immutable_update','project_events_immutable_delete')").get(), 'count');
+    if (result !== 'ok' || foreignKeyRows.length || !enabled || !ownerChainValid || immutableTriggerCount !== 2) {
+      console.error('[kogg:projects:registry] registry.integrity.failed', { foreignKeyFailureCount: foreignKeyRows.length, ownerChainValid, immutableTriggerCount });
       throw new ProjectError('PROJECT_REGISTRY_INTEGRITY_FAILED', 'The project registry failed its integrity check.');
     }
     console.info('[kogg:projects:registry] registry.integrity.completed');
@@ -445,19 +471,19 @@ export class ProjectRegistry implements KoggProjectsService, ProjectBindingAutho
     if (!meta.pending_operation_id || !meta.pending_started_at) return;
     if (Date.now() - Date.parse(meta.pending_started_at) <= 30_000) return;
     console.warn('[kogg:projects:switch] registry.recovery.started', { operationId: meta.pending_operation_id, safeCode: 'PROJECT_SWITCH_TIMEOUT' });
-    this.clearPending();
+    this.clearPending(meta.pending_to_project_id ?? undefined, meta.pending_operation_id);
     console.info('[kogg:projects:switch] registry.recovery.completed', { operationId: meta.pending_operation_id, safeCode: 'PROJECT_SWITCH_TIMEOUT' });
   }
 
-  private mutate(kind: string, request: MutationRequest, operation: (database: DatabaseSync) => void): boolean {
+  private mutate(kind: string, request: MutationRequest, operation: (database: DatabaseSync) => void, event?: { projectId: string; subjectId: string }): boolean {
     try {
-      return this.mutateChecked(kind, request, operation);
+      return this.mutateChecked(kind, request, operation, event);
     } catch (error) {
       throw normalizeSqliteError(error);
     }
   }
 
-  private mutateChecked(kind: string, request: MutationRequest, operation: (database: DatabaseSync) => void): boolean {
+  private mutateChecked(kind: string, request: MutationRequest, operation: (database: DatabaseSync) => void, event?: { projectId: string; subjectId: string }): boolean {
     this.ensureAccepting();
     validateExpectation(request);
     const digest = requestDigest(kind, request);
@@ -471,6 +497,7 @@ export class ProjectRegistry implements KoggProjectsService, ProjectBindingAutho
       if (this.revision(db) !== request.expectedRegistryRevision) throw new ProjectError('PROJECT_REVISION_CONFLICT', 'The project registry changed. Refresh and try again.');
       operation(db);
       db.prepare('UPDATE registry_meta SET revision = revision + 1 WHERE singleton = 1').run();
+      this.appendProjectEvent(db, projectEventKind(kind), event?.projectId ?? projectIdFrom(request), event?.subjectId ?? subjectIdFrom(request));
       db.prepare(`INSERT INTO request_results(request_id, operation_kind, request_digest, terminal_state, resulting_revision, safe_code, created_at)
         VALUES (?, ?, ?, 'completed', (SELECT revision FROM registry_meta WHERE singleton = 1), 'OK', ?)`)
         .run(request.requestId, kind, digest, new Date().toISOString());
@@ -499,11 +526,18 @@ export class ProjectRegistry implements KoggProjectsService, ProjectBindingAutho
     let began = false;
     try {
       database.exec('BEGIN IMMEDIATE'); began = true;
-      operation(database); database.exec('COMMIT');
+      operation(database); database.exec('COMMIT'); this.publishOwnerEvents();
     } catch (error) {
       if (began) database.exec('ROLLBACK');
       throw normalizeSqliteError(error);
     }
+  }
+
+  private appendProjectEvent(database: DatabaseSync, eventKind: string, projectId: string, subjectId: string): void {
+    const prior = database.prepare('SELECT fact_digest FROM project_events ORDER BY event_sequence DESC LIMIT 1').get() as SqlRow | undefined; const previous = prior ? stringValue(prior, 'fact_digest') : '';
+    const eventId = randomUUID(); const observedAt = new Date().toISOString(); const revision = this.revision(database);
+    const factDigest = projectFactDigest({ event_id: eventId, event_kind: eventKind, project_id: projectId, subject_id: subjectId, registry_revision: revision, observed_at: observedAt, previous_fact_digest: previous });
+    database.prepare('INSERT INTO project_events(event_id,event_kind,project_id,subject_id,registry_revision,observed_at,previous_fact_digest,fact_digest) VALUES(?,?,?,?,?,?,?,?)').run(eventId, eventKind, projectId, subjectId, revision, observedAt, previous, factDigest);
   }
 
   private readSnapshot(): ProjectRegistrySnapshot {
@@ -626,15 +660,33 @@ export class ProjectRegistry implements KoggProjectsService, ProjectBindingAutho
         for (const change of changes) updateRepository.run(change.availability, now, change.id);
         for (const projectId of new Set(changes.map(change => change.projectId))) updateProject.run(now, projectId);
         db.prepare('UPDATE registry_meta SET revision = revision + 1 WHERE singleton = 1').run();
+        for (const projectId of new Set(changes.map(change => change.projectId))) {
+          const unavailable = numberValue(db.prepare("SELECT count(*) AS count FROM repositories WHERE project_id = ? AND availability != 'available'").get(projectId), 'count');
+          this.appendProjectEvent(db, unavailable === 0 ? 'project.available' : 'project.unavailable', projectId, projectId);
+        }
       });
     }
     const unavailableCount = numberValue(database.prepare("SELECT count(*) AS count FROM repositories WHERE availability != 'available'").get(), 'count');
     console.info('[kogg:projects:registry] repository.revalidation.completed', { changedCount: changes.length, unavailableCount });
   }
 
-  private clearPending(): void {
-    this.transaction(database => database.prepare(`UPDATE registry_meta SET pending_operation_id = NULL, pending_from_project_id = NULL,
-      pending_to_project_id = NULL, pending_started_at = NULL, revision = revision + 1 WHERE singleton = 1`).run());
+  private clearPending(projectId?: string, subjectId?: string): void {
+    this.transaction(database => {
+      database.prepare(`UPDATE registry_meta SET pending_operation_id = NULL, pending_from_project_id = NULL,
+        pending_to_project_id = NULL, pending_started_at = NULL, revision = revision + 1 WHERE singleton = 1`).run();
+      if (projectId && subjectId) this.appendProjectEvent(database, 'project.switch-cancelled', projectId, subjectId);
+    });
+  }
+
+  private projectEventChainIsValid(database: DatabaseSync): boolean {
+    let previous = '';
+    for (const row of database.prepare('SELECT * FROM project_events ORDER BY event_sequence').all() as SqlRow[]) {
+      if (stringValue(row, 'previous_fact_digest') !== previous) return false;
+      const digest = projectFactDigest(row);
+      if (digest !== stringValue(row, 'fact_digest')) return false;
+      previous = digest;
+    }
+    return true;
   }
 
   private meta(database = this.db()): {
@@ -703,6 +755,22 @@ export class ProjectRegistry implements KoggProjectsService, ProjectBindingAutho
     if (!operation) return;
     await operation.cancel(); this.trackedOperations.delete(operationId);
   }
+}
+
+function projectEventKind(kind: string): string { return ({ 'project.create': 'project.created', 'project.update': 'project.renamed', 'project.remove': 'project.removed', 'repository.add': 'repository.changed', 'repository.relocate': 'repository.changed', 'repository.remove': 'repository.changed', 'execution-profile.update': 'project.profile-changed', 'task-repository.bind': 'project.binding-changed', 'task-repository.clear': 'project.binding-changed', 'role-assignment.update': 'project.role-changed', 'project.switch': 'project.switch-requested' } as Record<string, string>)[kind] ?? 'project.unavailable'; }
+function projectFactDigest(row: SqlRow): string {
+  return createHash('sha256').update(JSON.stringify([
+    stringValue(row, 'event_id'), stringValue(row, 'event_kind'), stringValue(row, 'project_id'), stringValue(row, 'subject_id'),
+    numberValue(row, 'registry_revision'), stringValue(row, 'observed_at'), stringValue(row, 'previous_fact_digest')
+  ])).digest('hex');
+}
+function projectIdFrom(request: MutationRequest): string { const value = (request as Record<string, unknown>).projectId; if (typeof value === 'string' && SAFE_ID.test(value)) return value; throw new ProjectError('PROJECT_REQUEST_INVALID', 'The project owner event is missing its project identity.'); }
+function subjectIdFrom(request: MutationRequest): string { const row = request as Record<string, unknown>; for (const key of ['repositoryId', 'taskId', 'role', 'operationId', 'requestId']) { const value = row[key]; if (typeof value === 'string' && SAFE_ID.test(value)) return value; } throw new ProjectError('PROJECT_REQUEST_INVALID', 'The project owner event is missing its subject identity.'); }
+function mapProjectOwnerEvent(row: SqlRow, ownerInstanceId: string, epochId: string, previousEventDigest: string): OwnerEventV1 {
+  const eventKind = stringValue(row, 'event_kind'); const lifecycle = eventKind === 'project.created' || eventKind === 'project.available' ? 'available' : eventKind === 'project.removed' || eventKind === 'project.unavailable' ? 'unavailable' : eventKind === 'project.switch-requested' ? 'requested' : eventKind === 'project.switch-completed' ? 'completed' : eventKind === 'project.switch-cancelled' ? 'cancelled' : undefined;
+  const safePayload: SafeOwnerPayloadV1 = lifecycle ? { lifecycle } : { resultClass: 'passed' };
+  const unsigned: Omit<OwnerEventV1, 'eventDigest'> = { ownerKind: 'project', ownerInstanceId, ownerSchemaVersion: 1, epochId, sequence: String(numberValue(row, 'event_sequence')), eventId: stringValue(row, 'event_id'), eventKind, factId: stringValue(row, 'subject_id'), factDigest: stringValue(row, 'fact_digest'), previousEventDigest, causalParents: [], correlations: { projectId: stringValue(row, 'project_id') }, observedAt: stringValue(row, 'observed_at'), safePayload };
+  return { ...unsigned, eventDigest: OperationsReadModel.digest(unsigned) };
 }
 
 const SCHEMA = `

@@ -10,6 +10,6 @@ import { OperationsReadModel } from './operations-read-model';
 export class OperationsOwnerWiring implements BackendApplicationContribution {
   constructor(@inject(OperationRegistry) private readonly registry: OperationRegistry,
     @inject(OperationsReadModel) private readonly projection: OperationsReadModel) {}
-  onStart(): void { this.projection.registerOwner('operation'); this.registry.setOwnerSink(this.projection); this.registry.publishOwnerEvents(); }
+  onStart(): void { this.projection.registerOwner('operation'); this.registry.setOwnerSink(this.projection); }
   onStop(): void { this.registry.setOwnerSink(undefined); }
 }

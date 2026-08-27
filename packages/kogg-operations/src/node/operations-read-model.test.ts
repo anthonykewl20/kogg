@@ -41,7 +41,7 @@ test('accepts a chained owner stream idempotently and rebuilds an identical safe
     const after = fixture.model.snapshot();
     assert.deepEqual(after.runs, before.runs); assert.notEqual(after.projectionEpoch, before.projectionEpoch);
     const afterMetrics = fixture.model.metrics(); assert.notEqual(afterMetrics.projectionEpoch, beforeMetrics.projectionEpoch); assert.deepEqual(afterMetrics.values, beforeMetrics.values);
-    assert.deepEqual(fixture.model.diagnostics(), { integrity: true, foreignKeys: true, lifecycle: 'current', ownerCount: 3, faultCount: 0, causalGapCount: 0, processAbnormalCount: 0, metricViolationCount: 0 });
+    assert.deepEqual(fixture.model.diagnostics(), { integrity: true, foreignKeys: true, lifecycle: 'current', ownerCount: 3, acceptedEventCount: 7, faultCount: 0, causalGapCount: 0, processAbnormalCount: 0, metricViolationCount: 0 });
   } finally { await fixture.close(); }
 });
 

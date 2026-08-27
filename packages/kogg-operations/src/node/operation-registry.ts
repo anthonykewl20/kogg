@@ -477,7 +477,7 @@ export class OperationRegistry implements OperationRegistryApi, BackendApplicati
     for (const row of database.prepare('SELECT * FROM operation_events ORDER BY sequence').all() as SqlRow[]) {
       const mapped = mapOwnerEvent(database, row, String(meta.owner_id), String(meta.owner_epoch_id), previous); previous = mapped.eventDigest;
       try { this.ownerSink.ingest(mapped); }
-      catch (error) { console.warn('[kogg:operations:owners] owner.publish.failed', { ownerKind: 'operation', ownerSequence: mapped.sequence, safeCode: error instanceof Error ? error.message.slice(0, 64) : 'OWNER_PUBLISH_FAILED', errorType: errorType(error) }); break; }
+      catch (error) { console.warn('[kogg:operations:owners] owner.publish.failed', { ownerKind: 'operation', ownerSequence: mapped.sequence, safeCode: 'OWNER_PUBLISH_FAILED', errorType: errorType(error) }); break; }
     }
   }
   private appendEvent(database: DatabaseSync, operationId: string, processId: string | null, eventName: string): void {
