@@ -4,7 +4,7 @@ import { spawn } from 'node:child_process';
 import { mkdtemp, rm } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { KOGG_RANEX_COMMIT, KOGG_RANEX_PROTOCOL_VERSION } from '@kogg/contracts';
+import { KOGG_RANEX_COMMIT, KOGG_RANEX_PROTOCOL_VERSION, type RepositoryStateV1, type TaskExecutionBindingV1 } from '@kogg/contracts';
 import { OperationRegistry } from '@kogg/operations/lib/node/operation-registry';
 import type { ILogger } from '@theia/core/lib/common/logger';
 import { ProcessManager } from '@theia/process/lib/node/process-manager';
@@ -19,15 +19,22 @@ test('handshakes with the pinned Ranex kernel and fails closed on missing journa
     const capabilities = await bridge.start();
     assert.equal(capabilities.ranexCommit, KOGG_RANEX_COMMIT);
     assert.equal(capabilities.protocolVersion, KOGG_RANEX_PROTOCOL_VERSION);
-    assert.deepEqual(capabilities.operations.map(operation => operation.operation), ['kernel.handshake', 'kernel.health']);
+    assert.deepEqual(capabilities.operations.map(operation => operation.operation), ['kernel.handshake', 'kernel.health', 'task.bind']);
     const verification = await bridge.verifyJournal();
     assert.equal(verification.valid, false);
     assert.equal(verification.reason, 'missing');
     const unavailable = await bridge.execute('task.bind', {});
     assert.equal(unavailable.status, 'refused');
-    assert.equal(unavailable.safeCode, 'KERNEL_CAPABILITY_UNAVAILABLE');
+    assert.equal(unavailable.safeCode, 'KERNEL_AUTHORITY_INVALID');
     assert.equal(unavailable.projection, null);
     assert.equal(unavailable.journal, null);
+    const committed = await bridge.bindTask(fixtureBinding());
+    assert.equal(committed.status, 'succeeded');
+    assert.equal(committed.safeCode, 'KERNEL_OK');
+    assert.equal(committed.journal?.sequence, '1');
+    const replay = await bridge.bindTask(fixtureBinding());
+    assert.deepEqual(replay, { ...committed, requestId: replay.requestId, operationId: replay.operationId });
+    assert.equal((await bridge.verifyJournal()).valid, true);
     await bridge.shutdown();
     assert.equal((await operations.snapshot()).active.length, 0);
   } finally {
@@ -83,3 +90,25 @@ test('maps a structurally invalid operation to a closed protocol refusal', async
 });
 
 function logger(): ILogger { return { debug() {}, info() {}, warn() {}, error() {} } as unknown as ILogger; }
+
+function fixtureBinding(): TaskExecutionBindingV1 {
+  const repository = fixtureRepository();
+  return {
+    taskId: '11111111-1111-4111-8111-111111111111', taskRevision: 3, specificationDigest: `sha256:${'1'.repeat(64)}`,
+    approvalId: '22222222-2222-4222-8222-222222222222', approvalDigest: `sha256:${'2'.repeat(64)}`,
+    authorityDigest: `sha256:${'3'.repeat(64)}`, projectId: '33333333-3333-4333-8333-333333333333',
+    repositoryId: '44444444-4444-4444-8444-444444444444', repositoryIdentityDigest: `sha256:${'4'.repeat(64)}`,
+    protectedSource: repository, worktreeId: '55555555-5555-4555-8555-555555555555',
+    worktreeIdentityDigest: repository.worktreeIdentity, baseState: repository,
+    executionProfileDigest: `sha256:${'5'.repeat(64)}`, expiresAt: '2099-08-27T07:30:00.000Z'
+  };
+}
+
+function fixtureRepository(): RepositoryStateV1 {
+  return {
+    objectFormat: 'sha1', commitObjectId: '1'.repeat(40), treeObjectId: '2'.repeat(40),
+    gitCommonDirectoryIdentity: `sha256:${'6'.repeat(64)}`, worktreeIdentity: `sha256:${'7'.repeat(64)}`,
+    indexDigest: `sha256:${'8'.repeat(64)}`, trackedContentDigest: `sha256:${'9'.repeat(64)}`,
+    untrackedPolicyDigest: `sha256:${'a'.repeat(64)}`, isClean: true
+  };
+}

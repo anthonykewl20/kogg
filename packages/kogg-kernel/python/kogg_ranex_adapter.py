@@ -10,6 +10,7 @@ import re
 import struct
 import sys
 import unicodedata
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -27,7 +28,7 @@ MAX_PENDING_REQUESTS = 64
 MAX_PENDING_RESPONSE_BYTES = 4 * 1024 * 1024
 DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
 UUID = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$")
-IMPLEMENTED_OPERATIONS = {"kernel.handshake": 2, "kernel.health": 1}
+IMPLEMENTED_OPERATIONS = {"kernel.handshake": 2, "kernel.health": 1, "task.bind": 1}
 
 
 class ProtocolRefusal(Exception):
@@ -110,6 +111,129 @@ def _journal_state() -> str:
         return "invalid"
 
 
+class _KernelFact:
+    def __init__(self, record: dict[str, Any]) -> None:
+        self._record = record
+
+    def as_record(self) -> dict[str, Any]:
+        return self._record
+
+
+def _journal_position(records: list[dict[str, Any]], sequence: int | None = None) -> dict[str, str]:
+    limit = len(records) if sequence is None else sequence
+    link = "sha256:" + "0" * 64
+    for record in records[:limit]:
+        link = "sha256:" + hashlib.sha256(_canonical({"prev_link": link, "record": record})).hexdigest()
+    return {"sequence": str(limit), "rootDigest": link}
+
+
+def _closed(record: Any, fields: set[str]) -> dict[str, Any]:
+    if not isinstance(record, dict) or set(record) != fields:
+        raise ProtocolRefusal("KERNEL_TASK_BINDING_MISMATCH")
+    return record
+
+
+def _uuid(value: Any) -> str:
+    if not isinstance(value, str) or not UUID.fullmatch(value):
+        raise ProtocolRefusal("KERNEL_TASK_BINDING_MISMATCH")
+    return value
+
+
+def _sha256(value: Any) -> str:
+    if not isinstance(value, str) or not DIGEST.fullmatch(value):
+        raise ProtocolRefusal("KERNEL_TASK_BINDING_MISMATCH")
+    return value
+
+
+def _timestamp(value: Any) -> str:
+    if not isinstance(value, str) or not re.fullmatch(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z", value):
+        raise ProtocolRefusal("KERNEL_TASK_BINDING_MISMATCH")
+    try:
+        datetime.strptime(value, "%Y-%m-%dT%H:%M:%S.%fZ")
+    except ValueError as error:
+        raise ProtocolRefusal("KERNEL_TASK_BINDING_MISMATCH") from error
+    return value
+
+
+def _repository_state(value: Any) -> dict[str, Any]:
+    state = _closed(value, {
+        "objectFormat", "commitObjectId", "treeObjectId", "gitCommonDirectoryIdentity", "worktreeIdentity",
+        "indexDigest", "trackedContentDigest", "untrackedPolicyDigest", "isClean",
+    })
+    object_format = state["objectFormat"]
+    object_length = 40 if object_format == "sha1" else 64 if object_format == "sha256" else 0
+    if object_length == 0 or not isinstance(state["commitObjectId"], str) or not re.fullmatch(rf"[0-9a-f]{{{object_length}}}", state["commitObjectId"]):
+        raise ProtocolRefusal("KERNEL_REPOSITORY_MISMATCH")
+    if not isinstance(state["treeObjectId"], str) or not re.fullmatch(rf"[0-9a-f]{{{object_length}}}", state["treeObjectId"]):
+        raise ProtocolRefusal("KERNEL_REPOSITORY_MISMATCH")
+    for field in ("gitCommonDirectoryIdentity", "worktreeIdentity", "indexDigest", "trackedContentDigest", "untrackedPolicyDigest"):
+        _sha256(state[field])
+    if not isinstance(state["isClean"], bool):
+        raise ProtocolRefusal("KERNEL_REPOSITORY_MISMATCH")
+    return state
+
+
+def _task_binding(value: Any) -> dict[str, Any]:
+    binding = _closed(value, {
+        "taskId", "taskRevision", "specificationDigest", "approvalId", "approvalDigest", "authorityDigest",
+        "projectId", "repositoryId", "repositoryIdentityDigest", "protectedSource", "worktreeId",
+        "worktreeIdentityDigest", "baseState", "executionProfileDigest", "expiresAt",
+    })
+    for field in ("taskId", "approvalId", "projectId", "repositoryId", "worktreeId"):
+        _uuid(binding[field])
+    if not isinstance(binding["taskRevision"], int) or isinstance(binding["taskRevision"], bool) or binding["taskRevision"] < 1:
+        raise ProtocolRefusal("KERNEL_TASK_BINDING_MISMATCH")
+    for field in ("specificationDigest", "approvalDigest", "authorityDigest", "repositoryIdentityDigest", "worktreeIdentityDigest", "executionProfileDigest"):
+        _sha256(binding[field])
+    _repository_state(binding["protectedSource"])
+    _repository_state(binding["baseState"])
+    expires_at = _timestamp(binding["expiresAt"])
+    if datetime.strptime(expires_at, "%Y-%m-%dT%H:%M:%S.%fZ") <= datetime.utcnow():
+        raise ProtocolRefusal("KERNEL_AUTHORITY_INVALID")
+    return binding
+
+
+def _bind_task(request: dict[str, Any], body: dict[str, Any]) -> tuple[dict[str, Any], dict[str, str]]:
+    closed = _closed(body, {"binding", "bindingDigest"})
+    binding = _task_binding(closed["binding"])
+    binding_digest = _domain_digest("task-binding", binding)
+    if closed["bindingDigest"] != binding_digest:
+        raise ProtocolRefusal("KERNEL_TASK_BINDING_MISMATCH")
+    journal = Journal(_journal_path())
+    try:
+        if _journal_path().is_file() and not journal.verify():
+            raise ProtocolRefusal("KERNEL_JOURNAL_INTEGRITY")
+        records = journal.entries() if _journal_path().is_file() else []
+    except ProtocolRefusal:
+        raise
+    except Exception as error:
+        raise ProtocolRefusal("KERNEL_JOURNAL_INTEGRITY") from error
+    if any(not isinstance(record, dict) for record in records):
+        raise ProtocolRefusal("KERNEL_JOURNAL_INTEGRITY")
+    prior = [record for record in records if record.get("kind") == "kogg.task-binding.v1" and record.get("idempotencyKey") == request["idempotencyKey"]]
+    if len(prior) > 1:
+        raise ProtocolRefusal("KERNEL_JOURNAL_AMBIGUOUS")
+    projection = {"taskBindingDigest": binding_digest, "taskId": binding["taskId"], "taskRevision": binding["taskRevision"]}
+    if prior:
+        if prior[0].get("bodyDigest") != request["bodyDigest"] or prior[0].get("bindingDigest") != binding_digest:
+            raise ProtocolRefusal("KERNEL_IDEMPOTENCY_CONFLICT")
+        return projection, _journal_position(records, records.index(prior[0]) + 1)
+    fact = {
+        "kind": "kogg.task-binding.v1", "idempotencyKey": request["idempotencyKey"],
+        "bodyDigest": request["bodyDigest"], "bindingDigest": binding_digest, "binding": binding,
+    }
+    try:
+        root = journal.append(_KernelFact(fact))
+        committed = journal.entries()
+        if not journal.verify() or not committed or committed[-1] != fact:
+            raise ProtocolRefusal("KERNEL_JOURNAL_INTEGRITY")
+    except ProtocolRefusal:
+        raise
+    except Exception as error:
+        raise ProtocolRefusal("KERNEL_JOURNAL_INTEGRITY") from error
+    return projection, {"sequence": str(len(committed)), "rootDigest": root}
+
+
 def _capabilities() -> dict[str, Any]:
     provenance = _provenance()
     qualified = platform.system() == "Linux"
@@ -174,7 +298,7 @@ def _validate_envelope(request: Any) -> dict[str, Any]:
     return request
 
 
-def _dispatch(request: dict[str, Any]) -> dict[str, Any]:
+def _dispatch(request: dict[str, Any]) -> tuple[dict[str, Any], dict[str, str] | None]:
     operation = request["operation"]
     body = request["body"]
     if not isinstance(body, dict):
@@ -184,18 +308,20 @@ def _dispatch(request: dict[str, Any]) -> dict[str, Any]:
         process_id = body.get("processRegistrationId", "")
         if set(body) != required or body["adapterArtifactDigest"] != _adapter_digest() or body["schemaSetDigest"] != SCHEMA_SET_DIGEST or not isinstance(process_id, str) or not UUID.fullmatch(process_id):
             raise ProtocolRefusal("KERNEL_PROVENANCE_MISMATCH")
-        return _capabilities()
+        return _capabilities(), None
     if operation == "kernel.health":
         if body:
             raise ProtocolRefusal("KERNEL_PROTOCOL_INVALID")
         capabilities = _capabilities()
         journal = _journal_state()
         status = "ready" if capabilities["confinement"] == "qualified" and journal == "valid" else "degraded"
-        return {"status": status, "journal": journal, "capabilities": capabilities}
+        return {"status": status, "journal": journal, "capabilities": capabilities}, None
+    if operation == "task.bind":
+        return _bind_task(request, body)
     raise ProtocolRefusal("KERNEL_CAPABILITY_UNAVAILABLE")
 
 
-def _result(request: dict[str, Any], status: str, safe_code: str, projection: Any = None) -> dict[str, Any]:
+def _result(request: dict[str, Any], status: str, safe_code: str, projection: Any = None, journal: dict[str, str] | None = None) -> dict[str, Any]:
     result_digest = _digest(projection) if projection is not None else None
     return {
         "protocol": PROTOCOL,
@@ -204,7 +330,7 @@ def _result(request: dict[str, Any], status: str, safe_code: str, projection: An
         "status": status,
         "safeCode": safe_code,
         "resultDigest": result_digest,
-        "journal": None,
+        "journal": journal,
         "projection": projection,
     }
 
@@ -247,7 +373,8 @@ def main() -> int:
             if isinstance(decoded, dict):
                 request = decoded
             request = _validate_envelope(decoded)
-            response = _result(request, "succeeded", "KERNEL_OK", _dispatch(request))
+            projection, journal = _dispatch(request)
+            response = _result(request, "succeeded", "KERNEL_OK", projection, journal)
         except ProtocolRefusal as error:
             response = _result(request, "refused", error.safe_code)
         except Exception:  # observability-exempt: unknown Python failures are intentionally collapsed to a content-free safe code.

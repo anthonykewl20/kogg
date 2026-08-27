@@ -129,6 +129,12 @@ export interface TaskExecutionBindingV1 {
   readonly expiresAt: string;
 }
 
+export interface TaskBindingProjectionV1 {
+  readonly taskBindingDigest: KoggDigest;
+  readonly taskId: string;
+  readonly taskRevision: number;
+}
+
 export interface ProducerBindingV1 {
   readonly producerId: string;
   readonly producerRole: 'implementation';
@@ -217,6 +223,7 @@ export interface KernelBridge {
   health(): Promise<KernelHealth>;
   capabilities(): Promise<KernelCapabilities>;
   execute<TProjection extends KernelJson>(operation: KernelOperationV2, body: KernelJson): Promise<KernelResultV2<TProjection>>;
+  bindTask(binding: TaskExecutionBindingV1): Promise<KernelResultV2<TaskBindingProjectionV1>>;
   verifyJournal(): Promise<{ readonly valid: boolean; readonly reason?: string }>;
   shutdown(): Promise<void>;
 }

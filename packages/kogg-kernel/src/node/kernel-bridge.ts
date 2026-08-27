@@ -15,6 +15,8 @@ import {
   KernelHealth,
   type KernelOperationV2,
   type KernelResultV2,
+  type TaskBindingProjectionV1,
+  type TaskExecutionBindingV1,
   KOGG_RANEX_COMMIT,
   KOGG_RANEX_PROTOCOL,
   KOGG_RANEX_PROTOCOL_VERSION,
@@ -31,6 +33,7 @@ import { PassThrough, type Readable, type Writable } from 'node:stream';
 
 interface PendingRequest {
   readonly operationId: string;
+  readonly operation: KernelOperationV2;
   readonly resolve: (value: unknown) => void;
   readonly reject: (reason: Error) => void;
   readonly timer: NodeJS.Timeout;
@@ -151,7 +154,19 @@ export class KernelBridgeImpl implements KernelBridge {
   }
 
   execute<TProjection extends KernelJson>(operation: KernelOperationV2, body: KernelJson): Promise<KernelResultV2<TProjection>> {
+    if (operation === 'task.bind') {
+      console.warn('[kogg:kernel:bridge] request.refused', { operation, safeCode: 'KERNEL_AUTHORITY_INVALID' });
+      return Promise.resolve({
+        protocol: KOGG_RANEX_PROTOCOL, requestId: randomUUID(), operationId: randomUUID(), status: 'refused',
+        safeCode: 'KERNEL_AUTHORITY_INVALID', resultDigest: null, journal: null, projection: null
+      });
+    }
     return this.requestResult<TProjection>(operation, body);
+  }
+
+  bindTask(binding: TaskExecutionBindingV1): Promise<KernelResultV2<TaskBindingProjectionV1>> {
+    const bindingDigest = domainDigest('task-binding', binding as unknown as KernelJson);
+    return this.requestResult<TaskBindingProjectionV1>('task.bind', { binding: binding as unknown as KernelJson, bindingDigest });
   }
 
   async verifyJournal(): Promise<{ readonly valid: boolean; readonly reason?: string }> {
@@ -224,7 +239,7 @@ export class KernelBridgeImpl implements KernelBridge {
         console.warn('[kogg:kernel:bridge] request.refused', { requestId, operationId, operation, safeCode: 'KERNEL_OUTCOME_UNKNOWN' });
         reject(new Error('KERNEL_OUTCOME_UNKNOWN'));
       }, 15_000);
-      this.pending.set(requestId, { operationId, resolve: value => resolve(value as KernelResultV2<T>), reject, timer });
+      this.pending.set(requestId, { operationId, operation, resolve: value => resolve(value as KernelResultV2<T>), reject, timer });
       this.processLease?.activity();
       console.info('[kogg:kernel:bridge] request.validated', { requestId, operationId, operation, operationVersion: KERNEL_OPERATIONS[operation] });
       this.child?.stdin.write(frame);
@@ -251,6 +266,8 @@ export class KernelBridgeImpl implements KernelBridge {
     const pending = this.pending.get(response.requestId);
     if (!pending) return;
     if (response.operationId !== pending.operationId || !['succeeded', 'refused', 'unknown'].includes(response.status)) throw new Error('correlation');
+    if ((response.status === 'succeeded') !== (response.safeCode === 'KERNEL_OK')) throw new Error('safe-code');
+    if (!validJournal(response.journal) || (response.status === 'succeeded' && JOURNALED_OPERATIONS.has(pending.operation)) !== (response.journal !== null)) throw new Error('journal');
     if ((response.projection === null) !== (response.resultDigest === null) || (response.projection !== null && sha256(Buffer.from(canonicalKernelJson(response.projection as KernelJson), 'utf8')) !== response.resultDigest)) throw new Error('digest');
     clearTimeout(pending.timer);
     this.pending.delete(response.requestId);
@@ -319,6 +336,13 @@ export class KernelBridgeImpl implements KernelBridge {
 function sha256(value: Uint8Array): `sha256:${string}` { return `sha256:${createHash('sha256').update(value).digest('hex')}`; }
 function domainDigest(domain: string, value: KernelJson): `sha256:${string}` {
   return sha256(Buffer.concat([Buffer.from(`kogg:${domain}:v1\n`, 'utf8'), Buffer.from(canonicalKernelJson(value), 'utf8')]));
+}
+const JOURNALED_OPERATIONS = new Set<KernelOperationV2>([
+  'task.bind', 'producer.dispatch', 'suite.freeze', 'suite.execute', 'evidence.admit', 'gate.evaluate', 'operation.reconcile', 'operation.cancel'
+]);
+function validJournal(value: KernelResultV2['journal']): boolean {
+  return value === null || (Object.keys(value).sort().join(',') === 'rootDigest,sequence'
+    && /^(?:0|[1-9][0-9]*)$/u.test(value.sequence) && /^sha256:[0-9a-f]{64}$/u.test(value.rootDigest));
 }
 
 class KoggKernelProcess extends Process {
