@@ -88,6 +88,18 @@ test('resumes bounded projection changes and requires resync after rebuild', asy
   } finally { fixture.model.setClient(undefined); await fixture.close(); }
 });
 
+test('caps durable stream history and requires resync across a retention gap', async () => {
+  const fixture = await createFixture(); const originalInfo = console.info; const originalDebug = console.debug;
+  console.info = () => undefined; console.debug = () => undefined;
+  try {
+    const before = fixture.model.subscribe(); const owner = fixture.owner('workflow'); const runId = randomUUID();
+    for (let index = 0; index < 1_001; index++) fixture.model.ingest(owner.event('node.started', { runId, nodeId: `node-${index}` }, { lifecycle: 'started' }));
+    const retained = fixture.model.subscribe(); assert.equal(retained.state, 'current'); assert.equal(retained.changes.length, 1_000); assert.equal(retained.changes[0]?.sequence, '2');
+    const expired = fixture.model.subscribe(before.cursor); assert.equal(expired.state, 'resync-required'); assert.deepEqual(expired.changes, []);
+    assert.equal(fixture.model.streamDiagnostics().bounded, true);
+  } finally { console.info = originalInfo; console.debug = originalDebug; await fixture.close(); }
+});
+
 test('broadcasts to independent windows and removes closed or failed clients', async () => {
   const fixture = await createFixture(); const first: string[] = []; const second: string[] = []; let failedCalls = 0;
   const closeFirst = fixture.model.addClient({ projectionChanged(change) { first.push(change.sequence); } });

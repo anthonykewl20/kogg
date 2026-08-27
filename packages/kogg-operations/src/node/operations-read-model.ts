@@ -40,6 +40,8 @@ const TERMINAL_RUN_EVENTS: Readonly<Record<string, RunLifecycle>> = {
 };
 const RUN_LIFECYCLES = new Set<RunLifecycle>(['queued', 'active', 'waiting', 'retrying', 'blocked', 'failed', 'cancelling', 'cleaning', 'recovered', 'completed', 'unknown']);
 const HISTOGRAM_BUCKETS = [10, 50, 100, 250, 500, 1_000, 2_500, 5_000, 15_000, 60_000, 300_000] as const;
+const STREAM_CHANGE_LIMIT = 1_000;
+const STREAM_BYTE_LIMIT = 1_048_576;
 
 export class ProjectionFault extends Error {
   constructor(readonly safeCode: string) { super(safeCode); this.name = 'ProjectionFault'; }
@@ -177,11 +179,16 @@ export class OperationsReadModel implements BackendApplicationContribution {
         throw error;
       }
     }
+    const earliest = this.db().prepare('SELECT sequence FROM projection_changes ORDER BY CAST(sequence AS INTEGER) LIMIT 1').get() as Row | undefined;
+    if (resumeCursor && earliest && BigInt(after) + 1n < BigInt(String(earliest.sequence))) {
+      console.warn('[kogg:operations:stream] resync-required', { safeCode: 'STREAM_HISTORY_EXPIRED' });
+      return { state: 'resync-required', cursor: this.encodeCursor('stream', queryDigest, String(this.meta().change_sequence), ''), changes: [] };
+    }
     const rows = this.db().prepare('SELECT sequence,change_kind,run_id,protected,approximate_bytes FROM projection_changes WHERE CAST(sequence AS INTEGER)>CAST(? AS INTEGER) ORDER BY CAST(sequence AS INTEGER) LIMIT 1001').all(after) as Row[];
     let bytes = 0; const changes: OperationsProjectionChangeV1[] = [];
     for (const row of rows) {
       bytes += Number(row.approximate_bytes);
-      if (changes.length >= 1_000 || bytes > 1_048_576) {
+      if (changes.length >= STREAM_CHANGE_LIMIT || bytes > STREAM_BYTE_LIMIT) {
         console.warn('[kogg:operations:stream] backpressure', { bufferedCount: changes.length, bufferedBytes: Math.min(bytes, 1_048_577) });
         console.warn('[kogg:operations:stream] resync-required', { safeCode: 'STREAM_BUFFER_EXCEEDED' });
         return { state: 'resync-required', cursor: this.encodeCursor('stream', queryDigest, String(this.meta().change_sequence), ''), changes: [] };
@@ -275,7 +282,8 @@ export class OperationsReadModel implements BackendApplicationContribution {
 
   streamDiagnostics(): { clientCount: number; cursorRoundTrip: boolean; resyncRecovery: boolean; bounded: boolean } {
     const initial = this.subscribe(); const resumed = this.subscribe(initial.cursor); const recovered = this.subscribe('diagnostic-invalid-cursor');
-    return { clientCount: this.clients.size, cursorRoundTrip: initial.state === 'current' && resumed.state === 'current', resyncRecovery: recovered.state === 'resync-required', bounded: initial.changes.length <= 1_000 && resumed.changes.length <= 1_000 };
+    const history = this.db().prepare('SELECT count(*) AS count,COALESCE(sum(approximate_bytes),0) AS bytes FROM projection_changes').get() as Row;
+    return { clientCount: this.clients.size, cursorRoundTrip: initial.state === 'current' && resumed.state === 'current', resyncRecovery: recovered.state === 'resync-required', bounded: initial.changes.length <= STREAM_CHANGE_LIMIT && resumed.changes.length <= STREAM_CHANGE_LIMIT && Number(history.count) <= STREAM_CHANGE_LIMIT && Number(history.bytes) <= STREAM_BYTE_LIMIT };
   }
 
   storagePermissionsValid(): boolean { return process.platform === 'win32' || (statSync(this.databasePath).mode & 0o077) === 0; }
@@ -456,7 +464,18 @@ export class OperationsReadModel implements BackendApplicationContribution {
   }
   private setLifecycle(lifecycle: ProjectionLifecycle): void { this.db().prepare('UPDATE projection_meta SET lifecycle=? WHERE singleton=1').run(lifecycle); }
   private reevaluateLifecycle(): void { const unavailable = this.count("SELECT count(*) AS count FROM configured_owners WHERE status='unavailable'"); this.setLifecycle(this.faultCount() || unavailable ? 'degraded' : 'current'); }
-  private appendChange(db: DatabaseSync, kind: 'owner-event' | 'rebuild', runId: string | undefined, isProtected: boolean): void { const next = String(BigInt(String((db.prepare('SELECT change_sequence FROM projection_meta WHERE singleton=1').get() as Row).change_sequence)) + 1n); const size = 96 + (runId?.length ?? 0); db.prepare('INSERT INTO projection_changes(sequence,change_kind,run_id,protected,approximate_bytes) VALUES(?,?,?,?,?)').run(next, kind, runId ?? null, isProtected ? 1 : 0, size); db.prepare('UPDATE projection_meta SET change_sequence=? WHERE singleton=1').run(next); }
+  private appendChange(db: DatabaseSync, kind: 'owner-event' | 'rebuild', runId: string | undefined, isProtected: boolean): void {
+    const next = String(BigInt(String((db.prepare('SELECT change_sequence FROM projection_meta WHERE singleton=1').get() as Row).change_sequence)) + 1n); const size = 96 + (runId?.length ?? 0);
+    db.prepare('INSERT INTO projection_changes(sequence,change_kind,run_id,protected,approximate_bytes) VALUES(?,?,?,?,?)').run(next, kind, runId ?? null, isProtected ? 1 : 0, size); db.prepare('UPDATE projection_meta SET change_sequence=? WHERE singleton=1').run(next);
+    const excess = this.countRows(db, 'SELECT max(count(*)-?,0) AS count FROM projection_changes', STREAM_CHANGE_LIMIT);
+    if (excess) db.prepare('DELETE FROM projection_changes WHERE sequence IN (SELECT sequence FROM projection_changes ORDER BY CAST(sequence AS INTEGER) LIMIT ?)').run(excess);
+    let retainedBytes = this.countRows(db, 'SELECT COALESCE(sum(approximate_bytes),0) AS count FROM projection_changes');
+    while (retainedBytes > STREAM_BYTE_LIMIT) {
+      const oldest = db.prepare('SELECT sequence,approximate_bytes FROM projection_changes ORDER BY CAST(sequence AS INTEGER) LIMIT 1').get() as Row | undefined;
+      if (!oldest) break;
+      db.prepare('DELETE FROM projection_changes WHERE sequence=?').run(String(oldest.sequence)); retainedBytes -= Number(oldest.approximate_bytes);
+    }
+  }
   private changeFromRow(row: Row): OperationsProjectionChangeV1 { return { projectionEpoch: String(this.meta().projection_epoch), sequence: String(row.sequence), kind: String(row.change_kind) as 'owner-event' | 'rebuild', ...(row.run_id ? { runId: String(row.run_id) } : {}), protected: Number(row.protected) === 1 }; }
   private notifyLatestChange(): void {
     if (!this.clients.size) return; const row = this.db().prepare('SELECT * FROM projection_changes ORDER BY CAST(sequence AS INTEGER) DESC LIMIT 1').get() as Row | undefined; if (!row) return;
@@ -476,6 +495,7 @@ export class OperationsReadModel implements BackendApplicationContribution {
   private ownerCount(): number { return this.count('SELECT count(DISTINCT owner_kind) AS count FROM owner_cursors'); }
   private faultCount(): number { return this.count('SELECT count(*) AS count FROM projection_faults'); }
   private count(sql: string): number { return Number((this.db().prepare(sql).get() as Row).count); }
+  private countRows(db: DatabaseSync, sql: string, ...values: readonly (string | number)[]): number { return Number((db.prepare(sql).get(...values) as Row).count); }
   private db(): DatabaseSync { if (!this.database) throw new ProjectionFault('PROJECTION_STORE_UNAVAILABLE'); return this.database; }
   private transaction(run: (database: DatabaseSync) => void): void { const db = this.db(); db.exec('BEGIN IMMEDIATE'); try { run(db); db.exec('COMMIT'); } catch (error) { db.exec('ROLLBACK'); throw error; } }
 }
