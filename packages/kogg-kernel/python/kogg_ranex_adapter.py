@@ -160,6 +160,8 @@ def _validate_envelope(request: Any) -> dict[str, Any]:
     if not UUID.fullmatch(request_id) or not UUID.fullmatch(operation_id):
         raise ProtocolRefusal("KERNEL_PROTOCOL_INVALID")
     operation = request["operation"]
+    if not isinstance(operation, str):
+        raise ProtocolRefusal("KERNEL_PROTOCOL_INVALID")
     if operation not in IMPLEMENTED_OPERATIONS:
         raise ProtocolRefusal("KERNEL_CAPABILITY_UNAVAILABLE")
     if request["operationVersion"] != IMPLEMENTED_OPERATIONS[operation]:

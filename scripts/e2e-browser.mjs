@@ -97,7 +97,7 @@ try {
     }
 
     await openCommand(page, 'Kogg: Run Diagnostics');
-    await page.getByText(/Diagnostics: FAIL.*kernel\.journal/su).first().waitFor({ timeout: 15_000 });
+    await page.getByText(/Diagnostics: FAIL.*kernel\.bindings/su).first().waitFor({ timeout: 15_000 });
     await page.keyboard.press('Escape');
     await openCommand(page, 'Kogg: Export Diagnostic Support Bundle');
     const supportFiles = await waitForSupportBundle(path.join(state, 'support'));
