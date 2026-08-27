@@ -626,7 +626,9 @@ async function ensureProjectsWidget(page) {
     }
     let active = await renderedWidget(widgets);
     if (active.area === 0) {
-        await openCommand(page, 'View: Toggle Kogg Projects');
+        const existingTab = page.locator('.lm-TabBar-tab:visible, .p-TabBar-tab:visible, [role="tab"]:visible').filter({ hasText: 'Kogg Projects' }).first();
+        if (await existingTab.isVisible().catch(() => false)) await existingTab.click();
+        else await openCommand(page, 'View: Toggle Kogg Projects');
         await page.waitForTimeout(250);
         active = await renderedWidget(widgets);
     }
@@ -1029,7 +1031,7 @@ async function exerciseOperationsStream(page) {
     const advancedSecond = await waitForStreamAdvance(second, initialSequence);
     const diagnosticMessage = page.getByText(/Diagnostics: (?:FAIL|WARN|PASS)/u).filter({ visible: true }).first();
     await diagnosticMessage.waitFor({ timeout: 15_000 });
-    assert.doesNotMatch(await diagnosticMessage.innerText(), /operations\.(?:stream|actions|source-maps)/u);
+    assert.doesNotMatch(await diagnosticMessage.innerText(), /operations\.(?:projection|owners|correlations|timeline|stream|metrics|retention|support|actions|source-maps)/u);
     await exerciseGovernedRunDetails(first, 'diagnostic');
     await clearNotifications(page);
 

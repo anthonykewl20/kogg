@@ -6,6 +6,7 @@ import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 import { OperationRegistry } from './operation-registry';
+import { OperationsReadModel } from './operations-read-model';
 
 test('persists a real registered process lifecycle with safe cleanup and diagnostics', async () => {
   const state = await mkdtemp(path.join(os.tmpdir(), 'kogg-operations-test-'));
@@ -61,6 +62,20 @@ test('records spawn failure and refuses conflicting terminal transitions', async
     assert.throws(() => operation.complete(), /conflicting terminal/u);
     const snapshot = await registry.snapshot(); assert.equal(snapshot.recent[0]?.state, 'failed'); assert.equal(snapshot.recent[0]?.safeCode, 'PROCESS_SPAWN_FAILED');
   } finally { await registry.onStop(); await rm(state, { recursive: true, force: true }); }
+});
+
+test('publishes process activity through the closed owner payload contract', async () => {
+  const state = await mkdtemp(path.join(os.tmpdir(), 'kogg-operations-owner-activity-test-'));
+  process.env.KOGG_STATE_DIR = state;
+  const registry = new OperationRegistry(); const projection = new OperationsReadModel(path.join(state, 'projection.sqlite3'));
+  try {
+    await registry.onStart(); projection.start(); projection.registerOwner('operation'); registry.setOwnerSink(projection);
+    const operation = await registry.startOperation({ kind: 'test' }); operation.start();
+    const processLease = operation.registerProcess({ kind: 'test', owner: 'kogg-supervisor' });
+    processLease.activity();
+    assert.equal(projection.diagnostics().faultCount, 0);
+    assert.equal(projection.diagnostics().ownerCount, 1);
+  } finally { await registry.onStop(); projection.stop(); await rm(state, { recursive: true, force: true }); }
 });
 
 test('refuses a process execution attestation until both process and operation cleanup are terminal', async () => {

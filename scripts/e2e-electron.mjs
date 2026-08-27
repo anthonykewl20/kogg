@@ -456,7 +456,7 @@ async function exerciseElectronOperations(page, electronApplication) {
     await waitForElectronStreamAdvance(secondWidget, initialSequence);
     const diagnosticMessage = page.getByText(/Diagnostics: (?:FAIL|WARN|PASS)/u).filter({ visible: true }).first();
     await diagnosticMessage.waitFor({ timeout: 15_000 });
-    assert.doesNotMatch(await diagnosticMessage.innerText(), /operations\.(?:stream|actions|source-maps)/u);
+    assert.doesNotMatch(await diagnosticMessage.innerText(), /operations\.(?:projection|owners|correlations|timeline|stream|metrics|retention|support|actions|source-maps)/u);
     await exerciseElectronGovernedRunDetails(widget);
     await clearNotifications(page);
 
