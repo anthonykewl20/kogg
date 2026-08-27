@@ -1,0 +1,37 @@
+import type { KoggDiagnosticCheck, KoggDiagnosticContributor } from '@kogg/contracts';
+import { inject, injectable } from '@theia/core/shared/inversify';
+import { WorkflowRegistry } from './workflow-registry';
+import { workflowLog } from './workflow-logger';
+
+// Logs through the closed workflowLog schemas.
+// diagnostic-coverage: workflow.schema, workflow.catalog, workflow.graph, workflow.anchors, workflow.authority, workflow.scheduler, workflow.processes, workflow.cleanup, workflow.recovery, workflow.accessibility, workflow.source-maps
+
+export const WORKFLOW_CHECKS = ['workflow.schema','workflow.catalog','workflow.graph','workflow.anchors','workflow.authority','workflow.scheduler','workflow.processes','workflow.cleanup','workflow.recovery','workflow.accessibility','workflow.source-maps'] as const;
+
+@injectable()
+export class WorkflowDiagnosticContributor implements KoggDiagnosticContributor {
+  readonly id = 'workflow';
+  constructor(@inject(WorkflowRegistry) private readonly registry: WorkflowRegistry) {}
+  async diagnose(): Promise<readonly KoggDiagnosticCheck[]> {
+    try {
+      const value = await this.registry.diagnostics(); const storedValid = value.integrity && value.foreignKeys && value.immutableTriggers && value.canonicalMismatchCount === 0;
+      return [
+        { id: 'workflow.schema', status: storedValid ? 'pass' : 'fail', summary: storedValid ? 'Workflow canonical records and immutable storage controls are valid.' : 'Workflow canonical records or immutable storage controls failed.', details: { mismatchCount: value.canonicalMismatchCount, versionCount: value.versionCount } },
+        { id: 'workflow.catalog', status: 'fail', summary: 'The production executor catalog has not been integrity-attested.', details: { safeCode: 'WORKFLOW_CATALOG_MISMATCH' } },
+        { id: 'workflow.graph', status: value.canonicalMismatchCount === 0 ? 'pass' : 'fail', summary: value.canonicalMismatchCount === 0 ? 'Stored workflow graphs pass closed decoding and graph validation.' : 'One or more stored workflow graphs failed validation.', details: { mismatchCount: value.canonicalMismatchCount } },
+        { id: 'workflow.anchors', status: value.planMismatchCount === 0 ? 'pass' : 'fail', summary: value.planMismatchCount === 0 ? 'Compiled plans retain the exact injected trust-spine digest.' : 'A compiled plan trust-spine binding failed.', details: { mismatchCount: value.planMismatchCount, planCount: value.planCount } },
+        { id: 'workflow.authority', status: 'fail', summary: 'Runtime task, role, project, provider, evidence, verdict, and merge grants are not integrated.', details: { safeCode: 'WORKFLOW_AUTHORITY_EXPANSION' } },
+        { id: 'workflow.scheduler', status: 'fail', summary: 'The durable scheduler, leases, and outbox are not enabled.', details: { recoveryBacklogCount: value.recoveryBacklogCount } },
+        { id: 'workflow.processes', status: value.activeProcessCount === 0 && value.residualProcessCount === 0 ? 'pass' : 'fail', summary: value.activeProcessCount === 0 && value.residualProcessCount === 0 ? 'No workflow-owned process is active, hidden, or residual.' : 'Workflow process inventory is not empty.', details: { activeProcessCount: value.activeProcessCount, residualProcessCount: value.residualProcessCount } },
+        { id: 'workflow.cleanup', status: value.residualProcessCount === 0 ? 'pass' : 'fail', summary: value.residualProcessCount === 0 ? 'Workflow cleanup has zero residual processes.' : 'Workflow cleanup has residual processes.', details: { residualProcessCount: value.residualProcessCount } },
+        { id: 'workflow.recovery', status: storedValid && value.recoveryBacklogCount === 0 ? 'pass' : 'fail', summary: storedValid && value.recoveryBacklogCount === 0 ? 'Workflow startup integrity reconciliation is complete.' : 'Workflow recovery is incomplete.', details: { recoveryBacklogCount: value.recoveryBacklogCount } },
+        { id: 'workflow.accessibility', status: 'fail', summary: 'Spatial editor and structured-outline accessibility parity are not implemented.', details: { safeCode: 'WORKFLOW_GRAPH_INVALID' } },
+        { id: 'workflow.source-maps', status: value.sourceMapsPresent ? 'pass' : 'fail', summary: value.sourceMapsPresent ? 'Workflow backend compiler and registry source maps are available.' : 'Workflow backend source maps are unavailable.' }
+      ];
+    } catch (error) {
+      // observability-exempt: workflowLog emits only the normalized error type and returns the full fail-closed catalog.
+      workflowLog('diagnostics.failed', { errorType: error instanceof Error ? error.name : 'UnknownError' });
+      return WORKFLOW_CHECKS.map(id => ({ id, status: 'fail' as const, summary: 'Workflow diagnostics could not run.' }));
+    }
+  }
+}

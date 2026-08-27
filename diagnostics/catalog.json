@@ -22,6 +22,17 @@
     { "id": "tasks.registry", "owner": "kogg-tasks", "description": "The task registry schema, integrity, permissions, immutable triggers, and writer state are valid." },
     { "id": "tasks.revisions", "owner": "kogg-tasks", "description": "Task specification revisions and canonical digests verify successfully." },
     { "id": "tasks.bindings", "owner": "kogg-tasks", "description": "Task repository bindings remain current and available." },
-    { "id": "tasks.approvals", "owner": "kogg-tasks", "description": "Current task approvals match immutable frozen revisions." }
+    { "id": "tasks.approvals", "owner": "kogg-tasks", "description": "Current task approvals match immutable frozen revisions." },
+    { "id": "workflow.schema", "owner": "kogg-workflow", "description": "Workflow canonical records, decoder versions, and immutable storage controls are valid." },
+    { "id": "workflow.catalog", "owner": "kogg-workflow", "description": "The compiled node catalog, executor artifacts, and compatibility set are exact." },
+    { "id": "workflow.graph", "owner": "kogg-workflow", "description": "Workflow ports, reachability, bounds, joins, retries, and conditions are valid." },
+    { "id": "workflow.anchors", "owner": "kogg-workflow", "description": "The policy-owned trust spine and compiled anchor proof are exact and current." },
+    { "id": "workflow.authority", "owner": "kogg-workflow", "description": "Workflow grants preserve role separation, target binding, and least authority." },
+    { "id": "workflow.scheduler", "owner": "kogg-workflow", "description": "Workflow leases, ready derivation, outbox, and concurrency controls are healthy." },
+    { "id": "workflow.processes", "owner": "kogg-workflow", "description": "Workflow intents, attempts, and registered processes correspond with no hidden descendants." },
+    { "id": "workflow.cleanup", "owner": "kogg-workflow", "description": "Workflow cancel-all-then-join cleanup has zero residual descendants." },
+    { "id": "workflow.recovery", "owner": "kogg-workflow", "description": "Workflow event integrity, uncertain outcomes, and restart reconciliation are complete." },
+    { "id": "workflow.accessibility", "owner": "kogg-workflow", "description": "The workflow canvas and structured outline expose equivalent semantic operations." },
+    { "id": "workflow.source-maps", "owner": "kogg-workflow", "description": "Workflow browser, backend, Electron, compiler, and executor boundaries are debugger reachable." }
   ]
 }
