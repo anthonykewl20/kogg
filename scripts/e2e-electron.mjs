@@ -183,7 +183,6 @@ try {
     await exerciseNodeDebug(page, application, 'Kogg Electron Debug', 'KOGG_ELECTRON_E2E_READY');
     await exerciseElectronProjects(page, application);
     await exerciseElectronTasks(page, application);
-    await exerciseElectronInteractionModes(page);
     await exerciseElectronOperations(page, application);
     const visible = await page.locator('body').innerText();
     assert.doesNotMatch(visible, /Search Open VSX Registry|Learn more about Theia|custom-agent migration/iu);
@@ -328,6 +327,7 @@ async function exerciseElectronTasks(page, electronApplication) {
     await tasks.getByLabel('Initial specification').fill(canary + '\nElectron requirement\n');
     await tasks.getByRole('button', { name: 'Create task' }).click();
     await tasks.getByText(/Revision 1 · active · draft/iu).waitFor({ timeout: 10_000 });
+    await exerciseElectronInteractionModes(page);
     await tasks.getByRole('button', { name: 'Freeze exact revision' }).click();
     await tasks.getByRole('button', { name: 'Review for approval' }).click();
     await tasks.locator('.kogg-review').getByText(canary).waitFor();
@@ -344,9 +344,13 @@ async function exerciseElectronInteractionModes(page) {
     const build = page.getByRole('option', { name: /Build\./u });
     await build.waitFor({ state: 'visible', timeout: 10_000 });
     await build.click();
-    await page.getByText('Mode changes in Electron require the pending native owner-confirmation authority. No authority was changed.').first().waitFor({ timeout: 10_000 });
-    await selector.waitFor({ state: 'visible' });
-    assert.match(logs.join('\n'), /\[kogg:ui:mode-selector\] mode\.transition\.refused/u);
+    await page.getByRole('button', { name: 'Request switch' }).click();
+    const pending = page.getByLabel(/Mode: Plan; authority: disabled during transition/u);
+    await pending.waitFor({ state: 'visible', timeout: 10_000 });
+    await page.getByRole('button', { name: 'Cancel request' }).click();
+    await selector.waitFor({ state: 'visible', timeout: 10_000 });
+    assert.match(logs.join('\n'), /\[kogg:interaction-modes:transition-authority\] authority\.mint\.completed.*electron/su);
+    assert.match(logs.join('\n'), /\[kogg:interaction-modes:service\] mode\.transition\.cancelled/u);
     await clearNotifications(page);
 }
 

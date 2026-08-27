@@ -3,8 +3,9 @@ import { BackendApplicationContribution } from '@theia/core/lib/node';
 import { Application, json, type Request, type Response } from '@theia/core/shared/express';
 import { inject, injectable } from '@theia/core/shared/inversify';
 import {
-  InteractionModeError, InteractionModeRegistry, type ModeTransitionCancelRequestV1, type ModeTransitionRequestV1
+  InteractionModeError, InteractionModeRegistry
 } from './interaction-mode-registry';
+import type { ModeTransitionCancelRequestV1, ModeTransitionRequestV1 } from '../common/interaction-modes-protocol';
 import { ModeTransitionAuthority, transitionScopeDigest } from './mode-transition-authority';
 
 // Browser transition mutation is intentionally HTTP-only so authenticated request facts never cross JSON-RPC serialization.

@@ -6,7 +6,7 @@ import { KOGG_TASKS_CHANGED_EVENT } from '@kogg/tasks/lib/browser/tasks-events';
 import { KoggTasksService, type KoggTasksService as TasksService, type TaskSummary } from '@kogg/tasks/lib/common/tasks-protocol';
 import {
   KoggInteractionModesService, type InteractionModeV1, type KoggInteractionModesService as InteractionModesService,
-  type ModeProjectionV1
+  type ModeProjectionV1, type ModeTransitionProjectionV1
 } from '../common/interaction-modes-protocol';
 
 // diagnostic-coverage: interaction-modes.authority, interaction-modes.transitions, interaction-modes.operations, interaction-modes.restoration, interaction-modes.accessibility, interaction-modes.source-maps
@@ -18,10 +18,7 @@ const MODE_DETAIL: Readonly<Record<InteractionModeV1, string>> = {
   build: 'Private worktree implementation and tests. Governed PASS and merge remain unavailable.',
   kogg: 'Complete governed lifecycle with required approvals, evidence, verdict, and controlled merge.'
 };
-interface TransitionProjection {
-  readonly transitionId: string; readonly taskId: string; readonly fromMode: InteractionModeV1; readonly toMode: InteractionModeV1;
-  readonly state: string; readonly safeCode: string; readonly mode: ModeProjectionV1;
-}
+type TransitionProjection = ModeTransitionProjectionV1;
 
 @injectable()
 export class InteractionModeFrontendContribution implements FrontendApplicationContribution, CommandContribution {
@@ -88,10 +85,6 @@ export class InteractionModeFrontendContribution implements FrontendApplicationC
     }));
     const selected = await this.quickInput.showQuickPick(choices, { placeholder: `Task ${this.task.taskId.slice(0, 8)} — choose an authority-bounded mode` });
     if (!selected || selected.value === this.projection.selectedMode) return;
-    if (environment.electron.is()) {
-      console.warn('[kogg:ui:mode-selector] mode.transition.refused', { taskId: this.task.taskId, fromMode: this.projection.selectedMode, toMode: selected.value, safeCode: 'MODE_AUTHORITY_REFUSED' });
-      await this.messages.warn('Mode changes in Electron require the pending native owner-confirmation authority. No authority was changed.'); return;
-    }
     const consequence = `${transitionDescription(this.projection.selectedMode, selected.value)} ${MODE_DETAIL[selected.value]}`;
     if (await this.messages.warn(consequence, 'Request switch', 'Cancel') !== 'Request switch') return;
     await this.requestTransition(selected.value);
@@ -103,7 +96,7 @@ export class InteractionModeFrontendContribution implements FrontendApplicationC
     try {
       const body = { transitionId, requestId, taskId: task.taskId, expectedSequence: projection.sequence, fromMode: projection.selectedMode, toMode,
         requestedConfigurationDigest: await configurationDigest(toMode) };
-      this.pending = await mutation('/kogg/modes/transitions/request', body);
+      this.pending = environment.electron.is() ? await this.modes.requestDesktopTransition(body) : await mutation('/kogg/modes/transitions/request', body);
       this.projection = this.pending.mode; await this.render('ready');
       console.info('[kogg:ui:mode-selector] mode.transition-approved', { requestId, taskId: task.taskId, fromMode: projection.selectedMode, toMode, safeCode: this.pending.safeCode });
       await this.messages.warn(`Switch requested: ${this.pending.safeCode}. Effective authority is disabled until confirmation and owner qualification complete.`, 'Keep pending', 'Cancel request').then(choice => choice === 'Cancel request' ? this.cancelPending() : undefined);
@@ -121,7 +114,8 @@ export class InteractionModeFrontendContribution implements FrontendApplicationC
   private async cancelPending(): Promise<void> {
     if (!this.pending) return; const requestId = crypto.randomUUID(); const prior = this.pending;
     try {
-      const result = await mutation('/kogg/modes/transitions/cancel', { requestId, transitionId: prior.transitionId, taskId: prior.taskId });
+      const cancel = { requestId, transitionId: prior.transitionId, taskId: prior.taskId };
+      const result = environment.electron.is() ? await this.modes.cancelDesktopTransition(cancel) : await mutation('/kogg/modes/transitions/cancel', cancel);
       this.pending = undefined; this.projection = result.mode; await this.render('ready');
       console.info('[kogg:ui:mode-selector] mode.transition-cancelled', { requestId, taskId: prior.taskId, fromMode: prior.fromMode, toMode: prior.toMode, safeCode: result.safeCode });
     } catch (error) {

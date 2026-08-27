@@ -24,7 +24,20 @@ export interface ModeProjectionV1 {
 export interface ModeReadRequestV1 { readonly requestId: string; readonly taskId: string; }
 export interface ModeOperationRequestV1 { readonly requestId: string; readonly taskId: string; readonly operation: ModeOperationV1; }
 export interface ModeOperationResultV1 { readonly schemaVersion: 1; readonly allowed: boolean; readonly safeCode: ModeSafeCodeV1; readonly projection: ModeProjectionV1; }
+export type ModeTransitionStateV1 = 'committed' | 'awaiting-confirmation' | 'cleanup-pending' | 'cancelled' | 'expired';
+export interface ModeTransitionRequestV1 {
+  readonly transitionId: string; readonly requestId: string; readonly taskId: string; readonly expectedSequence: string;
+  readonly fromMode: InteractionModeV1; readonly toMode: InteractionModeV1; readonly requestedConfigurationDigest: string;
+}
+export interface ModeTransitionCancelRequestV1 { readonly requestId: string; readonly transitionId: string; readonly taskId: string; }
+export interface ModeTransitionProjectionV1 {
+  readonly schemaVersion: 1; readonly transitionId: string; readonly taskId: string; readonly fromMode: InteractionModeV1;
+  readonly toMode: InteractionModeV1; readonly direction: 'preserve' | 'reduce' | 'expand'; readonly state: ModeTransitionStateV1;
+  readonly safeCode: ModeSafeCodeV1; readonly challengeDigest?: string; readonly expiresAt?: string; readonly mode: ModeProjectionV1;
+}
 export interface KoggInteractionModesService {
   get(request: ModeReadRequestV1): Promise<ModeProjectionV1>;
   authorizeOperation(request: ModeOperationRequestV1): Promise<ModeOperationResultV1>;
+  requestDesktopTransition(request: ModeTransitionRequestV1): Promise<ModeTransitionProjectionV1>;
+  cancelDesktopTransition(request: ModeTransitionCancelRequestV1): Promise<ModeTransitionProjectionV1>;
 }

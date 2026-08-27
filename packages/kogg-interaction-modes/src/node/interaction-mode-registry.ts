@@ -6,8 +6,9 @@ import { TaskProjectionAuthority, type TaskProjection, type TaskProjectionAuthor
 import { BackendApplicationContribution } from '@theia/core/lib/node';
 import { inject, injectable, unmanaged } from '@theia/core/shared/inversify';
 import type {
-  InteractionModeV1, KoggInteractionModesService, ModeCapabilityV1, ModeOperationRequestV1, ModeOperationResultV1,
-  ModeOperationV1, ModeProjectionV1, ModeReadRequestV1, ModeSafeCodeV1
+  InteractionModeV1, ModeCapabilityV1, ModeOperationRequestV1, ModeOperationResultV1,
+  ModeOperationV1, ModeProjectionV1, ModeReadRequestV1, ModeSafeCodeV1, ModeTransitionCancelRequestV1,
+  ModeTransitionProjectionV1, ModeTransitionRequestV1, ModeTransitionStateV1
 } from '../common/interaction-modes-protocol';
 import { modeLog, modeLoggingDiagnostics } from './interaction-modes-logger';
 import { ModeTransitionAuthority, type ModeTransitionContextV1, transitionScopeDigest } from './mode-transition-authority';
@@ -35,20 +36,8 @@ export interface InteractionModeDiagnostics {
   readonly pendingTransitionCount: number; readonly loggingViolationCount: number;
 }
 
-export type ModeTransitionStateV1 = 'committed' | 'awaiting-confirmation' | 'cleanup-pending' | 'cancelled' | 'expired';
-export interface ModeTransitionRequestV1 {
-  readonly transitionId: string; readonly requestId: string; readonly taskId: string; readonly expectedSequence: string;
-  readonly fromMode: InteractionModeV1; readonly toMode: InteractionModeV1; readonly requestedConfigurationDigest: string;
-}
-export interface ModeTransitionCancelRequestV1 { readonly requestId: string; readonly transitionId: string; readonly taskId: string; }
-export interface ModeTransitionProjectionV1 {
-  readonly schemaVersion: 1; readonly transitionId: string; readonly taskId: string; readonly fromMode: InteractionModeV1;
-  readonly toMode: InteractionModeV1; readonly direction: 'preserve' | 'reduce' | 'expand'; readonly state: ModeTransitionStateV1;
-  readonly safeCode: ModeSafeCodeV1; readonly challengeDigest?: string; readonly expiresAt?: string; readonly mode: ModeProjectionV1;
-}
-
 @injectable()
-export class InteractionModeRegistry implements KoggInteractionModesService, BackendApplicationContribution {
+export class InteractionModeRegistry implements BackendApplicationContribution {
   private database: DatabaseSync | undefined; private startup: Promise<void> | undefined;
   private readonly databasePath = path.join(stateRoot(), 'interaction-modes', 'registry.sqlite3');
   constructor(
