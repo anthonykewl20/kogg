@@ -14,12 +14,15 @@ import { MergeAuthorizationRegistry } from './merge-authorization-registry';
 import type { NativeGitMergeService } from './native-git-merge-service';
 import { VerdictMergeService } from './verdict-merge-service';
 import { VerdictProjectionAuthority, type UnsealedVerdictExplanationV1 } from './verdict-projection-authority';
+import type { ModeOperationAuthorizer } from '@kogg/interaction-modes/lib/common/interaction-modes-protocol';
+
+const MODE_AUTHORITY = { authorizeOperation: async () => ({ allowed: true, safeCode: 'MODE_OK' }) } as unknown as ModeOperationAuthorizer;
 
 // diagnostic-coverage: merge.authorization
 test('admits human merge authority only through authenticated same-origin CSRF-protected HTTP', { timeout: 20_000 }, async context => {
   const root = await mkdtemp(path.join(os.tmpdir(), 'kogg-merge-http-')); const prior = { runtime: process.env.KOGG_RUNTIME, token: process.env.KOGG_AUTH_TOKEN, state: process.env.KOGG_STATE_DIR, origin: process.env.KOGG_PUBLIC_ORIGIN };
   process.env.KOGG_RUNTIME = 'browser'; process.env.KOGG_AUTH_TOKEN = 'merge-http-token'; process.env.KOGG_STATE_DIR = root; delete process.env.KOGG_PUBLIC_ORIGIN;
-  const verdicts = new VerdictMergeService(new PassingAuthority(), path.join(root, 'verdict.sqlite3')); const authority = new MergeAuthorizationAuthority(); const registry = new MergeAuthorizationRegistry(verdicts, authority, path.join(root, 'authorization.sqlite3'), () => new Date('2026-08-27T00:00:10.000Z'));
+  const verdicts = new VerdictMergeService(new PassingAuthority(), MODE_AUTHORITY, path.join(root, 'verdict.sqlite3')); const authority = new MergeAuthorizationAuthority(); const registry = new MergeAuthorizationRegistry(verdicts, authority, MODE_AUTHORITY, path.join(root, 'authorization.sqlite3'), () => new Date('2026-08-27T00:00:10.000Z'));
   const browserAuth = new BrowserAuthContribution(); const nativeGit = { start() {} } as unknown as NativeGitMergeService; const controller = new MergeAuthorizationHttpController(browserAuth, authority, registry, nativeGit); const app = express(); browserAuth.configure(app); controller.configure(app); const server = createServer(app);
   context.after(async () => { await close(server); registry.onStop(); verdicts.onStop(); restore('KOGG_RUNTIME', prior.runtime); restore('KOGG_AUTH_TOKEN', prior.token); restore('KOGG_STATE_DIR', prior.state); restore('KOGG_PUBLIC_ORIGIN', prior.origin); await rm(root, { recursive: true, force: true }); });
   await verdicts.onStart(); await registry.onStart(); await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve)); const address = server.address(); assert(address && typeof address !== 'string'); const base = `http://127.0.0.1:${address.port}`;
