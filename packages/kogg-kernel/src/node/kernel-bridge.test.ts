@@ -20,7 +20,7 @@ test('handshakes with the pinned Ranex kernel and fails closed on missing journa
     const capabilities = await bridge.start();
     assert.equal(capabilities.ranexCommit, KOGG_RANEX_COMMIT);
     assert.equal(capabilities.protocolVersion, KOGG_RANEX_PROTOCOL_VERSION);
-    assert.deepEqual(capabilities.operations.map(operation => operation.operation), ['kernel.handshake', 'kernel.health', 'execution.qualify', 'task.bind', 'producer.dispatch', 'suite.freeze', 'suite.execute', 'evidence.admit', 'gate.evaluate', 'verdict.read']);
+    assert.deepEqual(capabilities.operations.map(operation => operation.operation), ['kernel.handshake', 'kernel.health', 'execution.qualify', 'task.bind', 'producer.dispatch', 'suite.freeze', 'suite.execute', 'evidence.admit', 'gate.evaluate', 'verdict.read', 'operation.reconcile', 'operation.cancel']);
     const verification = await bridge.verifyJournal();
     assert.equal(verification.valid, false);
     assert.equal(verification.reason, 'missing');
@@ -37,7 +37,10 @@ test('handshakes with the pinned Ranex kernel and fails closed on missing journa
     assert.equal((await bridge.execute('evidence.admit', {})).safeCode, 'KERNEL_AUTHORITY_INVALID');
     assert.equal((await bridge.execute('gate.evaluate', {})).safeCode, 'KERNEL_AUTHORITY_INVALID');
     assert.equal((await bridge.execute('verdict.read', {})).safeCode, 'KERNEL_AUTHORITY_INVALID');
-    const committed = await bridge.bindTask(fixtureBinding());
+    assert.equal((await bridge.execute('operation.reconcile', {})).safeCode, 'KERNEL_AUTHORITY_INVALID');
+    assert.equal((await bridge.execute('operation.cancel', {})).safeCode, 'KERNEL_AUTHORITY_INVALID');
+    const binding = fixtureBinding();
+    const committed = await bridge.bindTask(binding);
     assert.equal(committed.status, 'succeeded');
     assert.equal(committed.safeCode, 'KERNEL_OK');
     assert.equal(committed.journal?.sequence, '1');
@@ -142,6 +145,35 @@ test('handshakes with the pinned Ranex kernel and fails closed on missing journa
     assert.equal(superseded.status, 'succeeded'); assert.equal(superseded.projection?.currentness, 'stale');
     const blocked = await bridge.evaluateGate(fixtureGateExpectation(committed.projection!.taskBindingDigest, incompleteFrozen.projection!.suiteDigest, subjectStateDigest, incompleteSuite), execution.subjectState);
     assert.equal(blocked.status, 'succeeded'); assert.equal(blocked.projection?.decision, 'blocked'); assert.equal(blocked.projection?.evidenceCount, 0);
+    const bindingBody = { binding: binding as unknown as KernelJson, bindingDigest: domainDigest('task-binding', binding as unknown as KernelJson) };
+    const targetBodyDigest = jsonDigest(bindingBody as unknown as KernelJson);
+    const reconciliation = await bridge.reconcileOperation({
+      targetOperation: 'task.bind', targetBodyDigest,
+      targetIdempotencyKey: domainDigest('idempotency', { bodyDigest: targetBodyDigest, operation: 'task.bind', version: 1 }),
+      ranexProvenanceDigest: domainDigest('ranex-provenance', { commit: KOGG_RANEX_COMMIT, schemaSetDigest: KERNEL_SCHEMA_SET_DIGEST, tree: KOGG_RANEX_TREE })
+    });
+    assert.equal(reconciliation.status, 'succeeded'); assert.equal(reconciliation.projection?.outcome, 'acknowledged');
+    assert.match(reconciliation.projection?.targetFactDigest ?? '', /^sha256:[0-9a-f]{64}$/u);
+    const missingBodyDigest = `sha256:${'0'.repeat(64)}` as const;
+    const missingIdempotencyKey = domainDigest('idempotency', { bodyDigest: missingBodyDigest, operation: 'task.bind', version: 1 });
+    const missing = await bridge.reconcileOperation({
+      targetOperation: 'task.bind', targetBodyDigest: missingBodyDigest, targetIdempotencyKey: missingIdempotencyKey,
+      ranexProvenanceDigest: domainDigest('ranex-provenance', { commit: KOGG_RANEX_COMMIT, schemaSetDigest: KERNEL_SCHEMA_SET_DIGEST, tree: KOGG_RANEX_TREE })
+    });
+    assert.equal(missing.status, 'succeeded'); assert.deepEqual(missing.projection, { outcome: 'absent', targetFactDigest: null });
+    const wrongProvenance = await bridge.reconcileOperation({
+      targetOperation: 'task.bind', targetBodyDigest: missingBodyDigest, targetIdempotencyKey: missingIdempotencyKey,
+      ranexProvenanceDigest: `sha256:${'f'.repeat(64)}`
+    });
+    assert.equal(wrongProvenance.status, 'refused'); assert.equal(wrongProvenance.safeCode, 'KERNEL_PROVENANCE_MISMATCH');
+    const cancellable = await operations.startOperation({ kind: 'test', cancellable: true }); cancellable.start(); cancellable.active();
+    const cancellationRequestId = 'ffffffff-ffff-4fff-8fff-ffffffffffff';
+    const cancelled = await bridge.cancelOperation(cancellationRequestId, cancellable.id);
+    assert.equal(cancelled.status, 'succeeded'); assert.equal(cancelled.projection?.outcome, 'cancelled-clean');
+    const cancelReplay = await bridge.cancelOperation(cancellationRequestId, cancellable.id);
+    assert.deepEqual(cancelReplay, { ...cancelled, requestId: cancelReplay.requestId, operationId: cancelReplay.operationId });
+    const missingCancel = await bridge.cancelOperation('eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee', 'dddddddd-dddd-4ddd-8ddd-dddddddddddd');
+    assert.equal(missingCancel.status, 'refused'); assert.equal(missingCancel.safeCode, 'KERNEL_CLEANUP_FAILED');
     assert.equal((await bridge.verifyJournal()).valid, true);
     await bridge.shutdown();
     assert.equal((await operations.snapshot()).active.length, 0);
@@ -173,7 +205,7 @@ test('maps a structurally invalid operation to a closed protocol refusal', async
       protocol: 'kogg.ranex/v2', requestId: '11111111-1111-4111-8111-111111111111',
       operationId: '22222222-2222-4222-8222-222222222222', idempotencyKey: `sha256:${'0'.repeat(64)}`,
       operation: {}, operationVersion: 1, ranexCommit: KOGG_RANEX_COMMIT,
-      schemaSetDigest: `sha256:e01e21f24260bf2808cf7828a908ca67d76391055872f750fa34f979476e9019`,
+      schemaSetDigest: `sha256:bf1ec53f7415fa5affb2f302cf569c81c9791a2018a88ce13232aef89dcaf8b5`,
       bodyDigest: `sha256:${'0'.repeat(64)}`, body: {}
     };
     const payload = Buffer.from(JSON.stringify(request), 'utf8');
@@ -261,6 +293,10 @@ function fixtureGateExpectation(taskBindingDigest: `sha256:${string}`, suiteDige
 
 function domainDigest(domain: string, value: KernelJson): `sha256:${string}` {
   return `sha256:${createHash('sha256').update(Buffer.concat([Buffer.from(`kogg:${domain}:v1\n`, 'utf8'), Buffer.from(canonicalKernelJson(value), 'utf8')])).digest('hex')}`;
+}
+
+function jsonDigest(value: KernelJson): `sha256:${string}` {
+  return `sha256:${createHash('sha256').update(canonicalKernelJson(value), 'utf8').digest('hex')}`;
 }
 
 function fixtureRepository(): RepositoryStateV1 {

@@ -20,7 +20,7 @@ from ranex.governed_execution.adapters.persistence.sqlite.journal import Journal
 
 PROTOCOL = "kogg.ranex/v2"
 PROTOCOL_VERSION = 2
-SCHEMA_SET_DIGEST = "sha256:e01e21f24260bf2808cf7828a908ca67d76391055872f750fa34f979476e9019"
+SCHEMA_SET_DIGEST = "sha256:bf1ec53f7415fa5affb2f302cf569c81c9791a2018a88ce13232aef89dcaf8b5"
 MAX_FRAME_BYTES = 1024 * 1024
 MAX_DEPTH = 32
 MAX_MEMBERS = 4096
@@ -28,7 +28,7 @@ MAX_PENDING_REQUESTS = 64
 MAX_PENDING_RESPONSE_BYTES = 4 * 1024 * 1024
 DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
 UUID = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$")
-IMPLEMENTED_OPERATIONS = {"kernel.handshake": 2, "kernel.health": 1, "execution.qualify": 1, "task.bind": 1, "producer.dispatch": 1, "suite.freeze": 1, "suite.execute": 1, "evidence.admit": 1, "gate.evaluate": 1, "verdict.read": 1}
+IMPLEMENTED_OPERATIONS = {"kernel.handshake": 2, "kernel.health": 1, "execution.qualify": 1, "task.bind": 1, "producer.dispatch": 1, "suite.freeze": 1, "suite.execute": 1, "evidence.admit": 1, "gate.evaluate": 1, "verdict.read": 1, "operation.reconcile": 1, "operation.cancel": 1}
 SYMBOLIC = re.compile(r"^[a-z0-9][a-z0-9._:-]{0,127}$")
 CHECK_KINDS = {"build", "unit", "integration", "visible-e2e", "observability", "diagnostics", "source-maps", "process-cleanup", "ranex-evidence"}
 
@@ -808,6 +808,89 @@ def _read_verdict(body: dict[str, Any]) -> tuple[dict[str, Any], None]:
     return projection, None
 
 
+def _append_recovery_fact(request: dict[str, Any], fact: dict[str, Any], projection: dict[str, Any], journal: Journal, records: list[dict[str, Any]]) -> tuple[dict[str, Any], dict[str, str]]:
+    prior = [record for record in records if record.get("kind") == fact["kind"] and record.get("idempotencyKey") == request["idempotencyKey"]]
+    if len(prior) > 1:
+        raise ProtocolRefusal("KERNEL_JOURNAL_AMBIGUOUS")
+    if prior:
+        if prior[0] != fact:
+            raise ProtocolRefusal("KERNEL_IDEMPOTENCY_CONFLICT")
+        return projection, _journal_position(records, records.index(prior[0]) + 1)
+    try:
+        root = journal.append(_KernelFact(fact)); committed = journal.entries()
+        if not journal.verify() or not committed or committed[-1] != fact:
+            raise ProtocolRefusal("KERNEL_JOURNAL_INTEGRITY")
+    except ProtocolRefusal:
+        raise
+    except Exception as error:
+        raise ProtocolRefusal("KERNEL_JOURNAL_INTEGRITY") from error
+    return projection, {"sequence": str(len(committed)), "rootDigest": root}
+
+
+def _reconcile_operation(request: dict[str, Any], body: dict[str, Any]) -> tuple[dict[str, Any], dict[str, str]]:
+    try:
+        closed = _closed(body, {"expectation", "expectationDigest"})
+        expectation = _closed(closed["expectation"], {"targetOperation", "targetIdempotencyKey", "targetBodyDigest", "ranexProvenanceDigest"})
+    except ProtocolRefusal as error:
+        raise ProtocolRefusal("KERNEL_OUTCOME_UNKNOWN") from error
+    allowed = {"task.bind", "producer.dispatch", "suite.freeze", "suite.execute", "evidence.admit", "gate.evaluate"}
+    if expectation["targetOperation"] not in allowed:
+        raise ProtocolRefusal("KERNEL_OUTCOME_UNKNOWN")
+    for field in ("targetIdempotencyKey", "targetBodyDigest", "ranexProvenanceDigest"):
+        _sha256(expectation[field])
+    expected_target_idempotency = _domain_digest("idempotency", {
+        "bodyDigest": expectation["targetBodyDigest"], "operation": expectation["targetOperation"],
+        "version": IMPLEMENTED_OPERATIONS[expectation["targetOperation"]],
+    })
+    if expectation["targetIdempotencyKey"] != expected_target_idempotency:
+        raise ProtocolRefusal("KERNEL_OUTCOME_UNKNOWN")
+    if closed["expectationDigest"] != _domain_digest("operation-reconcile", expectation):
+        raise ProtocolRefusal("KERNEL_OUTCOME_UNKNOWN")
+    provenance = _provenance()
+    current_provenance = _domain_digest("ranex-provenance", {"commit": provenance["commit"], "schemaSetDigest": SCHEMA_SET_DIGEST, "tree": provenance["tree"]})
+    if expectation["ranexProvenanceDigest"] != current_provenance:
+        raise ProtocolRefusal("KERNEL_PROVENANCE_MISMATCH")
+    journal = Journal(_journal_path())
+    try:
+        if not _journal_path().is_file() or not journal.verify():
+            raise ProtocolRefusal("KERNEL_JOURNAL_INTEGRITY")
+        records = journal.entries()
+    except ProtocolRefusal:
+        raise
+    except Exception as error:
+        raise ProtocolRefusal("KERNEL_JOURNAL_INTEGRITY") from error
+    same_key = [record for record in records if record.get("idempotencyKey") == expectation["targetIdempotencyKey"]]
+    matches = [record for record in same_key if record.get("bodyDigest") == expectation["targetBodyDigest"]]
+    if len(same_key) > 1 or len(matches) > 1:
+        raise ProtocolRefusal("KERNEL_JOURNAL_AMBIGUOUS")
+    target_digest = _domain_digest("journal-fact", matches[0]) if len(matches) == 1 else None
+    projection = {"outcome": "acknowledged" if target_digest else "absent", "targetFactDigest": target_digest}
+    fact = {
+        "kind": "kogg.operation-reconciliation.v1", "idempotencyKey": request["idempotencyKey"], "bodyDigest": request["bodyDigest"],
+        "expectationDigest": closed["expectationDigest"], "outcome": projection["outcome"], "targetFactDigest": target_digest,
+    }
+    return _append_recovery_fact(request, fact, projection, journal, records)
+
+
+def _cancel_operation(request: dict[str, Any], body: dict[str, Any]) -> tuple[dict[str, Any], dict[str, str]]:
+    closed = _closed(body, {"cancellationRequestId", "cleanupStatus", "targetOperationId"})
+    _uuid(closed["cancellationRequestId"]); _uuid(closed["targetOperationId"])
+    if closed["cleanupStatus"] != "cleaned":
+        raise ProtocolRefusal("KERNEL_CLEANUP_FAILED")
+    journal = Journal(_journal_path())
+    try:
+        if not _journal_path().is_file() or not journal.verify():
+            raise ProtocolRefusal("KERNEL_JOURNAL_INTEGRITY")
+        records = journal.entries()
+    except ProtocolRefusal:
+        raise
+    except Exception as error:
+        raise ProtocolRefusal("KERNEL_JOURNAL_INTEGRITY") from error
+    projection = {"cancellationRequestId": closed["cancellationRequestId"], "outcome": "cancelled-clean", "targetOperationId": closed["targetOperationId"]}
+    fact = {"kind": "kogg.operation-cancellation.v1", "idempotencyKey": request["idempotencyKey"], "bodyDigest": request["bodyDigest"], **projection}
+    return _append_recovery_fact(request, fact, projection, journal, records)
+
+
 def _capabilities() -> dict[str, Any]:
     provenance = _provenance()
     qualified = platform.system() == "Linux"
@@ -922,6 +1005,10 @@ def _dispatch(request: dict[str, Any]) -> tuple[dict[str, Any], dict[str, str] |
         return _evaluate_gate(request, body)
     if operation == "verdict.read":
         return _read_verdict(body)
+    if operation == "operation.reconcile":
+        return _reconcile_operation(request, body)
+    if operation == "operation.cancel":
+        return _cancel_operation(request, body)
     raise ProtocolRefusal("KERNEL_CAPABILITY_UNAVAILABLE")
 
 
