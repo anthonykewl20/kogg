@@ -23,7 +23,7 @@ export function decodeGraph(input: unknown): EditableWorkflowGraphV1 {
   return { schemaVersion: '1', projectId: value.projectId, nodes, edges };
 }
 
-export function workflowDigest(domain: 'template' | 'catalog' | 'compiled-plan' | 'trust-spine' | 'run-snapshot' | 'scheduler-event' | 'owner-identity' | 'node-configuration', value: unknown): string {
+export function workflowDigest(domain: 'template' | 'catalog' | 'compiled-plan' | 'trust-spine' | 'run-snapshot' | 'scheduler-event' | 'owner-identity' | 'node-configuration' | 'executor-artifact', value: unknown): string {
   return createHash('sha256').update(`kogg:workflow:${domain}:v1\n`).update(canonicalJson(value)).digest('hex');
 }
 

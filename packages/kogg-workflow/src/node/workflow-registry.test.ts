@@ -13,6 +13,7 @@ import { WorkflowNodeCatalog } from './workflow-node-catalog';
 import { OperationsReadModel } from '@kogg/operations/lib/node/operations-read-model';
 import type { ModeOperationAuthorizer } from '@kogg/interaction-modes/lib/common/interaction-modes-protocol';
 import type { AgentBindingAuthorizer } from '@kogg/agents/lib/common/agents-protocol';
+import { WorkflowExecutorRegistry } from './workflow-executor-registry';
 
 // diagnostic-coverage: workflow.schema, workflow.catalog, workflow.graph, workflow.anchors, workflow.authority, workflow.scheduler, workflow.processes, workflow.cleanup, workflow.recovery, workflow.accessibility, workflow.source-maps
 
@@ -37,8 +38,8 @@ test('versions a validated graph immutably and compiles the policy-owned trust s
     assert.equal(savedNext.kind, 'completed'); assert.equal(savedNext.version?.versionNumber, 2); assert.notEqual(savedNext.version?.graphDigest, firstDigest); assert.equal(compiled.plan?.graphDigest, firstDigest);
     await registry.onStop(); const restarted = new WorkflowRegistry(compiler, MODE_AUTHORITY, AGENT_BINDING_AUTHORITY, database); await restarted.onStart(); const versions = await restarted.listVersions(TEMPLATE); assert.equal(versions.length, 2); assert.equal(versions[0]?.graphDigest, firstDigest);
     assert.deepEqual(await restarted.listProjectVersions(PROJECT), versions); assert.deepEqual(await restarted.listProjectVersions('10000000-0000-4000-8000-000000000099'), []);
-    const diagnostics = await restarted.diagnostics(); assert.equal(diagnostics.canonicalMismatchCount, 0); assert.equal(diagnostics.catalogMismatchCount, 0); assert.equal(diagnostics.catalogEntryCount, 14); assert.equal(diagnostics.unavailableExecutorCount, 14); assert.equal(diagnostics.planMismatchCount, 0); assert.equal(diagnostics.residualProcessCount, 0);
-    const checks = await new WorkflowDiagnosticContributor(restarted).diagnose(); const catalogCheck = checks.find(check => check.id === 'workflow.catalog'); assert.equal(catalogCheck?.status, 'fail'); assert.equal(catalogCheck?.details?.unavailableExecutorCount, 14); assert.equal(checks.find(check => check.id === 'workflow.scheduler')?.status, 'pass'); assert.deepEqual(checks.find(check => check.id === 'workflow.accessibility')?.details, { editorViews: 2, sharedSemanticGraph: true }); assert.equal(checks.find(check => check.id === 'workflow.accessibility')?.status, 'pass'); await restarted.onStop();
+    const diagnostics = await restarted.diagnostics(); assert.equal(diagnostics.canonicalMismatchCount, 0); assert.equal(diagnostics.catalogMismatchCount, 0); assert.equal(diagnostics.catalogEntryCount, 14); assert.equal(diagnostics.availableExecutorCount, 5); assert.equal(diagnostics.unavailableExecutorCount, 9); assert.equal(diagnostics.planMismatchCount, 0); assert.equal(diagnostics.residualProcessCount, 0);
+    const checks = await new WorkflowDiagnosticContributor(restarted).diagnose(); const catalogCheck = checks.find(check => check.id === 'workflow.catalog'); assert.equal(catalogCheck?.status, 'fail'); assert.equal(catalogCheck?.details?.availableExecutorCount, 5); assert.equal(catalogCheck?.details?.unavailableExecutorCount, 9); assert.equal(checks.find(check => check.id === 'workflow.scheduler')?.status, 'pass'); assert.deepEqual(checks.find(check => check.id === 'workflow.accessibility')?.details, { editorViews: 2, sharedSemanticGraph: true }); assert.equal(checks.find(check => check.id === 'workflow.accessibility')?.status, 'pass'); await restarted.onStop();
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 
@@ -71,10 +72,10 @@ test('refuses startup after immutable graph corruption and diagnostics fail as a
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 
-test('binds every closed node kind to one canonical catalog digest while refusing unavailable executors', () => {
-  const catalog = new WorkflowNodeCatalog(); const diagnostics = catalog.diagnostics();
-  assert.equal(diagnostics.valid, true); assert.equal(diagnostics.entryCount, 14); assert.equal(diagnostics.unavailableExecutorCount, 14);
-  assert.match(catalog.digest, /^[0-9a-f]{64}$/u); assert.equal(catalog.entries.every(entry => entry.executor.status === 'unavailable'), true);
+test('binds every closed node kind to one canonical catalog digest while refusing unavailable external executors', () => {
+  const catalog = new WorkflowNodeCatalog(new WorkflowExecutorRegistry()); const diagnostics = catalog.diagnostics();
+  assert.equal(diagnostics.valid, true); assert.equal(diagnostics.entryCount, 14); assert.equal(diagnostics.availableExecutorCount, 5); assert.equal(diagnostics.unavailableExecutorCount, 9);
+  assert.match(catalog.digest, /^[0-9a-f]{64}$/u); assert.deepEqual(catalog.entries.filter(entry => entry.executor.status === 'available').map(entry => entry.kind), ['control.condition','control.finally','control.group','control.join','control.parallel']);
   assert.deepEqual(catalog.entry('implementation.agent').grantCeiling, ['invoke-provider','mutate-private-repository','read-repository','run-tool']);
 });
 
@@ -205,4 +206,4 @@ test('refuses startup after immutable scheduler recovery fact corruption', async
 function validGraph(): EditableWorkflowGraphV1 & { nodes: EditableWorkflowNodeV1[]; edges: ReturnType<typeof edge>[] } { const research = node('30000000-0000-4000-8000-000000000001', 'research.agent', ['read-repository','invoke-provider']); const implementation = node('30000000-0000-4000-8000-000000000002', 'implementation.agent', ['read-repository','mutate-private-repository','invoke-provider','run-tool']); return { schemaVersion: '1', projectId: PROJECT, nodes: [research, implementation], edges: [edge('40000000-0000-4000-8000-000000000001', research.nodeId, implementation.nodeId)] }; }
 function node(nodeId: string, kind: EditableWorkflowNodeV1['kind'], requestedEffects: EditableWorkflowNodeV1['requestedEffects']): EditableWorkflowNodeV1 & { requestedEffects: EditableWorkflowNodeV1['requestedEffects']; retry: EditableWorkflowNodeV1['retry']; configurationDigest: string } { const configuration = kind === 'research.agent' ? { schemaVersion: '1' as const, roleRevisionId: '60000000-0000-4000-8000-000000000001', providerId: 'kogg.fixture', modelId: 'fixture.research', adapterKey: 'kogg.fixture', adapterVersion: '1.0.0', deadlinePolicyId: 'research-v1', absoluteDeadlineMs: 60_000, target: 'project-read-only' as const, condition: 'always' as const } : kind === 'implementation.agent' ? { schemaVersion: '1' as const, roleRevisionId: '60000000-0000-4000-8000-000000000002', providerId: 'kogg.fixture', modelId: 'fixture.echo', adapterKey: 'kogg.fixture', adapterVersion: '1.0.0', deadlinePolicyId: 'interactive-v1', absoluteDeadlineMs: 60_000, target: 'private-worktree' as const, condition: 'always' as const } : undefined; return { nodeId, kind, kindVersion: '1', configurationDigest: configuration ? workflowDigest('node-configuration', configuration) : 'a'.repeat(64), ...(configuration ? { configuration } : {}), requestedEffects, retry: { maxAttempts: 1, backoffMs: 0, sideEffectPolicy: 'none' } }; }
 function edge(edgeId: string, sourceNodeId: string, targetNodeId: string) { return { edgeId, sourceNodeId, sourcePort: 'success' as const, targetNodeId, targetPort: 'in' as const }; }
-function workflowCompiler(): WorkflowCompiler { return new WorkflowCompiler(new WorkflowNodeCatalog()); }
+function workflowCompiler(): WorkflowCompiler { return new WorkflowCompiler(new WorkflowNodeCatalog(new WorkflowExecutorRegistry())); }
