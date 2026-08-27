@@ -11,7 +11,7 @@ import { OperationsActionRouter } from './operations-action-router';
 import type { OperationRegistryApi } from '../common/operations-protocol';
 import { OperationRegistry } from './operation-registry';
 
-// diagnostic-coverage: operations.projection, operations.owners, operations.correlations, operations.timeline, operations.processes, operations.metrics, operations.source-maps
+// diagnostic-coverage: operations.projection, operations.owners, operations.correlations, operations.timeline, operations.processes, operations.metrics, operations.retention, operations.source-maps
 
 test('accepts a chained owner stream idempotently and rebuilds an identical safe projection', async () => {
   const fixture = await createFixture();
@@ -41,7 +41,7 @@ test('accepts a chained owner stream idempotently and rebuilds an identical safe
     const after = fixture.model.snapshot();
     assert.deepEqual(after.runs, before.runs); assert.notEqual(after.projectionEpoch, before.projectionEpoch);
     const afterMetrics = fixture.model.metrics(); assert.notEqual(afterMetrics.projectionEpoch, beforeMetrics.projectionEpoch); assert.deepEqual(afterMetrics.values, beforeMetrics.values);
-    assert.deepEqual(fixture.model.diagnostics(), { integrity: true, foreignKeys: true, lifecycle: 'current', ownerCount: 3, acceptedEventCount: 7, faultCount: 0, causalGapCount: 0, processAbnormalCount: 0, metricViolationCount: 0 });
+    assert.deepEqual(fixture.model.diagnostics(), { integrity: true, foreignKeys: true, lifecycle: 'current', ownerCount: 3, acceptedEventCount: 7, faultCount: 0, causalGapCount: 0, processAbnormalCount: 0, metricViolationCount: 0, activeRetentionHoldCount: 0, retentionViolationCount: 0 });
   } finally { await fixture.close(); }
 });
 
@@ -67,6 +67,52 @@ test('fails metric projection closed and diagnoses undeclared high-cardinality l
     assert.throws(() => fixture.model.metrics(), (error: unknown) => error instanceof ProjectionFault && error.safeCode === 'METRIC_CONTRACT_INVALID');
     assert.match(logs.join('\n'), /METRIC_CONTRACT_INVALID/u); assert.doesNotMatch(logs.join('\n'), /run_id/u);
   } finally { console.error = originalError; await fixture.close(); }
+});
+
+test('expires only terminal zero-residual derived details while preserving accepted owner history', async () => {
+  const fixture = await createFixture(); const runId = randomUUID(); const observedAt = '2026-01-01T00:00:00.000Z';
+  try {
+    fixture.model.ingest(fixture.owner('workflow').event('run.completed', { runId }, { lifecycle: 'completed' }, undefined, observedAt));
+    const before = fixture.model.subscribe();
+    assert.equal(fixture.model.applyRetention(Date.parse('2026-02-01T00:00:00.001Z')), 1);
+    assert.equal(fixture.model.snapshot().runs.some(run => run.runId === runId), false);
+    assert.equal(fixture.model.timeline(runId).length, 0);
+    assert.equal(fixture.model.diagnostics().acceptedEventCount, 1);
+    const changes = fixture.model.subscribe(before.cursor).changes;
+    assert.equal(changes.at(-1)?.kind, 'retention'); assert.equal(changes.at(-1)?.protected, true);
+    fixture.model.rebuild();
+    assert.equal(fixture.model.snapshot().runs.some(run => run.runId === runId), false);
+    assert.equal(fixture.model.diagnostics().acceptedEventCount, 1);
+  } finally { await fixture.close(); }
+});
+
+test('keeps old derived details under an owner hold until that exact owner releases it', async () => {
+  const fixture = await createFixture(); const runId = randomUUID(); const observedAt = '2026-01-01T00:00:00.000Z';
+  try {
+    fixture.model.ingest(fixture.owner('workflow').event('run.completed', { runId }, { lifecycle: 'completed' }, undefined, observedAt));
+    const ranex = fixture.owner('ranex');
+    fixture.model.ingest(ranex.event('evidence.requested', { runId }, { resultClass: 'pending' }, undefined, observedAt));
+    assert.equal(fixture.model.applyRetention(Date.parse('2026-03-15T00:00:00.000Z')), 0);
+    assert.equal(fixture.model.snapshot().runs.some(run => run.runId === runId), true);
+    assert.equal(fixture.model.diagnostics().activeRetentionHoldCount, 1);
+    fixture.model.ingest(new OwnerBuilder('ranex').event('evidence.retention-released', { runId }, { resultClass: 'not-applicable' }, undefined, observedAt));
+    assert.equal(fixture.model.applyRetention(Date.parse('2026-03-15T00:00:00.000Z')), 0);
+    assert.equal(fixture.model.diagnostics().activeRetentionHoldCount, 1);
+    fixture.model.ingest(ranex.event('evidence.retention-released', { runId }, { resultClass: 'not-applicable' }, undefined, observedAt));
+    assert.equal(fixture.model.applyRetention(Date.parse('2026-03-15T00:00:00.000Z')), 1);
+    assert.equal(fixture.model.snapshot().runs.some(run => run.runId === runId), false);
+    assert.deepEqual({ acceptedEventCount: fixture.model.diagnostics().acceptedEventCount, retentionViolationCount: fixture.model.diagnostics().retentionViolationCount }, { acceptedEventCount: 4, retentionViolationCount: 0 });
+  } finally { await fixture.close(); }
+});
+
+test('fails retention closed with a safe diagnostic classification', async () => {
+  const fixture = await createFixture(); const lines: string[] = []; const original = console.error;
+  console.error = (...values: unknown[]) => lines.push(JSON.stringify(values));
+  try {
+    const database = (fixture.model as unknown as { db(): { exec(sql: string): void } }).db(); database.exec('DROP TABLE retention_holds');
+    assert.throws(() => fixture.model.applyRetention(), /no such table/u);
+    assert.match(lines.join('\n'), /PROJECTION_RETENTION_FAILED/u); assert.doesNotMatch(lines.join('\n'), /SELECT|retention_holds/u);
+  } finally { console.error = original; await fixture.close(); }
 });
 
 test('persists chain conflicts as degraded faults without cursor advance', async () => {
@@ -245,8 +291,8 @@ class OwnerBuilder {
   private sequence = 0n; private previous = '0'.repeat(64);
   private readonly instanceId = randomUUID(); private readonly epochId = randomUUID();
   constructor(private readonly kind: OwnerKind) {}
-  event(eventKind: string, correlations: SafeCorrelationsV1, safePayload: SafeOwnerPayloadV1, causalParent?: OwnerEventV1): OwnerEventV1 {
-    const unsigned: Omit<OwnerEventV1, 'eventDigest'> = { ownerKind: this.kind, ownerInstanceId: this.instanceId, ownerSchemaVersion: 1, epochId: this.epochId, sequence: String(++this.sequence), eventId: randomUUID(), eventKind, factId: randomUUID(), factDigest: 'a'.repeat(64), previousEventDigest: this.previous, causalParents: causalParent ? [{ ownerInstanceId: causalParent.ownerInstanceId, epochId: causalParent.epochId, sequence: causalParent.sequence, eventDigest: causalParent.eventDigest }] : [], correlations, observedAt: new Date().toISOString(), safePayload };
+  event(eventKind: string, correlations: SafeCorrelationsV1, safePayload: SafeOwnerPayloadV1, causalParent?: OwnerEventV1, observedAt = new Date().toISOString()): OwnerEventV1 {
+    const unsigned: Omit<OwnerEventV1, 'eventDigest'> = { ownerKind: this.kind, ownerInstanceId: this.instanceId, ownerSchemaVersion: 1, epochId: this.epochId, sequence: String(++this.sequence), eventId: randomUUID(), eventKind, factId: randomUUID(), factDigest: 'a'.repeat(64), previousEventDigest: this.previous, causalParents: causalParent ? [{ ownerInstanceId: causalParent.ownerInstanceId, epochId: causalParent.epochId, sequence: causalParent.sequence, eventDigest: causalParent.eventDigest }] : [], correlations, observedAt, safePayload };
     const event = { ...unsigned, eventDigest: OperationsReadModel.digest(unsigned) }; this.previous = event.eventDigest; return event;
   }
 }

@@ -36,6 +36,7 @@
     { "id": "operations.timeline", "owner": "kogg-operations", "description": "The safe correlated timeline is complete and deterministically ordered." },
     { "id": "operations.stream", "owner": "kogg-operations", "description": "Authenticated projection streaming, resume, bounds, backpressure, and resync are healthy." },
     { "id": "operations.metrics", "owner": "kogg-operations", "description": "Closed local metrics preserve monotonic epochs, fixed labels, and bounded cardinality." },
+    { "id": "operations.retention", "owner": "kogg-operations", "description": "Detailed projection expiry preserves every active task, incident, evidence, verdict, merge, and quarantine hold." },
     { "id": "operations.support", "owner": "kogg-operations", "description": "Private support export remains bounded, redacted, checksummed, and local." },
     { "id": "operations.actions", "owner": "kogg-operations", "description": "Operations actions are revalidated and routed to authoritative owners without optimistic mutation." },
     { "id": "operations.source-maps", "owner": "kogg-operations", "description": "Operations browser, backend, Electron, and projection code remains debugger-reachable through source maps." },

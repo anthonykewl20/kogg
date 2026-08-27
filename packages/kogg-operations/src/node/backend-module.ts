@@ -13,6 +13,8 @@ import { OperationsActionRouter } from './operations-action-router';
 import { OperationsOwnerWiring } from './operations-owner-wiring';
 import { KoggOperationsOwnerSink, KoggOperationsReadModelServicePath, type KoggOperationsReadModelClient } from '../common/operations-read-model-protocol';
 
+// diagnostic-coverage: operations.projection, operations.retention
+
 export default new ContainerModule(bind => {
   bind(OperationRegistry).toSelf().inSingletonScope();
   bind(KoggOperationRegistry).toService(OperationRegistry);

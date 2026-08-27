@@ -7,7 +7,7 @@ import { OperationsSupportExporter } from './operations-support-export';
 import { OWNER_KINDS } from '../common/operations-read-model-protocol';
 import { OperationsActionRouter } from './operations-action-router';
 
-// diagnostic-coverage: operations.projection, operations.owners, operations.correlations, operations.timeline, operations.processes, operations.stream, operations.metrics, operations.support, operations.actions, operations.source-maps
+// diagnostic-coverage: operations.projection, operations.owners, operations.correlations, operations.timeline, operations.processes, operations.stream, operations.metrics, operations.retention, operations.support, operations.actions, operations.source-maps
 
 @injectable()
 export class OperationsReadModelDiagnosticContributor implements KoggDiagnosticContributor {
@@ -33,13 +33,14 @@ export class OperationsReadModelDiagnosticContributor implements KoggDiagnosticC
         { id: 'operations.timeline', status: result.causalGapCount ? 'fail' : 'pass', summary: result.causalGapCount ? 'Timeline ordering is degraded by a causal gap.' : 'Timeline entries retain verified owner order.' },
         { id: 'operations.stream', status: streamReady ? 'pass' : 'fail', summary: streamReady ? 'Authenticated bounded streaming, cursor resume, and safe resync are active.' : 'Authenticated operations streaming is not active.', details: { clientCount: stream.clientCount } },
         { id: 'operations.metrics', status: result.metricViolationCount ? 'fail' : 'pass', summary: result.metricViolationCount ? 'A closed metric contract failed validation.' : 'Closed local metric cardinality is valid.' },
+        { id: 'operations.retention', status: result.retentionViolationCount ? 'fail' : 'pass', summary: result.retentionViolationCount ? 'A retained hold lost its detailed projection.' : 'Detailed projection retention honors every active owner hold.', details: { activeRetentionHoldCount: result.activeRetentionHoldCount } },
         { id: 'operations.support', status: support.permissions && support.expired ? 'pass' : 'fail', summary: support.permissions && support.expired ? 'Private bounded operations support export storage is valid.' : 'Private operations support export storage failed its safety checks.' },
         { id: 'operations.actions', status: actionsReady ? 'pass' : 'fail', summary: actionsReady ? 'Cancel actions revalidate current projection authority and synchronize owner results.' : 'An authoritative action route is unavailable or has an unsynchronized outcome.', details: { cancelRouteAvailable: actions.cancelRouteAvailable, unsynchronizedOutcomeCount: actions.unsynchronizedOutcomeCount } },
         { id: 'operations.source-maps', status: sourceMapsPresent ? 'pass' : 'fail', summary: sourceMapsPresent ? 'Operations browser and backend debugger source maps are present.' : 'Operations browser or backend source maps are unavailable.' }
       ];
     } catch (error) {
       console.error('[kogg:operations:projection] failed', { safeCode: 'PROJECTION_DIAGNOSTICS_FAILED', errorType: error instanceof Error ? error.name : 'UnknownError' });
-      return ['projection', 'owners', 'correlations', 'timeline', 'stream', 'metrics', 'support', 'actions', 'source-maps'].map(id => ({ id: `operations.${id}`, status: 'fail' as const, summary: 'Operations read-model diagnostics could not run.' }));
+      return ['projection', 'owners', 'correlations', 'timeline', 'stream', 'metrics', 'retention', 'support', 'actions', 'source-maps'].map(id => ({ id: `operations.${id}`, status: 'fail' as const, summary: 'Operations read-model diagnostics could not run.' }));
     }
   }
 }
