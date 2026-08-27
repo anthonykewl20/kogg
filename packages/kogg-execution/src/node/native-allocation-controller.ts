@@ -21,6 +21,7 @@ export interface NativeAllocationControllerConfiguration {
   readonly platform: NodeJS.Platform; readonly arch: string; readonly allocationRoot: string;
   readonly binary: string; readonly manifest: string; readonly timeoutMs: number;
 }
+export interface PrivateAllocationPaths { readonly privateRoot: string; readonly bundlePath: string; }
 
 @injectable()
 export class NativeAllocationController implements BackendApplicationContribution {
@@ -35,6 +36,13 @@ export class NativeAllocationController implements BackendApplicationContributio
 
   onStart(): void { if (this.supported()) this.openRoot(); }
   onStop(): void { if (this.rootFd !== undefined) closeSync(this.rootFd); this.rootFd = undefined; }
+
+  privateGitPaths(allocation: Pick<ExecutionAllocationSummaryV1, 'allocationName'>): PrivateAllocationPaths {
+    if (!/^r-[a-z2-7]{26}$/u.test(allocation.allocationName)) throw new NativeAllocationError('ALLOCATION_INTEGRITY_FAILED');
+    const directory = path.resolve(this.configuration.allocationRoot, allocation.allocationName);
+    if (path.dirname(directory) !== path.resolve(this.configuration.allocationRoot)) throw new NativeAllocationError('ALLOCATION_INTEGRITY_FAILED');
+    return { privateRoot: path.join(directory, 'worktree'), bundlePath: path.join(directory, 'seed.bundle') };
+  }
 
   async allocate(request: ReserveExecutionAllocationV1): Promise<ExecutionAllocationSummaryV1> {
     const artifactDigest = this.artifactDigest();
