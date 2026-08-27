@@ -125,7 +125,13 @@ class FixtureKernel implements Partial<KernelBridge> {
     return {
       protocol: 'kogg.ranex/v2', requestId: randomUUID(), operationId: randomUUID(), status: 'succeeded', safeCode: 'KERNEL_OK',
       resultDigest: `sha256:${'d'.repeat(64)}`, journal: null,
-      projection: { verdictId: expectation.verdictId, verdictDigest: expectation.verdictDigest, historicalDecision: 'pass', currentness, currentDecision: currentness === 'current' ? 'pass' : null }
+      projection: {
+        verdictId: expectation.verdictId, verdictDigest: expectation.verdictDigest, historicalDecision: 'pass', currentness, currentDecision: currentness === 'current' ? 'pass' : null,
+        evidenceSetDigest: `sha256:${'7'.repeat(64)}`, gateCatalogDigest: expectation.gateCatalogDigest, authorityDigest: expectation.authorityDigest,
+        ranexProvenanceDigest: expectation.ranexProvenanceDigest, journalRootDigest: `sha256:${'8'.repeat(64)}`, journalSequence: 5,
+        evaluatedAt: '2026-08-27T00:00:00.000Z', gateRows: [{ claimType: 'tests.unit', checkDefinitionDigest: `sha256:${'9'.repeat(64)}`, requiredOutcome: 'pass', result: 'pass', evidenceDigest: `sha256:${'a'.repeat(64)}`, producerBindingDigest: `sha256:${'b'.repeat(64)}` }],
+        subjectState: currentSubject
+      }
     };
   }
 }

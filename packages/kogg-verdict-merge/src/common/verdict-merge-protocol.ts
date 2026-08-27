@@ -8,13 +8,15 @@ export type VerdictMergeSafeCode = 'VERDICT_OK' | 'VERDICT_FAIL' | 'VERDICT_BLOC
   | 'MERGE_PREFLIGHT_PENDING' | 'MERGE_ALREADY_REQUESTED'
   | 'STORE_INTEGRITY_FAILED' | 'PROTOCOL_INVALID' | 'INTERNAL_FAILURE';
 export interface VerdictQueryV1 {
-  readonly queryId: string; readonly requestId: string; readonly taskId: string; readonly taskRevisionId: string;
+  readonly queryId: string; readonly requestId: string; readonly taskId: string; readonly taskRevisionId: string; readonly taskAdmissionId: string;
   readonly approvalDigest: string; readonly projectId: string; readonly repositoryId: string; readonly repositoryIdentityDigest: string;
   readonly destinationRef: string; readonly expectedBaseOid: string; readonly subjectOid: string; readonly subjectTreeOid: string;
   readonly evidenceSetDigest: string; readonly gateCatalogDigest: string; readonly ranexArtifactDigest: string;
+  readonly verdictId: string; readonly verdictDigest: string; readonly taskBindingDigest: string; readonly subjectStateDigest: string;
+  readonly verifierAuthorityDigest: string; readonly ranexProvenanceDigest: string;
   readonly ranexProtocolVersion: '2'; readonly ranexJournalRoot: string; readonly ranexJournalSeq: string;
 }
-export interface GateExplanationV1 { readonly gateId: string; readonly gateVersion: string; readonly required: boolean; readonly result: 'pass' | 'fail' | 'blocked'; readonly safeReasonCode: string; readonly producerRoleDigest: string; readonly verifierRoleDigest: string; readonly evidenceDigest: string; readonly subjectDigest: string; readonly journalSeq: string; }
+export interface GateExplanationV1 { readonly gateId: string; readonly gateVersion: string; readonly required: boolean; readonly result: 'pass' | 'fail' | 'blocked'; readonly safeReasonCode: string; readonly producerRoleDigest: string | null; readonly verifierRoleDigest: string; readonly evidenceDigest: string | null; readonly subjectDigest: string; readonly journalSeq: string; }
 export interface VerdictExplanationV1 { readonly explanationId: string; readonly queryDigest: string; readonly ranexDecision: 'pass' | 'fail' | 'blocked'; readonly currentness: 'current' | 'stale' | 'unknown'; readonly currentnessCode: VerdictMergeSafeCode; readonly gateRows: readonly GateExplanationV1[]; readonly requiredCount: number; readonly passCount: number; readonly failCount: number; readonly blockedCount: number; readonly verifiedAt: string; readonly expiresAt: string; readonly ranexProvenanceDigest: string; readonly journalRoot: string; readonly journalSeq: string; readonly explanationDigest: string; }
 export type VerdictExplanationResultV1 = { readonly kind: 'completed'; readonly safeCode: 'VERDICT_OK' | 'VERDICT_FAIL' | 'VERDICT_BLOCKED' | 'VERDICT_STALE' | 'VERDICT_UNKNOWN'; readonly explanation: VerdictExplanationV1; readonly replay: boolean } | { readonly kind: 'refused' | 'failed'; readonly safeCode: VerdictMergeSafeCode };
 export interface MergeChallengeRequestV1 { readonly requestId: string; readonly explanationId: string; }

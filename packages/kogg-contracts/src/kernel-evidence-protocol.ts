@@ -4,7 +4,7 @@ export const KOGG_RANEX_PROTOCOL = 'kogg.ranex/v2' as const;
 export const KOGG_RANEX_PROTOCOL_VERSION = 2 as const;
 export const KOGG_RANEX_COMMIT = '5586d68b0936f554759022caabe847087f1d03ef' as const;
 export const KOGG_RANEX_TREE = '581ce66c54116d4be48b96c3a0359fbdd9d3077f' as const;
-export const KERNEL_SCHEMA_SET_DIGEST = 'sha256:bf1ec53f7415fa5affb2f302cf569c81c9791a2018a88ce13232aef89dcaf8b5' as const;
+export const KERNEL_SCHEMA_SET_DIGEST = 'sha256:90d8f437f914807b5eee9bcd4b1f701ebb34da9648bed1db83c6f2a0749192da' as const;
 export const KERNEL_MAX_FRAME_BYTES = 1024 * 1024;
 export const KERNEL_MAX_DEPTH = 32;
 export const KERNEL_MAX_MEMBERS = 4096;
@@ -277,12 +277,30 @@ export interface VerdictReadExpectationV1 {
   readonly ranexProvenanceDigest: KoggDigest;
 }
 
+export interface VerdictGateProjectionV1 {
+  readonly claimType: string;
+  readonly checkDefinitionDigest: KoggDigest;
+  readonly requiredOutcome: 'pass';
+  readonly result: 'pass' | 'fail' | 'blocked';
+  readonly evidenceDigest: KoggDigest | null;
+  readonly producerBindingDigest: KoggDigest | null;
+}
+
 export interface VerdictReadProjectionV1 {
   readonly verdictId: string;
   readonly verdictDigest: KoggDigest;
   readonly historicalDecision: VerdictBindingV1['decision'];
   readonly currentness: 'current' | 'stale';
   readonly currentDecision: VerdictBindingV1['decision'] | null;
+  readonly evidenceSetDigest: KoggDigest;
+  readonly gateCatalogDigest: KoggDigest;
+  readonly authorityDigest: KoggDigest;
+  readonly ranexProvenanceDigest: KoggDigest;
+  readonly journalRootDigest: KoggDigest;
+  readonly journalSequence: number;
+  readonly evaluatedAt: string;
+  readonly gateRows: readonly VerdictGateProjectionV1[];
+  readonly subjectState: RepositoryStateV1;
 }
 
 export interface OperationReconcileExpectationV1 {

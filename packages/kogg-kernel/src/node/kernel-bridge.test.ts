@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { mkdtemp, rm } from 'node:fs/promises';
 import os from 'node:os';
@@ -130,7 +130,12 @@ test('handshakes with the pinned Ranex kernel and fails closed on missing journa
     assert.equal(currentVerdict.status, 'succeeded'); assert.equal(currentVerdict.journal, null);
     assert.deepEqual(currentVerdict.projection, {
       verdictId: expectation.verdictId, verdictDigest: evaluated.projection!.verdictDigest,
-      historicalDecision: 'pass', currentness: 'current', currentDecision: 'pass'
+      historicalDecision: 'pass', currentness: 'current', currentDecision: 'pass',
+      evidenceSetDigest: domainDigest('evidence-set', [admitted.projection!.evidenceDigest]), gateCatalogDigest: expectation.gateCatalogDigest,
+      authorityDigest: expectation.authorityDigest, ranexProvenanceDigest: expectation.ranexProvenanceDigest,
+      journalRootDigest: admitted.journal!.rootDigest, journalSequence: 5, evaluatedAt: expectation.evaluatedAt,
+      gateRows: [{ claimType: 'tests.unit', checkDefinitionDigest, requiredOutcome: 'pass', result: 'pass', evidenceDigest: admitted.projection!.evidenceDigest, producerBindingDigest: producerCommitted.projection!.producerBindingDigest }],
+      subjectState: execution.subjectState
     });
     const subjectChanged = await bridge.readVerdict(verdictRead, { ...execution.subjectState, treeObjectId: '4'.repeat(40) });
     assert.equal(subjectChanged.status, 'succeeded'); assert.equal(subjectChanged.projection?.currentness, 'stale');
@@ -205,7 +210,7 @@ test('maps a structurally invalid operation to a closed protocol refusal', async
       protocol: 'kogg.ranex/v2', requestId: '11111111-1111-4111-8111-111111111111',
       operationId: '22222222-2222-4222-8222-222222222222', idempotencyKey: `sha256:${'0'.repeat(64)}`,
       operation: {}, operationVersion: 1, ranexCommit: KOGG_RANEX_COMMIT,
-      schemaSetDigest: `sha256:bf1ec53f7415fa5affb2f302cf569c81c9791a2018a88ce13232aef89dcaf8b5`,
+      schemaSetDigest: `sha256:90d8f437f914807b5eee9bcd4b1f701ebb34da9648bed1db83c6f2a0749192da`,
       bodyDigest: `sha256:${'0'.repeat(64)}`, body: {}
     };
     const payload = Buffer.from(JSON.stringify(request), 'utf8');
@@ -227,6 +232,28 @@ test('maps a structurally invalid operation to a closed protocol refusal', async
     child.kill();
     await rm(state, { recursive: true, force: true });
   }
+});
+
+test('rejects malformed gate digests in a journaled verdict projection', () => {
+  const root = process.cwd();
+  const python = process.platform === 'win32'
+    ? path.join(root, '.venv', 'Scripts', 'python.exe')
+    : path.join(root, '.venv', 'bin', 'python');
+  const script = [
+    'import runpy',
+    "module = runpy.run_path('packages/kogg-kernel/python/kogg_ranex_adapter.py')",
+    "row = {'claimType':'tests.unit','checkDefinitionDigest':'invalid','requiredOutcome':'pass','result':'blocked','evidenceDigest':None,'producerBindingDigest':None}",
+    'try:',
+    " module['_verdict_gate_rows']([row])",
+    "except module['ProtocolRefusal'] as error:",
+    " raise SystemExit(0 if error.safe_code == 'KERNEL_JOURNAL_INTEGRITY' else 2)",
+    'raise SystemExit(3)'
+  ].join('\n');
+  const result = spawnSync(python, ['-c', script], {
+    cwd: root, encoding: 'utf8',
+    env: { ...process.env, PYTHONPATH: path.join(root, 'vendor', 'ranex', 'src') }
+  });
+  assert.equal(result.status, 0, result.stderr);
 });
 
 function logger(): ILogger { return { debug() {}, info() {}, warn() {}, error() {} } as unknown as ILogger; }

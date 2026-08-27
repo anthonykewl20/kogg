@@ -485,9 +485,17 @@ function validOperationProjection(operation: KernelOperationV2, value: unknown):
       && Number.isSafeInteger(projection.evidenceCount) && Number(projection.evidenceCount) >= 0;
   }
   if (operation === 'verdict.read') {
-    return Object.keys(projection).sort().join(',') === 'currentDecision,currentness,historicalDecision,verdictDigest,verdictId'
+    const rows = projection.gateRows;
+    return Object.keys(projection).sort().join(',') === 'authorityDigest,currentDecision,currentness,evaluatedAt,evidenceSetDigest,gateCatalogDigest,gateRows,historicalDecision,journalRootDigest,journalSequence,ranexProvenanceDigest,subjectState,verdictDigest,verdictId'
       && validDigest(projection.verdictDigest) && validUuid(projection.verdictId)
+      && validDigest(projection.evidenceSetDigest) && validDigest(projection.gateCatalogDigest) && validDigest(projection.authorityDigest)
+      && validDigest(projection.ranexProvenanceDigest) && validDigest(projection.journalRootDigest)
+      && Number.isSafeInteger(projection.journalSequence) && Number(projection.journalSequence) >= 0
+      && typeof projection.evaluatedAt === 'string' && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/u.test(projection.evaluatedAt)
+      && Array.isArray(rows) && rows.length >= 1 && rows.length <= 64 && rows.every(validVerdictGateProjection)
+      && validRepositoryState(projection.subjectState)
       && ['pass', 'fail', 'blocked'].includes(String(projection.historicalDecision))
+      && projection.historicalDecision === verdictDecision(rows)
       && ['current', 'stale'].includes(String(projection.currentness))
       && (projection.currentDecision === null || ['pass', 'fail', 'blocked'].includes(String(projection.currentDecision)))
       && (projection.currentness === 'current') === (projection.currentDecision === projection.historicalDecision);
@@ -504,6 +512,29 @@ function validOperationProjection(operation: KernelOperationV2, value: unknown):
       && projection.outcome === 'cancelled-clean';
   }
   return true;
+}
+function validRepositoryState(value: unknown): boolean {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  const state = value as Record<string, unknown>;
+  const oidLength = state.objectFormat === 'sha1' ? 40 : state.objectFormat === 'sha256' ? 64 : 0;
+  return Object.keys(state).sort().join(',') === 'commitObjectId,gitCommonDirectoryIdentity,indexDigest,isClean,objectFormat,trackedContentDigest,treeObjectId,untrackedPolicyDigest,worktreeIdentity'
+    && oidLength > 0 && typeof state.commitObjectId === 'string' && new RegExp(`^[0-9a-f]{${oidLength}}$`, 'u').test(state.commitObjectId)
+    && typeof state.treeObjectId === 'string' && new RegExp(`^[0-9a-f]{${oidLength}}$`, 'u').test(state.treeObjectId)
+    && ['gitCommonDirectoryIdentity', 'indexDigest', 'trackedContentDigest', 'untrackedPolicyDigest', 'worktreeIdentity'].every(field => validDigest(state[field]))
+    && typeof state.isClean === 'boolean';
+}
+function validVerdictGateProjection(value: unknown): boolean {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  const row = value as Record<string, unknown>;
+  return Object.keys(row).sort().join(',') === 'checkDefinitionDigest,claimType,evidenceDigest,producerBindingDigest,requiredOutcome,result'
+    && typeof row.claimType === 'string' && /^[a-z0-9][a-z0-9._:-]{0,127}$/u.test(row.claimType)
+    && validDigest(row.checkDefinitionDigest) && row.requiredOutcome === 'pass' && ['pass', 'fail', 'blocked'].includes(String(row.result))
+    && (row.evidenceDigest === null || validDigest(row.evidenceDigest)) && (row.producerBindingDigest === null || validDigest(row.producerBindingDigest))
+    && (row.result === 'blocked') === (row.evidenceDigest === null || row.producerBindingDigest === null);
+}
+function verdictDecision(rows: readonly unknown[]): 'pass' | 'fail' | 'blocked' {
+  const results = rows.map(row => (row as Record<string, unknown>).result);
+  return results.includes('fail') ? 'fail' : results.includes('blocked') ? 'blocked' : 'pass';
 }
 function validUuid(value: unknown): boolean { return typeof value === 'string' && /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u.test(value); }
 function validDigest(value: unknown): boolean { return typeof value === 'string' && /^sha256:[0-9a-f]{64}$/u.test(value); }
