@@ -4,13 +4,14 @@ import path from 'node:path';
 import { DatabaseSync, type SQLOutputValue } from 'node:sqlite';
 import { BackendApplicationContribution } from '@theia/core/lib/node';
 import { inject, injectable, unmanaged } from '@theia/core/shared/inversify';
-import type { KoggWorkflowService, WorkflowMutationResult, WorkflowSafeCode, WorkflowTemplateVersionProjection, WorkflowValidationProjection } from '../common/workflow-protocol';
+import type { KoggWorkflowService, WorkflowMutationResult, WorkflowNodeConfigurationV1, WorkflowSafeCode, WorkflowTemplateVersionProjection, WorkflowValidationProjection } from '../common/workflow-protocol';
 import { canonicalJson, WorkflowValidationError, workflowDigest } from '../common/workflow-canonical';
 import { WorkflowCompiler } from './workflow-compiler';
 import { workflowLog } from './workflow-logger';
 import type { OperationsOwnerSink, OwnerEventV1, SafeOwnerPayloadV1 } from '@kogg/operations/lib/common/operations-read-model-protocol';
 import { OperationsReadModel } from '@kogg/operations/lib/node/operations-read-model';
 import { KoggModeOperationAuthorizer, type ModeOperationAuthorizer } from '@kogg/interaction-modes/lib/common/interaction-modes-protocol';
+import { KoggAgentBindingAuthorizer, type AgentBindingAuthorizer, type AgentBindingAuthorizationRequestV1 } from '@kogg/agents/lib/common/agents-protocol';
 
 // Logs through the closed workflowLog schemas.
 // diagnostic-coverage: workflow.schema, workflow.catalog, workflow.graph, workflow.anchors, workflow.authority, workflow.scheduler, workflow.processes, workflow.cleanup, workflow.recovery, workflow.source-maps
@@ -27,6 +28,7 @@ export class WorkflowRegistry implements KoggWorkflowService, BackendApplication
   private ownerSink: OperationsOwnerSink | undefined;
   constructor(@inject(WorkflowCompiler) private readonly compiler: WorkflowCompiler,
     @inject(KoggModeOperationAuthorizer) private readonly modeAuthority: ModeOperationAuthorizer,
+    @inject(KoggAgentBindingAuthorizer) private readonly agentBindingAuthority: AgentBindingAuthorizer,
     @unmanaged() private readonly databasePath = path.join(stateRoot(), 'workflow', 'registry.sqlite3')) {}
 
   async onStart(): Promise<void> {
@@ -124,18 +126,30 @@ export class WorkflowRegistry implements KoggWorkflowService, BackendApplication
       const catalog = this.compiler.catalogStatus();
       if (text(storedPlan, 'catalog_digest') !== catalog.digest || text(storedVersion, 'catalog_digest') !== catalog.digest) throw new WorkflowValidationError('WORKFLOW_CATALOG_MISMATCH');
       this.compiler.assertPlanIntegrity(plan(storedPlan), graph);
+      const requestDigest = workflowDigest('run-snapshot', { schemaVersion: '1', planId: input.planId, planDigest: text(storedPlan, 'plan_digest'), taskId: input.taskId });
+      const refuseAuthority = (): WorkflowMutationResult => {
+        const result = this.transaction(input.requestId, requestDigest, () => ({ kind: 'refused', code: 'WORKFLOW_AUTHORITY_EXPANSION' } as const));
+        workflowLog('run.admission.refused', { requestId: input.requestId, planId: input.planId, safeCode: result.code, unavailableExecutorCount: 0 }); return result;
+      };
       let authority: Awaited<ReturnType<ModeOperationAuthorizer['authorizeOperation']>>;
       try { authority = await this.modeAuthority.authorizeOperation({ requestId: input.requestId, taskId: input.taskId, operation: 'governed-entry' }); }
       catch { // observability-exempt: the closed admission refusal records only the fixed authority safe code and no upstream error content.
-        throw new WorkflowValidationError('WORKFLOW_AUTHORITY_EXPANSION');
+        return refuseAuthority();
       }
       if (!authority.allowed || authority.projection.state !== 'ready' || authority.projection.taskId !== input.taskId || authority.projection.projectId !== graph.projectId) {
-        const requestDigest = workflowDigest('run-snapshot', { schemaVersion: '1', planId: input.planId, planDigest: text(storedPlan, 'plan_digest'), taskId: input.taskId });
-        const result = this.transaction(input.requestId, requestDigest, () => ({ kind: 'refused', code: 'WORKFLOW_AUTHORITY_EXPANSION' } as const));
-        workflowLog('run.admission.refused', { requestId: input.requestId, planId: input.planId, safeCode: result.code, unavailableExecutorCount: 0 }); return result;
+        return refuseAuthority();
+      }
+      for (const node of graph.nodes.filter(candidate => candidate.kind.endsWith('.agent'))) {
+        const binding = agentBinding(node.configuration);
+        if (!binding) return refuseAuthority();
+        let resolved: Awaited<ReturnType<AgentBindingAuthorizer['authorizeBinding']>>;
+        try { resolved = await this.agentBindingAuthority.authorizeBinding(binding); }
+        catch { // observability-exempt: the closed workflow authority refusal excludes upstream errors and immutable configuration content.
+          return refuseAuthority();
+        }
+        if (!resolved.allowed) return refuseAuthority();
       }
       unavailableExecutorCount = graph.nodes.filter(node => this.compiler.catalogEntry(node.kind).executor.status === 'unavailable').length;
-      const requestDigest = workflowDigest('run-snapshot', { schemaVersion: '1', planId: input.planId, planDigest: text(storedPlan, 'plan_digest'), taskId: input.taskId });
       const result = this.transaction(input.requestId, requestDigest, () => ({ kind: 'refused', code: unavailableExecutorCount > 0 ? 'WORKFLOW_EXECUTOR_INCOMPATIBLE' : 'WORKFLOW_AUTHORITY_EXPANSION' } as const));
       workflowLog('run.admission.refused', { requestId: input.requestId, planId: input.planId, safeCode: result.code, unavailableExecutorCount });
       return result;
@@ -245,6 +259,10 @@ function text(row: Row, key: string): string { const value = row[key]; if (typeo
 function number(row: Row, key: string): number { const value = row[key]; if (typeof value !== 'number' || !Number.isSafeInteger(value)) throw new WorkflowValidationError('WORKFLOW_STORE_INTEGRITY'); return value; }
 function uuid(value: string): void { if (!UUID.test(value)) throw new WorkflowValidationError('WORKFLOW_SCHEMA_INVALID'); }
 function safeId(value: string): string { return UUID.test(value) ? value : 'invalid'; }
+function agentBinding(configuration: WorkflowNodeConfigurationV1 | undefined): AgentBindingAuthorizationRequestV1 | undefined {
+  if (!configuration?.roleRevisionId || !configuration.providerId || !configuration.modelId || !configuration.adapterKey || !configuration.adapterVersion || !configuration.deadlinePolicyId) return undefined;
+  return { roleRevisionId: configuration.roleRevisionId, providerId: configuration.providerId, modelId: configuration.modelId, adapterKey: configuration.adapterKey, adapterVersion: configuration.adapterVersion, deadlinePolicyId: configuration.deadlinePolicyId };
+}
 function codeOf(error: unknown): WorkflowSafeCode { return error instanceof WorkflowValidationError ? error.code : 'WORKFLOW_INTERNAL'; }
 function stateRoot(): string { return path.resolve(process.env.KOGG_STATE_DIR ?? path.join(process.cwd(), '.kogg', 'state')); }
 

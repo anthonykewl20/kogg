@@ -10,6 +10,9 @@ type LoggerArea = 'roles' | 'registry' | 'adapter' | 'supervision' | 'recovery';
 
 export interface AgentLogFields {
   'adapter.registered': { adapterKey: string; adapterVersion: string; protocolId: string; protocolVersion: string; ownerKind: string };
+  'binding.resolve.requested': { roleRevisionId: string; providerId: string; modelId: string; adapterKey: string; adapterVersion: string };
+  'binding.resolve.approved': { roleRevisionId: string; providerId: string; modelId: string; adapterKey: string; adapterVersion: string; safeCode: AgentSafeCode };
+  'binding.resolve.refused': { roleRevisionId: string; providerId: string; modelId: string; adapterKey: string; adapterVersion: string; safeCode: AgentSafeCode };
   'attempt.requested': { requestId: string; attemptId: string; rootAttemptId: string; parentAttemptId?: string };
   'attempt.admitted': { requestId: string; attemptId: string; roleRevisionId: string; projectId: string; taskId: string; runId?: string; worktreeId?: string; safeCode: AgentSafeCode };
   'attempt.refused': { requestId?: string; attemptId: string; roleRevisionId: string; projectId: string; taskId: string; safeCode: AgentSafeCode };
@@ -55,6 +58,9 @@ type Schema = { readonly area: LoggerArea; readonly level: LogLevel; readonly fi
 const schema = (area: LoggerArea, level: LogLevel, required: readonly string[], optional: readonly string[] = []): Schema => ({ area, level, fields: [...required, ...optional], required });
 const SCHEMAS: Record<AgentLogEvent, Schema> = {
   'adapter.registered': schema('adapter', 'info', ['adapterKey', 'adapterVersion', 'protocolId', 'protocolVersion', 'ownerKind']),
+  'binding.resolve.requested': schema('adapter', 'debug', ['roleRevisionId', 'providerId', 'modelId', 'adapterKey', 'adapterVersion']),
+  'binding.resolve.approved': schema('adapter', 'info', ['roleRevisionId', 'providerId', 'modelId', 'adapterKey', 'adapterVersion', 'safeCode']),
+  'binding.resolve.refused': schema('adapter', 'warn', ['roleRevisionId', 'providerId', 'modelId', 'adapterKey', 'adapterVersion', 'safeCode']),
   'attempt.requested': schema('registry', 'debug', ['requestId', 'attemptId', 'rootAttemptId'], ['parentAttemptId']),
   'attempt.admitted': schema('registry', 'info', ['requestId', 'attemptId', 'roleRevisionId', 'projectId', 'taskId', 'safeCode'], ['runId', 'worktreeId']),
   'attempt.refused': schema('registry', 'warn', ['attemptId', 'roleRevisionId', 'projectId', 'taskId', 'safeCode'], ['requestId']),
