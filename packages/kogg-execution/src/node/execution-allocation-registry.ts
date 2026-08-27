@@ -38,6 +38,8 @@ const LEGAL_TRANSITIONS: Readonly<Record<ExecutionState, readonly ExecutionState
 const TRANSITION_CODES = new Set(['ALLOCATION_OK', 'ALLOCATION_ADMISSION_BLOCKED', 'ALLOCATION_PROTOCOL_INVALID', 'ALLOCATION_REQUEST_REPLAY_MISMATCH', 'ALLOCATION_RUN_EXISTS', 'ALLOCATION_INTEGRITY_FAILED', 'ALLOCATION_REVISION_CONFLICT', 'ALLOCATION_BINDING_MISMATCH', 'ALLOCATION_STATE_INVALID', 'ALLOCATION_REPOSITORY_LEASE_CONFLICT', 'ALLOCATION_QUALIFICATION_INVALID', 'RECOVERY_OWNER_UNAVAILABLE', 'GIT_SEED_FAILED', 'GIT_SEED_TIMEOUT', 'GIT_SEED_OUTPUT_LIMIT', 'GIT_BASE_CHANGED', 'GIT_INDEPENDENCE_FAILED', 'GIT_SOURCE_INTEGRITY_FAILED', 'SEAL_OK', 'SEAL_FAILED', 'SEAL_BASE_MISMATCH', 'SEAL_NO_CHANGE', 'SEAL_DIRTY', 'SEAL_HEAD_INVALID', 'SEAL_ANCESTRY_INVALID', 'SEAL_MERGE_COMMIT', 'SEAL_MUTATION_POLICY', 'SEAL_OBJECT_INVALID', 'IMPORT_OK', 'IMPORT_FAILED', 'IMPORT_PROTOCOL_INVALID', 'IMPORT_SOURCE_CHANGED', 'IMPORT_CANDIDATE_INVALID', 'IMPORT_REF_EXISTS', 'IMPORT_SOURCE_INTEGRITY_FAILED', 'RETENTION_OK', 'RETENTION_ACTIVE', 'RETENTION_PROTOCOL_INVALID', 'EXECUTION_OK', 'QUALIFICATION_PLATFORM_UNSUPPORTED', 'QUALIFICATION_PROFILE_UNAVAILABLE', 'QUALIFICATION_PROTOCOL_INVALID', 'QUALIFICATION_EXPIRED', 'QUALIFICATION_FAILED', 'EXECUTION_INTERNAL_FAILED', 'PROCESS_EXIT_NONZERO', 'CLEANUP_FAILED', 'CLEANUP_IDENTITY_MISMATCH']);
 const IMPORT_FAILURE_CODES = new Set(['IMPORT_FAILED', 'IMPORT_PROTOCOL_INVALID', 'IMPORT_SOURCE_CHANGED', 'IMPORT_CANDIDATE_INVALID', 'IMPORT_REF_EXISTS', 'IMPORT_SOURCE_INTEGRITY_FAILED']);
 const RETENTION_MILLISECONDS = { rejected: 24 * 60 * 60 * 1000, completed: 24 * 60 * 60 * 1000, incident: 30 * 24 * 60 * 60 * 1000 } as const;
+const FIRST_QUOTA_PROJECT_ID = 10_000;
+const LAST_QUOTA_PROJECT_ID = 4_294_967_295;
 
 export interface ExecutionAllocationDiagnostics {
   readonly integrity: boolean; readonly foreignKeys: boolean; readonly permissions: boolean;
@@ -45,13 +47,15 @@ export interface ExecutionAllocationDiagnostics {
   readonly quarantinedCount: number; readonly recoveryRequiredCount: number; readonly unverifiedCount: number;
   readonly cleanupFailureCount: number; readonly reservationCount: number;
   readonly candidateCount: number; readonly pendingAllocationIntentCount: number; readonly pendingImportIntentCount: number; readonly activeRepositoryLeaseCount: number;
-  readonly quarantinedRepositoryLeaseCount: number; readonly pendingCleanupIntentCount: number; readonly retentionViolationCount: number; readonly loggingViolationCount: number;
+  readonly quarantinedRepositoryLeaseCount: number; readonly activeQuotaProjectLeaseCount: number; readonly quarantinedQuotaProjectLeaseCount: number;
+  readonly pendingCleanupIntentCount: number; readonly retentionViolationCount: number; readonly loggingViolationCount: number;
 }
 
 export interface PreparePhysicalAllocationV1 { readonly requestId: string; readonly worktreeId: string; readonly expectedRevision: string; readonly bindingDigest: string; readonly helperDigest: string; readonly mountQuotaDigest: string }
 export interface PhysicalAllocationIntentV1 {
   readonly schemaVersion: 1; readonly intentId: string; readonly worktreeId: string; readonly fencingToken: string;
   readonly expectedRevision: string; readonly allocationName: string; readonly allocationNonce: string;
+  readonly ownerInstanceId: string; readonly createdAt: string; readonly quotaProjectId: string;
   readonly quotaBytes: string; readonly quotaInodes: string; readonly helperDigest: string; readonly mountQuotaDigest: string;
 }
 export interface FailPhysicalAllocationV1 {
@@ -228,10 +232,16 @@ export class ExecutionAllocationRegistry implements BackendApplicationContributi
     if (existing) refusePhysicalAllocation(request, 'ALLOCATION_STATE_INVALID');
     const binding = JSON.parse(String(row.binding_json)) as ExecutionBindingV1;
     if (!await this.targets.authorizePhysicalAllocation(binding, request.helperDigest, request.mountQuotaDigest)) refusePhysicalAllocation(request, 'ALLOCATION_QUALIFICATION_INVALID');
-    const intentId = randomUUID(); const fencingToken = randomBytes(32).toString('hex'); const now = new Date().toISOString();
+    const intentId = randomUUID(); const fencingToken = randomBytes(32).toString('hex'); const now = new Date().toISOString(); let quotaProjectId = 0;
     this.transaction(database => {
+      const meta = database.prepare('SELECT next_quota_project_id FROM execution_meta WHERE singleton=1').get() as SqlRow;
+      quotaProjectId = Number(meta.next_quota_project_id);
+      if (!Number.isSafeInteger(quotaProjectId) || quotaProjectId < FIRST_QUOTA_PROJECT_ID || quotaProjectId > LAST_QUOTA_PROJECT_ID) throw new AllocationRegistryError('ALLOCATION_INTEGRITY_FAILED');
       database.prepare("INSERT INTO allocation_intents(intent_id,worktree_id,intent_type,phase,fencing_token,expected_revision,helper_digest,mount_quota_digest,safe_code,created_at,updated_at) VALUES(?,?,'allocation','requested',?,?,?,?,'ALLOCATION_OK',?,?)")
         .run(intentId, request.worktreeId, fencingToken, request.expectedRevision, request.helperDigest, request.mountQuotaDigest, now, now);
+      database.prepare("INSERT INTO quota_project_leases(project_id,intent_id,worktree_id,phase,safe_code,created_at,updated_at) VALUES(?,?,?,'active','ALLOCATION_OK',?,?)")
+        .run(quotaProjectId, intentId, request.worktreeId, now, now);
+      database.prepare('UPDATE execution_meta SET next_quota_project_id=next_quota_project_id+1 WHERE singleton=1').run();
       database.prepare('INSERT INTO physical_allocation_prepare_results(request_id,request_digest,intent_id,worktree_id,created_at) VALUES(?,?,?,?,?)')
         .run(request.requestId, requestDigest, intentId, request.worktreeId, now);
       this.event(database, request.worktreeId, 'allocation.intent.recorded', 'ALLOCATION_OK'); this.bump(database);
@@ -252,13 +262,16 @@ export class ExecutionAllocationRegistry implements BackendApplicationContributi
     if (this.admission() !== 'enabled') refusePhysicalAllocation(request, 'ALLOCATION_ADMISSION_BLOCKED');
     const row = this.databaseOrThrow().prepare('SELECT * FROM allocations WHERE worktree_id=?').get(request.worktreeId) as SqlRow | undefined;
     const intent = this.databaseOrThrow().prepare("SELECT * FROM allocation_intents WHERE intent_id=? AND intent_type='allocation'").get(request.intentId) as SqlRow | undefined;
-    if (!row || !intent) refusePhysicalAllocation(request, 'ALLOCATION_INTEGRITY_FAILED');
+    const quotaLease = this.databaseOrThrow().prepare('SELECT * FROM quota_project_leases WHERE intent_id=?').get(request.intentId) as SqlRow | undefined;
+    if (!row || !intent || !quotaLease) refusePhysicalAllocation(request, 'ALLOCATION_INTEGRITY_FAILED');
     if (String(row.binding_digest) !== request.bindingDigest || String(row.allocation_name) !== request.allocationName
       || String(row.allocation_nonce_digest) !== request.allocationNonceDigest || String(intent.worktree_id) !== request.worktreeId
       || String(intent.fencing_token) !== request.fencingToken || String(intent.helper_digest) !== request.helperDigest
-      || String(intent.mount_quota_digest) !== request.mountQuotaDigest) refusePhysicalAllocation(request, 'ALLOCATION_BINDING_MISMATCH');
+      || String(intent.mount_quota_digest) !== request.mountQuotaDigest || String(quotaLease.worktree_id) !== request.worktreeId
+      || String(quotaLease.project_id) !== request.quotaProjectId) refusePhysicalAllocation(request, 'ALLOCATION_BINDING_MISMATCH');
     if (String(row.revision) !== request.expectedRevision) refusePhysicalAllocation(request, 'ALLOCATION_REVISION_CONFLICT');
-    if (String(row.state) !== 'admitted' || String(intent.phase) !== 'requested' || String(row.quota_bytes) !== request.quotaBytes || String(row.quota_inodes) !== request.quotaInodes) refusePhysicalAllocation(request, 'ALLOCATION_STATE_INVALID');
+    if (String(row.state) !== 'admitted' || String(intent.phase) !== 'requested' || String(quotaLease.phase) !== 'active'
+      || String(row.quota_bytes) !== request.quotaBytes || String(row.quota_inodes) !== request.quotaInodes) refusePhysicalAllocation(request, 'ALLOCATION_STATE_INVALID');
     const binding = JSON.parse(String(row.binding_json)) as ExecutionBindingV1;
     if (!await this.targets.authorizePhysicalAllocation(binding, request.helperDigest, request.mountQuotaDigest)) refusePhysicalAllocation(request, 'ALLOCATION_QUALIFICATION_INVALID');
     const identityDigest = digest('kogg-execution-filesystem-identity-v1', canonicalFilesystemIdentity(request));
@@ -268,7 +281,8 @@ export class ExecutionAllocationRegistry implements BackendApplicationContributi
         .run(identityDigest, now, request.intentId, request.fencingToken);
       const result = database.prepare(`UPDATE allocations SET state='allocated',filesystem_identity_digest=?,filesystem_device=?,filesystem_inode=?,owner_uid=?,allocation_mode=?,mount_id=?,quota_project_id=?,helper_digest=?,mount_quota_digest=?,safe_code='ALLOCATION_OK',revision=revision+1,updated_at=? WHERE worktree_id=? AND revision=? AND state='admitted' AND binding_digest=?`)
         .run(identityDigest, request.filesystemDevice, request.filesystemInode, request.ownerUid, request.mode, request.mountId, request.quotaProjectId, request.helperDigest, request.mountQuotaDigest, now, request.worktreeId, Number(request.expectedRevision), request.bindingDigest);
-      if (intentResult.changes !== 1 || result.changes !== 1) throw new AllocationRegistryError('ALLOCATION_REVISION_CONFLICT');
+      const leaseResult = database.prepare("UPDATE quota_project_leases SET phase='allocated',safe_code='ALLOCATION_OK',updated_at=? WHERE intent_id=? AND project_id=? AND phase='active'").run(now, request.intentId, Number(request.quotaProjectId));
+      if (intentResult.changes !== 1 || result.changes !== 1 || leaseResult.changes !== 1) throw new AllocationRegistryError('ALLOCATION_REVISION_CONFLICT');
       database.prepare('INSERT INTO physical_allocation_results(request_id,request_digest,worktree_id,filesystem_identity_digest,created_at) VALUES(?,?,?,?,?)')
         .run(request.requestId, requestDigest, request.worktreeId, identityDigest, now);
       this.event(database, request.worktreeId, 'allocation.proof.recorded', 'ALLOCATION_OK'); this.bump(database);
@@ -299,7 +313,8 @@ export class ExecutionAllocationRegistry implements BackendApplicationContributi
         .run(request.safeCode, now, request.intentId, request.fencingToken);
       const allocationResult = database.prepare("UPDATE allocations SET state='quarantined',cleanup_state='failed',safe_code=?,revision=revision+1,updated_at=? WHERE worktree_id=? AND revision=? AND state='admitted' AND binding_digest=?")
         .run(request.safeCode, now, request.worktreeId, Number(request.expectedRevision), request.bindingDigest);
-      if (intentResult.changes !== 1 || allocationResult.changes !== 1) throw new AllocationRegistryError('ALLOCATION_REVISION_CONFLICT');
+      const leaseResult = database.prepare("UPDATE quota_project_leases SET phase='quarantined',safe_code=?,updated_at=? WHERE intent_id=? AND phase='active'").run(request.safeCode, now, request.intentId);
+      if (intentResult.changes !== 1 || allocationResult.changes !== 1 || leaseResult.changes !== 1) throw new AllocationRegistryError('ALLOCATION_REVISION_CONFLICT');
       database.prepare('INSERT INTO physical_allocation_failure_results(request_id,request_digest,intent_id,worktree_id,created_at) VALUES(?,?,?,?,?)')
         .run(request.requestId, requestDigest, request.intentId, request.worktreeId, now);
       database.prepare("UPDATE execution_meta SET admission='blocked',revision=revision+1 WHERE singleton=1").run();
@@ -519,7 +534,8 @@ export class ExecutionAllocationRegistry implements BackendApplicationContributi
     this.transaction(database => {
       const intentResult = database.prepare("UPDATE allocation_intents SET phase='completed',observed_identity_digest=?,safe_code='ALLOCATION_OK',updated_at=? WHERE intent_id=? AND intent_type='cleanup' AND phase='requested' AND fencing_token=?").run(request.absenceProofDigest, now, request.intentId, request.fencingToken);
       const allocationResult = database.prepare("UPDATE allocations SET state='cleaned',cleanup_state='cleaned',safe_code='ALLOCATION_OK',revision=revision+1,updated_at=? WHERE worktree_id=? AND revision=? AND state='cleaning' AND binding_digest=?").run(now, request.worktreeId, Number(request.expectedRevision), request.bindingDigest);
-      if (intentResult.changes !== 1 || allocationResult.changes !== 1) throw new AllocationRegistryError('ALLOCATION_REVISION_CONFLICT');
+      const leaseResult = database.prepare("UPDATE quota_project_leases SET phase='released',safe_code='ALLOCATION_OK',updated_at=? WHERE worktree_id=? AND project_id=? AND phase='allocated'").run(now, request.worktreeId, Number(row.quota_project_id));
+      if (intentResult.changes !== 1 || allocationResult.changes !== 1 || leaseResult.changes !== 1) throw new AllocationRegistryError('ALLOCATION_REVISION_CONFLICT');
       database.prepare("INSERT INTO cleanup_request_results(request_id,request_digest,request_kind,intent_id,worktree_id,created_at) VALUES(?,?,'complete',?,?,?)").run(request.requestId, requestDigest, request.intentId, request.worktreeId, now);
       this.event(database, request.worktreeId, 'cleanup.completed', 'ALLOCATION_OK'); this.bump(database);
     });
@@ -541,7 +557,8 @@ export class ExecutionAllocationRegistry implements BackendApplicationContributi
     this.transaction(database => {
       const intentResult = database.prepare("UPDATE allocation_intents SET phase=?,observed_identity_digest=?,safe_code=?,updated_at=? WHERE intent_id=? AND intent_type='cleanup' AND phase='requested' AND fencing_token=?").run(quarantined ? 'quarantined' : 'failed', request.observedIdentityDigest, request.safeCode, now, request.intentId, request.fencingToken);
       const allocationResult = database.prepare('UPDATE allocations SET state=?,cleanup_state=\'failed\',safe_code=?,revision=revision+1,updated_at=? WHERE worktree_id=? AND revision=? AND state=\'cleaning\' AND binding_digest=?').run(nextState, request.safeCode, now, request.worktreeId, Number(request.expectedRevision), request.bindingDigest);
-      if (intentResult.changes !== 1 || allocationResult.changes !== 1) throw new AllocationRegistryError('ALLOCATION_REVISION_CONFLICT');
+      const leaseResult = quarantined ? database.prepare("UPDATE quota_project_leases SET phase='quarantined',safe_code=?,updated_at=? WHERE worktree_id=? AND phase='allocated'").run(request.safeCode, now, request.worktreeId) : undefined;
+      if (intentResult.changes !== 1 || allocationResult.changes !== 1 || (leaseResult && leaseResult.changes !== 1)) throw new AllocationRegistryError('ALLOCATION_REVISION_CONFLICT');
       database.prepare("INSERT INTO cleanup_request_results(request_id,request_digest,request_kind,intent_id,worktree_id,created_at) VALUES(?,?,'failure',?,?,?)").run(request.requestId, requestDigest, request.intentId, request.worktreeId, now);
       database.prepare("UPDATE execution_meta SET admission='blocked',revision=revision+1 WHERE singleton=1").run(); this.event(database, request.worktreeId, quarantined ? 'cleanup.quarantined' : 'cleanup.failed', request.safeCode);
     });
@@ -567,6 +584,8 @@ export class ExecutionAllocationRegistry implements BackendApplicationContributi
       pendingImportIntentCount: count(`SELECT count(*) AS count FROM candidate_import_intents WHERE phase='requested'`),
       activeRepositoryLeaseCount: count(`SELECT count(*) AS count FROM repository_mutation_leases WHERE phase='active'`),
       quarantinedRepositoryLeaseCount: count(`SELECT count(*) AS count FROM repository_mutation_leases WHERE phase='quarantined'`),
+      activeQuotaProjectLeaseCount: count(`SELECT count(*) AS count FROM quota_project_leases WHERE phase IN ('active','allocated')`),
+      quarantinedQuotaProjectLeaseCount: count(`SELECT count(*) AS count FROM quota_project_leases WHERE phase='quarantined'`),
       pendingCleanupIntentCount: count(`SELECT count(*) AS count FROM allocation_intents WHERE intent_type='cleanup' AND phase='requested'`),
       retentionViolationCount: count(`SELECT count(*) AS count FROM candidates JOIN allocations ON allocations.worktree_id=candidates.worktree_id LEFT JOIN retention_request_results ON retention_request_results.candidate_id=candidates.candidate_id WHERE (allocations.state='retained' AND (candidates.retention_class='pending-evidence' OR retention_request_results.candidate_id IS NULL)) OR (allocations.state IN ('sealed','candidate-imported') AND candidates.retention_class<>'pending-evidence') OR (allocations.state IN ('cleaning','cleaned') AND candidates.retention_until>strftime('%Y-%m-%dT%H:%M:%fZ','now'))`),
       loggingViolationCount: allocationLoggingViolations
@@ -610,11 +629,13 @@ export class ExecutionAllocationRegistry implements BackendApplicationContributi
       CREATE TABLE IF NOT EXISTS retention_request_results(request_id TEXT PRIMARY KEY,request_digest TEXT NOT NULL,candidate_id TEXT NOT NULL REFERENCES candidates(candidate_id),authority_digest TEXT NOT NULL,created_at TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS candidate_import_intents(intent_id TEXT PRIMARY KEY,worktree_id TEXT NOT NULL REFERENCES allocations(worktree_id),candidate_id TEXT NOT NULL REFERENCES candidates(candidate_id),fencing_token TEXT NOT NULL,expected_source_identity_digest TEXT NOT NULL,observed_quarantine_ref_digest TEXT,phase TEXT NOT NULL CHECK(phase IN ('requested','completed','failed','quarantined')),safe_code TEXT NOT NULL,created_at TEXT NOT NULL,updated_at TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS repository_mutation_leases(lease_id TEXT PRIMARY KEY,repository_id TEXT NOT NULL,intent_id TEXT NOT NULL UNIQUE REFERENCES candidate_import_intents(intent_id),worktree_id TEXT NOT NULL REFERENCES allocations(worktree_id),fencing_token TEXT NOT NULL,owner_instance_id TEXT NOT NULL,phase TEXT NOT NULL CHECK(phase IN ('active','released','quarantined')),safe_code TEXT NOT NULL,created_at TEXT NOT NULL,updated_at TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS quota_project_leases(project_id INTEGER PRIMARY KEY CHECK(project_id BETWEEN 10000 AND 4294967295),intent_id TEXT NOT NULL UNIQUE REFERENCES allocation_intents(intent_id),worktree_id TEXT NOT NULL UNIQUE REFERENCES allocations(worktree_id),phase TEXT NOT NULL CHECK(phase IN ('active','allocated','released','quarantined')),safe_code TEXT NOT NULL,created_at TEXT NOT NULL,updated_at TEXT NOT NULL);
       CREATE UNIQUE INDEX IF NOT EXISTS repository_mutation_lease_owner ON repository_mutation_leases(repository_id) WHERE phase IN ('active','quarantined');
       INSERT OR IGNORE INTO execution_meta(singleton,schema_version,revision,owner_instance_id,admission) VALUES(1,1,1,'bootstrap','recovering');
     `);
     ensurePhysicalIdentitySchema(this.databaseOrThrow());
     ensureAllocationIntentSchema(this.databaseOrThrow());
+    ensureQuotaProjectLeaseSchema(this.databaseOrThrow());
     ensureOwnerSchema(this.databaseOrThrow());
     const version = Number((this.databaseOrThrow().prepare('SELECT schema_version FROM execution_meta WHERE singleton=1').get() as SqlRow).schema_version);
     if (version !== 1) throw new Error('Unsupported execution registry schema');
@@ -626,6 +647,7 @@ export class ExecutionAllocationRegistry implements BackendApplicationContributi
       || database.prepare('PRAGMA foreign_key_check').all().length) throw new Error('Execution registry integrity failed');
     if (!ownerEventsValid(database)) throw new Error('Execution owner event integrity failed');
     for (const row of database.prepare("SELECT * FROM allocations WHERE filesystem_identity_digest IS NOT NULL").all() as SqlRow[]) if (!physicalIdentityValid(row)) throw new Error('Execution physical identity integrity failed');
+    if (!quotaProjectLeasesValid(database)) throw new Error('Execution quota project lease integrity failed');
   }
 
   private recover(): void {
@@ -642,6 +664,7 @@ export class ExecutionAllocationRegistry implements BackendApplicationContributi
         this.event(current, worktreeId, 'recovery.resource.classified', 'RECOVERY_OWNER_UNAVAILABLE');
         current.prepare(`UPDATE allocations SET state='quarantined',cleanup_state='failed',safe_code='RECOVERY_OWNER_UNAVAILABLE',revision=revision+1,updated_at=? WHERE worktree_id=?`).run(new Date().toISOString(), worktreeId);
         current.prepare(`UPDATE repository_mutation_leases SET phase='quarantined',safe_code='RECOVERY_OWNER_UNAVAILABLE',updated_at=? WHERE worktree_id=? AND phase='active'`).run(new Date().toISOString(), worktreeId);
+        current.prepare(`UPDATE quota_project_leases SET phase='quarantined',safe_code='RECOVERY_OWNER_UNAVAILABLE',updated_at=? WHERE worktree_id=? AND phase IN ('active','allocated')`).run(new Date().toISOString(), worktreeId);
         this.event(current, worktreeId, 'resource.quarantined', 'RECOVERY_OWNER_UNAVAILABLE');
       });
       log('recovery.resource.classified', { runId, worktreeId, state: 'quarantined', safeCode: 'RECOVERY_OWNER_UNAVAILABLE' });
@@ -672,9 +695,9 @@ export class ExecutionAllocationRegistry implements BackendApplicationContributi
     return { schemaVersion: 1, intentId, worktreeId: String(row.worktree_id), fencingToken: String(row.fencing_token), expectedRevision: String(row.revision), expectedIdentityDigest: String(row.expected_identity_digest), allocationName: String(row.allocation_name), allocationNonce: String(row.allocation_nonce), filesystemDevice: String(row.filesystem_device), filesystemInode: String(row.filesystem_inode), ownerUid: String(row.owner_uid), mode: '0700', mountId: String(row.mount_id), quotaProjectId: String(row.quota_project_id), quotaBytes: String(row.quota_bytes), quotaInodes: String(row.quota_inodes), helperDigest: String(row.helper_digest), mountQuotaDigest: String(row.mount_quota_digest) };
   }
   private physicalAllocationIntent(intentId: string): PhysicalAllocationIntentV1 {
-    const row = this.databaseOrThrow().prepare("SELECT i.intent_id,i.fencing_token,i.expected_revision AS intent_expected_revision,i.helper_digest AS intent_helper_digest,i.mount_quota_digest AS intent_mount_quota_digest,a.* FROM allocation_intents i JOIN allocations a ON a.worktree_id=i.worktree_id WHERE i.intent_id=? AND i.intent_type='allocation'").get(intentId) as SqlRow | undefined;
-    if (!row || !DECIMAL.test(String(row.intent_expected_revision)) || !DIGEST.test(String(row.intent_helper_digest)) || !DIGEST.test(String(row.intent_mount_quota_digest))) throw new AllocationRegistryError('ALLOCATION_INTEGRITY_FAILED');
-    return { schemaVersion: 1, intentId, worktreeId: String(row.worktree_id), fencingToken: String(row.fencing_token), expectedRevision: String(row.intent_expected_revision), allocationName: String(row.allocation_name), allocationNonce: String(row.allocation_nonce), quotaBytes: String(row.quota_bytes), quotaInodes: String(row.quota_inodes), helperDigest: String(row.intent_helper_digest), mountQuotaDigest: String(row.intent_mount_quota_digest) };
+    const row = this.databaseOrThrow().prepare("SELECT i.intent_id,i.fencing_token,i.expected_revision AS intent_expected_revision,i.helper_digest AS intent_helper_digest,i.mount_quota_digest AS intent_mount_quota_digest,q.project_id AS lease_project_id,q.phase AS lease_phase,a.* FROM allocation_intents i JOIN allocations a ON a.worktree_id=i.worktree_id JOIN quota_project_leases q ON q.intent_id=i.intent_id WHERE i.intent_id=? AND i.intent_type='allocation'").get(intentId) as SqlRow | undefined;
+    if (!row || !['active', 'allocated', 'released', 'quarantined'].includes(String(row.lease_phase)) || !DECIMAL.test(String(row.intent_expected_revision)) || !DIGEST.test(String(row.intent_helper_digest)) || !DIGEST.test(String(row.intent_mount_quota_digest)) || !validTime(String(row.created_at))) throw new AllocationRegistryError('ALLOCATION_INTEGRITY_FAILED');
+    return { schemaVersion: 1, intentId, worktreeId: String(row.worktree_id), fencingToken: String(row.fencing_token), expectedRevision: String(row.intent_expected_revision), allocationName: String(row.allocation_name), allocationNonce: String(row.allocation_nonce), ownerInstanceId: String(row.owner_instance_id), createdAt: String(row.created_at), quotaProjectId: String(row.lease_project_id), quotaBytes: String(row.quota_bytes), quotaInodes: String(row.quota_inodes), helperDigest: String(row.intent_helper_digest), mountQuotaDigest: String(row.intent_mount_quota_digest) };
   }
   private importIntent(intentId: string): CandidateImportIntentV1 { const row = this.databaseOrThrow().prepare('SELECT * FROM candidate_import_intents WHERE intent_id=?').get(intentId) as SqlRow | undefined; if (!row || String(row.phase) !== 'requested') throw new AllocationRegistryError('ALLOCATION_INTEGRITY_FAILED'); return { schemaVersion: 1, intentId, worktreeId: String(row.worktree_id), candidateId: String(row.candidate_id), fencingToken: String(row.fencing_token), phase: 'requested', replay: false, safeCode: 'IMPORT_OK' }; }
   private importedCandidate(candidateId: string): ImportedCandidateV1 { const candidate = this.candidate(candidateId); const row = this.databaseOrThrow().prepare('SELECT quarantine_ref_digest FROM candidates WHERE candidate_id=?').get(candidateId) as SqlRow | undefined; if (!row || !DIGEST.test(String(row.quarantine_ref_digest))) throw new AllocationRegistryError('ALLOCATION_INTEGRITY_FAILED'); const { safeCode: _sealCode, ...binding } = candidate; return { ...binding, quarantineRefDigest: String(row.quarantine_ref_digest), safeCode: 'IMPORT_OK' }; }
@@ -852,6 +875,27 @@ function ensureAllocationIntentSchema(database: DatabaseSync): void {
   if (!columns.has('expected_revision')) database.exec('ALTER TABLE allocation_intents ADD COLUMN expected_revision TEXT');
   if (!columns.has('helper_digest')) database.exec('ALTER TABLE allocation_intents ADD COLUMN helper_digest TEXT');
   if (!columns.has('mount_quota_digest')) database.exec('ALTER TABLE allocation_intents ADD COLUMN mount_quota_digest TEXT');
+}
+
+function ensureQuotaProjectLeaseSchema(database: DatabaseSync): void {
+  const columns = new Set((database.prepare('PRAGMA table_info(execution_meta)').all() as SqlRow[]).map(row => String(row.name)));
+  if (!columns.has('next_quota_project_id')) database.exec('ALTER TABLE execution_meta ADD COLUMN next_quota_project_id INTEGER');
+  database.prepare('UPDATE execution_meta SET next_quota_project_id=COALESCE(next_quota_project_id,?) WHERE singleton=1').run(FIRST_QUOTA_PROJECT_ID);
+}
+
+function quotaProjectLeasesValid(database: DatabaseSync): boolean {
+  const invalid = database.prepare(`SELECT count(*) AS count FROM quota_project_leases q
+    JOIN allocation_intents i ON i.intent_id=q.intent_id JOIN allocations a ON a.worktree_id=q.worktree_id
+    WHERE i.intent_type<>'allocation' OR i.worktree_id<>q.worktree_id
+      OR (q.phase='active' AND (i.phase<>'requested' OR a.state<>'admitted'))
+      OR (q.phase='allocated' AND (i.phase<>'completed' OR a.quota_project_id IS NULL OR a.quota_project_id<>CAST(q.project_id AS TEXT) OR a.state IN ('admitted','cleaned','quarantined')))
+      OR (q.phase='released' AND a.state<>'cleaned')
+      OR (q.phase='quarantined' AND a.state<>'quarantined')`).get() as SqlRow;
+  const missing = database.prepare(`SELECT count(*) AS count FROM allocation_intents i LEFT JOIN quota_project_leases q ON q.intent_id=i.intent_id
+    WHERE i.intent_type='allocation' AND q.intent_id IS NULL`).get() as SqlRow;
+  const meta = database.prepare('SELECT next_quota_project_id FROM execution_meta WHERE singleton=1').get() as SqlRow;
+  const next = Number(meta.next_quota_project_id);
+  return Number(invalid.count) === 0 && Number(missing.count) === 0 && Number.isSafeInteger(next) && next >= FIRST_QUOTA_PROJECT_ID && next <= LAST_QUOTA_PROJECT_ID + 1;
 }
 
 function ensureOwnerSchema(database: DatabaseSync): void {

@@ -139,19 +139,20 @@ test('fences physical allocation behind one durable pre-effect intent and quaran
   const prepare = { requestId: '19000000-0000-4000-8000-000000000001', worktreeId: allocation.worktreeId, expectedRevision: allocation.revision, bindingDigest: allocation.bindingDigest, helperDigest: `sha256:${'8'.repeat(64)}`, mountQuotaDigest: `sha256:${'9'.repeat(64)}` };
   const intent = await first.preparePhysicalAllocation(prepare);
   assert.deepEqual(await first.preparePhysicalAllocation(prepare), intent); assert.match(intent.allocationNonce, /^[0-9a-f]{64}$/u);
-  assert.match(intent.fencingToken, /^[0-9a-f]{64}$/u); assert.equal(first.diagnostics().pendingAllocationIntentCount, 1);
+  assert.match(intent.fencingToken, /^[0-9a-f]{64}$/u); assert.equal(intent.quotaProjectId, '10000'); assert.match(intent.ownerInstanceId, /^[0-9a-f-]{36}$/u);
+  assert.equal(new Date(intent.createdAt).toISOString(), intent.createdAt); assert.equal(first.diagnostics().pendingAllocationIntentCount, 1); assert.equal(first.diagnostics().activeQuotaProjectLeaseCount, 1);
   await assert.rejects(() => first.preparePhysicalAllocation({ ...prepare, helperDigest: `sha256:${'7'.repeat(64)}` }),
     (error: unknown) => error instanceof AllocationRegistryError && error.code === 'ALLOCATION_REQUEST_REPLAY_MISMATCH');
   await assert.rejects(() => first.recordPhysicalAllocation({
     requestId: '19000000-0000-4000-8000-000000000002', intentId: '19000000-0000-4000-8000-000000000003', fencingToken: intent.fencingToken,
     worktreeId: allocation.worktreeId, expectedRevision: allocation.revision, bindingDigest: allocation.bindingDigest, allocationName: allocation.allocationName,
     allocationNonceDigest: allocation.allocationNonceDigest, filesystemDevice: '2049', filesystemInode: '4001', ownerUid: '1000', mode: '0700', mountId: '55',
-    quotaProjectId: '7', quotaBytes: intent.quotaBytes, quotaInodes: intent.quotaInodes, helperDigest: intent.helperDigest, mountQuotaDigest: intent.mountQuotaDigest
+    quotaProjectId: intent.quotaProjectId, quotaBytes: intent.quotaBytes, quotaInodes: intent.quotaInodes, helperDigest: intent.helperDigest, mountQuotaDigest: intent.mountQuotaDigest
   }), (error: unknown) => error instanceof AllocationRegistryError && error.code === 'ALLOCATION_INTEGRITY_FAILED');
   first.onStop(); const recovered = allocationRegistry(); await recovered.onStart();
   try {
     const diagnostics = recovered.diagnostics(); assert.equal(diagnostics.admission, 'blocked'); assert.equal(diagnostics.quarantinedCount, 1);
-    assert.equal(diagnostics.pendingAllocationIntentCount, 1);
+    assert.equal(diagnostics.pendingAllocationIntentCount, 1); assert.equal(diagnostics.activeQuotaProjectLeaseCount, 0); assert.equal(diagnostics.quarantinedQuotaProjectLeaseCount, 1);
   } finally { recovered.onStop(); await rm(root, { recursive: true, force: true }); }
 });
 
@@ -166,8 +167,24 @@ test('atomically quarantines a refused physical allocation effect and blocks adm
     assert.equal(quarantined.state, 'quarantined'); assert.equal(quarantined.cleanupState, 'failed'); assert.equal(quarantined.safeCode, failure.safeCode);
     assert.deepEqual(await registry.failPhysicalAllocation(failure), quarantined);
     const diagnostics = registry.diagnostics(); assert.equal(diagnostics.admission, 'blocked'); assert.equal(diagnostics.pendingAllocationIntentCount, 0); assert.equal(diagnostics.quarantinedCount, 1);
+    assert.equal(diagnostics.activeQuotaProjectLeaseCount, 0); assert.equal(diagnostics.quarantinedQuotaProjectLeaseCount, 1);
     await assert.rejects(() => registry.failPhysicalAllocation({ ...failure, safeCode: 'ALLOCATION_INTEGRITY_FAILED' }),
       (error: unknown) => error instanceof AllocationRegistryError && error.code === 'ALLOCATION_REQUEST_REPLAY_MISMATCH');
+  } finally { registry.onStop(); await rm(root, { recursive: true, force: true }); }
+});
+
+test('assigns non-reused durable project IDs before either physical effect', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'kogg-allocation-project-lease-')); process.env.KOGG_STATE_DIR = root;
+  const registry = allocationRegistry(); await registry.onStart();
+  try {
+    const first = await registry.reserve(allocationRequest());
+    const secondRequest: ReserveExecutionAllocationV1 = { ...allocationRequest(), requestId: '19600000-0000-4000-8000-000000000001', binding: { ...allocationRequest().binding, runId: '19600000-0000-4000-8000-000000000002', attemptId: '19600000-0000-4000-8000-000000000003' } };
+    const second = await registry.reserve(secondRequest);
+    const helperDigest = `sha256:${'8'.repeat(64)}`; const mountQuotaDigest = `sha256:${'9'.repeat(64)}`;
+    const firstIntent = await registry.preparePhysicalAllocation({ requestId: '19600000-0000-4000-8000-000000000004', worktreeId: first.worktreeId, expectedRevision: first.revision, bindingDigest: first.bindingDigest, helperDigest, mountQuotaDigest });
+    const secondIntent = await registry.preparePhysicalAllocation({ requestId: '19600000-0000-4000-8000-000000000005', worktreeId: second.worktreeId, expectedRevision: second.revision, bindingDigest: second.bindingDigest, helperDigest, mountQuotaDigest });
+    assert.equal(firstIntent.quotaProjectId, '10000'); assert.equal(secondIntent.quotaProjectId, '10001'); assert.notEqual(firstIntent.quotaProjectId, secondIntent.quotaProjectId);
+    assert.equal(registry.diagnostics().activeQuotaProjectLeaseCount, 2); assert.equal(registry.diagnostics().quarantinedQuotaProjectLeaseCount, 0);
   } finally { registry.onStop(); await rm(root, { recursive: true, force: true }); }
 });
 
@@ -223,7 +240,7 @@ test('fences cleanup behind a durable exact-identity intent and absence proof', 
     const completionBase = { requestId: '36000000-0000-4000-8000-000000000004', intentId: intent.intentId, worktreeId: intent.worktreeId, expectedRevision: intent.expectedRevision, bindingDigest: allocation.bindingDigest, fencingToken: intent.fencingToken, expectedIdentityDigest: intent.expectedIdentityDigest, preDeleteIdentityDigest: intent.expectedIdentityDigest, helperDigest: intent.helperDigest, mountQuotaDigest: intent.mountQuotaDigest };
     const completion = { ...completionBase, absenceProofDigest: cleanupProof(completionBase) };
     const cleaned = await registry.completePhysicalCleanup(completion); assert.equal(cleaned.state, 'cleaned'); assert.equal(cleaned.cleanupState, 'cleaned'); assert.equal(cleaned.revision, '4');
-    assert.deepEqual(await registry.completePhysicalCleanup(completion), cleaned); assert.equal(registry.diagnostics().pendingCleanupIntentCount, 0);
+    assert.deepEqual(await registry.completePhysicalCleanup(completion), cleaned); assert.equal(registry.diagnostics().pendingCleanupIntentCount, 0); assert.equal(registry.diagnostics().activeQuotaProjectLeaseCount, 0); assert.equal(registry.diagnostics().quarantinedQuotaProjectLeaseCount, 0);
     assert.equal(JSON.stringify(await registry.getRun({ requestId: '36000000-0000-4000-8000-000000000005', runId: cleaned.runId })).includes(intent.allocationNonce), false);
     await assert.rejects(() => registry.completePhysicalCleanup({ ...completion, absenceProofDigest: `sha256:${'0'.repeat(64)}` }),
       (error: unknown) => error instanceof AllocationRegistryError && error.code === 'ALLOCATION_REQUEST_REPLAY_MISMATCH');
@@ -237,7 +254,7 @@ test('quarantines cleanup identity mismatch and blocks admission', async () => {
     const intent = await registry.preparePhysicalCleanup({ requestId: '37000000-0000-4000-8000-000000000002', worktreeId: allocation.worktreeId, expectedRevision: allocation.revision, bindingDigest: allocation.bindingDigest });
     const failure = { requestId: '37000000-0000-4000-8000-000000000003', intentId: intent.intentId, worktreeId: allocation.worktreeId, expectedRevision: intent.expectedRevision, bindingDigest: allocation.bindingDigest, fencingToken: intent.fencingToken, expectedIdentityDigest: intent.expectedIdentityDigest, observedIdentityDigest: `sha256:${'0'.repeat(64)}`, safeCode: 'CLEANUP_IDENTITY_MISMATCH' as const };
     const quarantined = await registry.failPhysicalCleanup(failure); assert.equal(quarantined.state, 'quarantined'); assert.equal(quarantined.cleanupState, 'failed'); assert.equal(quarantined.safeCode, 'CLEANUP_IDENTITY_MISMATCH');
-    assert.deepEqual(await registry.failPhysicalCleanup(failure), quarantined); const diagnostics = registry.diagnostics(); assert.equal(diagnostics.admission, 'blocked'); assert.equal(diagnostics.pendingCleanupIntentCount, 0); assert.equal(diagnostics.quarantinedCount, 1);
+    assert.deepEqual(await registry.failPhysicalCleanup(failure), quarantined); const diagnostics = registry.diagnostics(); assert.equal(diagnostics.admission, 'blocked'); assert.equal(diagnostics.pendingCleanupIntentCount, 0); assert.equal(diagnostics.quarantinedCount, 1); assert.equal(diagnostics.activeQuotaProjectLeaseCount, 0); assert.equal(diagnostics.quarantinedQuotaProjectLeaseCount, 1);
   } finally { registry.onStop(); await rm(root, { recursive: true, force: true }); }
 });
 
@@ -256,6 +273,15 @@ test('refuses startup when a persisted physical identity component is altered', 
   try {
     const database = new DatabaseSync(path.join(root, 'execution', 'registry.sqlite3')); database.prepare('UPDATE allocations SET filesystem_inode=? WHERE worktree_id=?').run('4002', allocation.worktreeId); database.close();
     await assert.rejects(allocationRegistry().onStart(), /physical identity integrity/u);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test('refuses startup when a durable quota-project lease is inconsistent', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'kogg-allocation-project-lease-integrity-')); process.env.KOGG_STATE_DIR = root; const first = allocationRegistry(); await first.onStart();
+  let allocation = await first.reserve(allocationRequest()); allocation = await first.recordPhysicalAllocation(await physicalAllocationProof(first, allocation, '39500000-0000-4000-8000-000000000001')); first.onStop();
+  try {
+    const database = new DatabaseSync(path.join(root, 'execution', 'registry.sqlite3')); database.prepare("UPDATE quota_project_leases SET phase='released' WHERE worktree_id=?").run(allocation.worktreeId); database.close();
+    await assert.rejects(allocationRegistry().onStart(), /quota project lease integrity/u);
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 
@@ -324,7 +350,7 @@ async function physicalAllocationProof(registry: ExecutionAllocationRegistry, al
   return {
     requestId, intentId: intent.intentId, fencingToken: intent.fencingToken, worktreeId: allocation.worktreeId, expectedRevision: allocation.revision, bindingDigest: allocation.bindingDigest,
     allocationName: intent.allocationName, allocationNonceDigest: allocation.allocationNonceDigest,
-    filesystemDevice: '2049', filesystemInode: '4001', ownerUid: '1000', mode: '0700', mountId: '55', quotaProjectId: '7',
+    filesystemDevice: '2049', filesystemInode: '4001', ownerUid: '1000', mode: '0700', mountId: '55', quotaProjectId: intent.quotaProjectId,
     quotaBytes: intent.quotaBytes, quotaInodes: intent.quotaInodes, helperDigest, mountQuotaDigest
   };
 }
