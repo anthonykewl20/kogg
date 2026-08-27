@@ -4,6 +4,8 @@ import { existsSync, mkdirSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import {
   canonicalKernelJson,
+  type CheckExecutionProjectionV1,
+  type CheckExecutionV1,
   type FrozenSuiteProjectionV1,
   type FrozenSuiteV1,
   KERNEL_MAX_FRAME_BYTES,
@@ -159,7 +161,7 @@ export class KernelBridgeImpl implements KernelBridge {
   }
 
   execute<TProjection extends KernelJson>(operation: KernelOperationV2, body: KernelJson): Promise<KernelResultV2<TProjection>> {
-    if (operation === 'task.bind' || operation === 'producer.dispatch' || operation === 'suite.freeze') {
+    if (operation === 'task.bind' || operation === 'producer.dispatch' || operation === 'suite.freeze' || operation === 'suite.execute') {
       console.warn('[kogg:kernel:bridge] request.refused', { operation, safeCode: 'KERNEL_AUTHORITY_INVALID' });
       return Promise.resolve({
         protocol: KOGG_RANEX_PROTOCOL, requestId: randomUUID(), operationId: randomUUID(), status: 'refused',
@@ -186,6 +188,32 @@ export class KernelBridgeImpl implements KernelBridge {
   freezeSuite(suite: FrozenSuiteV1): Promise<KernelResultV2<FrozenSuiteProjectionV1>> {
     const suiteDigest = domainDigest('suite', suite as unknown as KernelJson);
     return this.requestResult<FrozenSuiteProjectionV1>('suite.freeze', { suite: suite as unknown as KernelJson, suiteDigest });
+  }
+
+  async executeCheck(execution: CheckExecutionV1): Promise<KernelResultV2<CheckExecutionProjectionV1>> {
+    const authority = await this.operations.processExecutionAttestation(execution.processRegistrationId);
+    if (!authority) {
+      console.warn('[kogg:kernel:bridge] check.execution.refused', { executionId: execution.executionId, safeCode: 'KERNEL_AUTHORITY_INVALID' });
+      return refusedCheckExecution();
+    }
+    const expectedOutcome: CheckExecutionV1['outcome'] = authority.operationState === 'timed-out' ? 'timeout'
+      : authority.operationState === 'cancelled' ? 'cancelled'
+      : authority.exitClass === 'zero' && authority.operationState === 'completed' ? 'pass'
+      : authority.exitClass === 'nonzero' ? 'fail' : 'infrastructure';
+    if (execution.startedAt !== authority.startedAt || execution.finishedAt !== authority.finishedAt
+      || execution.exitClass !== authority.exitClass || execution.outcome !== expectedOutcome
+      || execution.cleanupProofDigest !== authority.cleanupProofDigest || execution.suiteDigest !== authority.suiteDigest
+      || execution.checkDefinitionDigest !== authority.checkDefinitionDigest
+      || domainDigest('repository-state', execution.subjectState as unknown as KernelJson) !== authority.subjectStateDigest
+      || execution.verifierId !== authority.verifierId || execution.verifierArtifactDigest !== authority.verifierArtifactDigest
+      || execution.executionProfileDigest !== authority.executionProfileDigest || execution.resultArtifactDigest !== authority.resultArtifactDigest) {
+      console.warn('[kogg:kernel:bridge] check.execution.refused', { executionId: execution.executionId, safeCode: 'KERNEL_AUTHORITY_INVALID' });
+      return refusedCheckExecution();
+    }
+    const executionDigest = domainDigest('check-execution', execution as unknown as KernelJson);
+    return this.requestResult<CheckExecutionProjectionV1>('suite.execute', {
+      execution: execution as unknown as KernelJson, executionDigest, processAuthority: authority as unknown as KernelJson
+    });
   }
 
   async verifyJournal(): Promise<{ readonly valid: boolean; readonly reason?: string }> {
@@ -381,10 +409,21 @@ function validOperationProjection(operation: KernelOperationV2, value: unknown):
       && validUuid(projection.suiteId) && Number.isSafeInteger(projection.suiteRevision) && Number(projection.suiteRevision) > 0
       && validDigest(projection.suiteDigest);
   }
+  if (operation === 'suite.execute') {
+    return Object.keys(projection).sort().join(',') === 'checkExecutionDigest,executionId,outcome'
+      && validDigest(projection.checkExecutionDigest) && validUuid(projection.executionId)
+      && ['pass', 'fail', 'cancelled', 'timeout', 'infrastructure'].includes(String(projection.outcome));
+  }
   return true;
 }
 function validUuid(value: unknown): boolean { return typeof value === 'string' && /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u.test(value); }
 function validDigest(value: unknown): boolean { return typeof value === 'string' && /^sha256:[0-9a-f]{64}$/u.test(value); }
+function refusedCheckExecution(): KernelResultV2<CheckExecutionProjectionV1> {
+  return {
+    protocol: KOGG_RANEX_PROTOCOL, requestId: randomUUID(), operationId: randomUUID(), status: 'refused',
+    safeCode: 'KERNEL_AUTHORITY_INVALID', resultDigest: null, journal: null, projection: null
+  };
+}
 
 class KoggKernelProcess extends Process {
   readonly child: ChildProcessWithoutNullStreams;

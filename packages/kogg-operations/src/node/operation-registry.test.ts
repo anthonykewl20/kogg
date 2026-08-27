@@ -20,14 +20,18 @@ test('persists a real registered process lifecycle with safe cleanup and diagnos
     await registry.onStart();
     const operation = await registry.startOperation({ kind: 'check' }); operation.start();
     let child: ReturnType<typeof spawn> | undefined;
-    const processLease = operation.registerProcess({ kind: 'check', owner: 'kogg-supervisor', cancel: async () => { child?.kill('SIGKILL'); } });
+    const processLease = operation.registerProcess({ kind: 'check', owner: 'kogg-supervisor', executionAuthority: fixtureExecutionAuthority(), cancel: async () => { child?.kill('SIGKILL'); } });
     child = spawn(process.execPath, ['-e', 'setTimeout(() => process.exit(0), 25)'], { detached: process.platform !== 'win32', stdio: 'ignore' });
     processLease.spawning(); assert.ok(child.pid); processLease.started(child.pid); processLease.ready(); operation.active();
     const exit = await new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((resolve, reject) => {
       child.once('exit', (code, signal) => resolve({ code, signal })); child.once('error', reject);
     });
-    processLease.exited(exit.signal ? 'signal' : exit.code === 0 ? 'zero' : 'nonzero'); processLease.cleanup();
+    processLease.exited(exit.signal ? 'signal' : exit.code === 0 ? 'zero' : 'nonzero', `sha256:${'7'.repeat(64)}`); processLease.cleanup();
     await operation.cleanup(); operation.complete();
+    const attestation = await registry.processExecutionAttestation(processLease.id);
+    assert.equal(attestation?.operationId, operation.id); assert.equal(attestation?.processRegistrationId, processLease.id);
+    assert.equal(attestation?.processKind, 'check'); assert.equal(attestation?.operationState, 'completed');
+    assert.equal(attestation?.exitClass, 'zero'); assert.match(attestation?.cleanupProofDigest ?? '', /^sha256:[0-9a-f]{64}$/u);
     const snapshot = await registry.snapshot();
     assert.equal(snapshot.active.length, 0); assert.equal(snapshot.recent[0]?.state, 'completed'); assert.equal(snapshot.recent[0]?.cleanup, 'cleaned');
     assert.equal((await registry.recoveryResult(operation.id)).status, 'cleaned'); assert.equal((await registry.recoveryResult(randomUUID())).status, 'missing');
@@ -58,6 +62,30 @@ test('records spawn failure and refuses conflicting terminal transitions', async
     const snapshot = await registry.snapshot(); assert.equal(snapshot.recent[0]?.state, 'failed'); assert.equal(snapshot.recent[0]?.safeCode, 'PROCESS_SPAWN_FAILED');
   } finally { await registry.onStop(); await rm(state, { recursive: true, force: true }); }
 });
+
+test('refuses a process execution attestation until both process and operation cleanup are terminal', async () => {
+  const state = await mkdtemp(path.join(os.tmpdir(), 'kogg-operations-attestation-test-'));
+  process.env.KOGG_STATE_DIR = state;
+  const registry = new OperationRegistry();
+  try {
+    const operation = await registry.startOperation({ kind: 'check' }); operation.start();
+    const processLease = operation.registerProcess({ kind: 'check', owner: 'kogg-supervisor', executionAuthority: fixtureExecutionAuthority() });
+    const child = spawn(process.execPath, ['-e', 'process.exit(0)'], { stdio: 'ignore' });
+    processLease.spawning(); assert.ok(child.pid); processLease.started(child.pid); processLease.ready(); operation.active();
+    assert.equal(await registry.processExecutionAttestation(processLease.id), undefined);
+    await new Promise<void>((resolve, reject) => { child.once('exit', () => resolve()); child.once('error', reject); });
+    processLease.exited('zero', `sha256:${'7'.repeat(64)}`); processLease.cleanup(); await operation.cleanup(); operation.complete();
+    assert.equal((await registry.processExecutionAttestation(processLease.id))?.exitClass, 'zero');
+  } finally { await registry.onStop(); await rm(state, { recursive: true, force: true }); }
+});
+
+function fixtureExecutionAuthority() {
+  return {
+    suiteDigest: `sha256:${'1'.repeat(64)}` as const, checkDefinitionDigest: `sha256:${'2'.repeat(64)}` as const,
+    subjectStateDigest: `sha256:${'3'.repeat(64)}` as const, verifierId: '11111111-1111-4111-8111-111111111111',
+    verifierArtifactDigest: `sha256:${'4'.repeat(64)}` as const, executionProfileDigest: `sha256:${'5'.repeat(64)}` as const
+  };
+}
 
 test('reconciles a real matching child after an interrupted backend with an empty queue on qualified Linux', async () => {
   if (process.platform !== 'linux') return;

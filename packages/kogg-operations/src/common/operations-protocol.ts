@@ -84,7 +84,17 @@ export interface StartOperation {
 export interface StartProcess {
   readonly kind: ProcessKind;
   readonly owner: ProcessOwner;
+  readonly executionAuthority?: CheckProcessAuthority;
   readonly cancel?: () => Promise<void>;
+}
+
+export interface CheckProcessAuthority {
+  readonly suiteDigest: `sha256:${string}`;
+  readonly checkDefinitionDigest: `sha256:${string}`;
+  readonly subjectStateDigest: `sha256:${string}`;
+  readonly verifierId: string;
+  readonly verifierArtifactDigest: `sha256:${string}`;
+  readonly executionProfileDigest: `sha256:${string}`;
 }
 
 export interface OperationLease {
@@ -110,14 +120,35 @@ export interface ProcessLease {
   ready(): void;
   activity(): void;
   failed(code: OperationSafeCode, errorType: string): void;
-  exited(exitClass: 'zero' | 'nonzero' | 'signal'): void;
+  exited(exitClass: 'zero' | 'nonzero' | 'signal', resultArtifactDigest?: `sha256:${string}`): void;
   cleanup(): void;
 }
 
 export interface OperationRegistryApi extends KoggOperationsService {
   startOperation(operation: StartOperation): Promise<OperationLease>;
   recoveryResult(operationId: string): Promise<{ readonly status: 'cleaned' | 'unverified' | 'active' | 'missing'; readonly safeCode?: OperationSafeCode }>;
+  processExecutionAttestation(processRegistrationId: string): Promise<ProcessExecutionAttestation | undefined>;
   diagnostics(): OperationDiagnostics;
+}
+
+export interface ProcessExecutionAttestation {
+  readonly operationId: string;
+  readonly processRegistrationId: string;
+  readonly processKind: 'check' | 'build' | 'test';
+  readonly processOwner: ProcessOwner;
+  readonly operationState: 'completed' | 'failed' | 'timed-out' | 'cancelled';
+  readonly exitClass: 'zero' | 'nonzero' | 'signal';
+  readonly startedAt: string;
+  readonly finishedAt: string;
+  readonly cleanupAt: string;
+  readonly suiteDigest: `sha256:${string}`;
+  readonly checkDefinitionDigest: `sha256:${string}`;
+  readonly subjectStateDigest: `sha256:${string}`;
+  readonly verifierId: string;
+  readonly verifierArtifactDigest: `sha256:${string}`;
+  readonly executionProfileDigest: `sha256:${string}`;
+  readonly resultArtifactDigest: `sha256:${string}`;
+  readonly cleanupProofDigest: `sha256:${string}`;
 }
 
 export interface OperationDiagnostics {

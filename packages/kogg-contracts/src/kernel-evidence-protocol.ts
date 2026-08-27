@@ -4,7 +4,7 @@ export const KOGG_RANEX_PROTOCOL = 'kogg.ranex/v2' as const;
 export const KOGG_RANEX_PROTOCOL_VERSION = 2 as const;
 export const KOGG_RANEX_COMMIT = '5586d68b0936f554759022caabe847087f1d03ef' as const;
 export const KOGG_RANEX_TREE = '581ce66c54116d4be48b96c3a0359fbdd9d3077f' as const;
-export const KERNEL_SCHEMA_SET_DIGEST = 'sha256:b44b4f9fc8c16386e1c5b4f22dcdf6f910b951dce48799689e623f14ef5497f3' as const;
+export const KERNEL_SCHEMA_SET_DIGEST = 'sha256:9a45373309b74bfdd6cd2390fd3a553433123ab63da321788a2554b8f9655307' as const;
 export const KERNEL_MAX_FRAME_BYTES = 1024 * 1024;
 export const KERNEL_MAX_DEPTH = 32;
 export const KERNEL_MAX_MEMBERS = 4096;
@@ -201,6 +201,12 @@ export interface CheckExecutionV1 {
   readonly cleanupProofDigest: KoggDigest;
 }
 
+export interface CheckExecutionProjectionV1 {
+  readonly checkExecutionDigest: KoggDigest;
+  readonly executionId: string;
+  readonly outcome: CheckExecutionV1['outcome'];
+}
+
 export interface EvidenceManifestV1 {
   readonly evidenceId: string;
   readonly claimType: string;
@@ -254,6 +260,7 @@ export interface KernelBridge {
   bindTask(binding: TaskExecutionBindingV1): Promise<KernelResultV2<TaskBindingProjectionV1>>;
   dispatchProducer(binding: ProducerBindingV1): Promise<KernelResultV2<ProducerBindingProjectionV1>>;
   freezeSuite(suite: FrozenSuiteV1): Promise<KernelResultV2<FrozenSuiteProjectionV1>>;
+  executeCheck(execution: CheckExecutionV1): Promise<KernelResultV2<CheckExecutionProjectionV1>>;
   verifyJournal(): Promise<{ readonly valid: boolean; readonly reason?: string }>;
   shutdown(): Promise<void>;
 }

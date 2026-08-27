@@ -20,7 +20,7 @@ from ranex.governed_execution.adapters.persistence.sqlite.journal import Journal
 
 PROTOCOL = "kogg.ranex/v2"
 PROTOCOL_VERSION = 2
-SCHEMA_SET_DIGEST = "sha256:b44b4f9fc8c16386e1c5b4f22dcdf6f910b951dce48799689e623f14ef5497f3"
+SCHEMA_SET_DIGEST = "sha256:9a45373309b74bfdd6cd2390fd3a553433123ab63da321788a2554b8f9655307"
 MAX_FRAME_BYTES = 1024 * 1024
 MAX_DEPTH = 32
 MAX_MEMBERS = 4096
@@ -28,7 +28,7 @@ MAX_PENDING_REQUESTS = 64
 MAX_PENDING_RESPONSE_BYTES = 4 * 1024 * 1024
 DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
 UUID = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$")
-IMPLEMENTED_OPERATIONS = {"kernel.handshake": 2, "kernel.health": 1, "execution.qualify": 1, "task.bind": 1, "producer.dispatch": 1, "suite.freeze": 1}
+IMPLEMENTED_OPERATIONS = {"kernel.handshake": 2, "kernel.health": 1, "execution.qualify": 1, "task.bind": 1, "producer.dispatch": 1, "suite.freeze": 1, "suite.execute": 1}
 SYMBOLIC = re.compile(r"^[a-z0-9][a-z0-9._:-]{0,127}$")
 CHECK_KINDS = {"build", "unit", "integration", "visible-e2e", "observability", "diagnostics", "source-maps", "process-cleanup", "ranex-evidence"}
 
@@ -404,6 +404,119 @@ def _freeze_suite(request: dict[str, Any], body: dict[str, Any]) -> tuple[dict[s
     return projection, {"sequence": str(len(committed)), "rootDigest": root}
 
 
+def _process_authority(value: Any) -> dict[str, Any]:
+    authority = _closed(value, {
+        "operationId", "processRegistrationId", "processKind", "processOwner", "operationState", "exitClass",
+        "startedAt", "finishedAt", "cleanupAt", "suiteDigest", "checkDefinitionDigest", "subjectStateDigest",
+        "verifierId", "verifierArtifactDigest", "executionProfileDigest", "resultArtifactDigest", "cleanupProofDigest",
+    })
+    _uuid(authority["operationId"]); _uuid(authority["processRegistrationId"])
+    if authority["processKind"] not in {"check", "build", "test"} or authority["processOwner"] not in {"kogg-supervisor", "theia-task", "theia-terminal", "theia-debug", "theia-plugin-host", "ranex"}:
+        raise ProtocolRefusal("KERNEL_AUTHORITY_INVALID")
+    if authority["operationState"] not in {"completed", "failed", "timed-out", "cancelled"} or authority["exitClass"] not in {"zero", "nonzero", "signal"}:
+        raise ProtocolRefusal("KERNEL_AUTHORITY_INVALID")
+    for field in ("startedAt", "finishedAt", "cleanupAt"):
+        _timestamp(authority[field])
+    _uuid(authority["verifierId"])
+    for field in ("suiteDigest", "checkDefinitionDigest", "subjectStateDigest", "verifierArtifactDigest", "executionProfileDigest", "resultArtifactDigest"):
+        _sha256(authority[field])
+    proof = {field: authority[field] for field in (
+        "operationId", "processRegistrationId", "processKind", "processOwner", "operationState", "exitClass",
+        "startedAt", "finishedAt", "cleanupAt", "suiteDigest", "checkDefinitionDigest", "subjectStateDigest",
+        "verifierId", "verifierArtifactDigest", "executionProfileDigest", "resultArtifactDigest",
+    )}
+    if authority["cleanupProofDigest"] != _domain_digest("process-execution-cleanup", proof):
+        raise ProtocolRefusal("KERNEL_AUTHORITY_INVALID")
+    return authority
+
+
+def _check_execution(value: Any) -> dict[str, Any]:
+    execution = _closed(value, {
+        "executionId", "suiteDigest", "checkDefinitionDigest", "subjectState", "verifierId", "verifierRole",
+        "verifierArtifactDigest", "processRegistrationId", "executionProfileDigest", "startedAt", "finishedAt",
+        "outcome", "exitClass", "resultArtifactDigest", "cleanupProofDigest",
+    })
+    _uuid(execution["executionId"]); _uuid(execution["verifierId"]); _uuid(execution["processRegistrationId"])
+    for field in ("suiteDigest", "checkDefinitionDigest", "verifierArtifactDigest", "executionProfileDigest", "resultArtifactDigest", "cleanupProofDigest"):
+        _sha256(execution[field])
+    _repository_state(execution["subjectState"])
+    if execution["verifierRole"] != "verification" or execution["outcome"] not in {"pass", "fail", "cancelled", "timeout", "infrastructure"} or execution["exitClass"] not in {"zero", "nonzero", "signal", "none"}:
+        raise ProtocolRefusal("KERNEL_CHECK_INFRASTRUCTURE")
+    started = _timestamp(execution["startedAt"]); finished = _timestamp(execution["finishedAt"])
+    if finished < started:
+        raise ProtocolRefusal("KERNEL_CHECK_INFRASTRUCTURE")
+    return execution
+
+
+def _execute_suite(request: dict[str, Any], body: dict[str, Any]) -> tuple[dict[str, Any], dict[str, str]]:
+    try:
+        closed = _closed(body, {"execution", "executionDigest", "processAuthority"})
+    except ProtocolRefusal as error:
+        raise ProtocolRefusal("KERNEL_CHECK_INFRASTRUCTURE") from error
+    execution = _check_execution(closed["execution"]); authority = _process_authority(closed["processAuthority"])
+    execution_digest = _domain_digest("check-execution", execution)
+    if closed["executionDigest"] != execution_digest:
+        raise ProtocolRefusal("KERNEL_CHECK_INFRASTRUCTURE")
+    expected_outcome = "timeout" if authority["operationState"] == "timed-out" else "cancelled" if authority["operationState"] == "cancelled" else "pass" if authority["exitClass"] == "zero" and authority["operationState"] == "completed" else "fail" if authority["exitClass"] == "nonzero" else "infrastructure"
+    if any((
+        execution["processRegistrationId"] != authority["processRegistrationId"],
+        execution["startedAt"] != authority["startedAt"], execution["finishedAt"] != authority["finishedAt"],
+        execution["exitClass"] != authority["exitClass"], execution["outcome"] != expected_outcome,
+        execution["cleanupProofDigest"] != authority["cleanupProofDigest"], execution["suiteDigest"] != authority["suiteDigest"],
+        execution["checkDefinitionDigest"] != authority["checkDefinitionDigest"],
+        _domain_digest("repository-state", execution["subjectState"]) != authority["subjectStateDigest"],
+        execution["verifierId"] != authority["verifierId"], execution["verifierArtifactDigest"] != authority["verifierArtifactDigest"],
+        execution["executionProfileDigest"] != authority["executionProfileDigest"],
+        execution["resultArtifactDigest"] != authority["resultArtifactDigest"],
+    )):
+        raise ProtocolRefusal("KERNEL_AUTHORITY_INVALID")
+    journal = Journal(_journal_path())
+    try:
+        if not _journal_path().is_file() or not journal.verify():
+            raise ProtocolRefusal("KERNEL_JOURNAL_INTEGRITY")
+        records = journal.entries()
+    except ProtocolRefusal:
+        raise
+    except Exception as error:
+        raise ProtocolRefusal("KERNEL_JOURNAL_INTEGRITY") from error
+    suites = [record for record in records if record.get("kind") == "kogg.frozen-suite.v1" and record.get("suiteDigest") == execution["suiteDigest"]]
+    if len(suites) != 1:
+        raise ProtocolRefusal("KERNEL_SUITE_MISMATCH" if not suites else "KERNEL_JOURNAL_AMBIGUOUS")
+    suite = suites[0].get("suite")
+    if not isinstance(suite, dict):
+        raise ProtocolRefusal("KERNEL_JOURNAL_INTEGRITY")
+    checks = [check for check in suite.get("checks", []) if _domain_digest("check-definition", check) == execution["checkDefinitionDigest"]]
+    if len(checks) != 1:
+        raise ProtocolRefusal("KERNEL_SUITE_MISMATCH" if not checks else "KERNEL_JOURNAL_AMBIGUOUS")
+    tasks = [record for record in records if record.get("kind") == "kogg.task-binding.v1" and record.get("bindingDigest") == suite.get("taskBindingDigest")]
+    if len(tasks) != 1 or not isinstance(tasks[0].get("binding"), dict):
+        raise ProtocolRefusal("KERNEL_TASK_BINDING_MISMATCH" if not tasks else "KERNEL_JOURNAL_AMBIGUOUS")
+    task = tasks[0]["binding"]
+    producers = [record.get("binding") for record in records if record.get("kind") == "kogg.producer-binding.v1" and isinstance(record.get("binding"), dict) and record["binding"].get("taskBindingDigest") == suite.get("taskBindingDigest")]
+    if execution["executionProfileDigest"] != task.get("executionProfileDigest"):
+        raise ProtocolRefusal("KERNEL_AUTHORITY_INVALID")
+    if any(producer.get("producerId") == execution["verifierId"] or producer.get("adapterArtifactDigest") == execution["verifierArtifactDigest"] for producer in producers):
+        raise ProtocolRefusal("KERNEL_ROLE_SEPARATION_FAILED")
+    prior = [record for record in records if record.get("kind") == "kogg.check-execution.v1" and record.get("idempotencyKey") == request["idempotencyKey"]]
+    if len(prior) > 1:
+        raise ProtocolRefusal("KERNEL_JOURNAL_AMBIGUOUS")
+    projection = {"checkExecutionDigest": execution_digest, "executionId": execution["executionId"], "outcome": execution["outcome"]}
+    if prior:
+        if prior[0].get("bodyDigest") != request["bodyDigest"] or prior[0].get("executionDigest") != execution_digest:
+            raise ProtocolRefusal("KERNEL_IDEMPOTENCY_CONFLICT")
+        return projection, _journal_position(records, records.index(prior[0]) + 1)
+    fact = {"kind": "kogg.check-execution.v1", "idempotencyKey": request["idempotencyKey"], "bodyDigest": request["bodyDigest"], "executionDigest": execution_digest, "execution": execution, "processAuthority": authority}
+    try:
+        root = journal.append(_KernelFact(fact)); committed = journal.entries()
+        if not journal.verify() or not committed or committed[-1] != fact:
+            raise ProtocolRefusal("KERNEL_JOURNAL_INTEGRITY")
+    except ProtocolRefusal:
+        raise
+    except Exception as error:
+        raise ProtocolRefusal("KERNEL_JOURNAL_INTEGRITY") from error
+    return projection, {"sequence": str(len(committed)), "rootDigest": root}
+
+
 def _capabilities() -> dict[str, Any]:
     provenance = _provenance()
     qualified = platform.system() == "Linux"
@@ -510,6 +623,8 @@ def _dispatch(request: dict[str, Any]) -> tuple[dict[str, Any], dict[str, str] |
         return _dispatch_producer(request, body)
     if operation == "suite.freeze":
         return _freeze_suite(request, body)
+    if operation == "suite.execute":
+        return _execute_suite(request, body)
     raise ProtocolRefusal("KERNEL_CAPABILITY_UNAVAILABLE")
 
 
