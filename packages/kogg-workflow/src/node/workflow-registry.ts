@@ -19,6 +19,8 @@ const LEGACY_UNATTESTED_CATALOG = '0'.repeat(64);
 @injectable()
 export class WorkflowRegistry implements KoggWorkflowService, BackendApplicationContribution {
   private database: DatabaseSync | undefined;
+  private readonly schedulerEpochId = randomUUID();
+  private readonly schedulerFencingToken = randomUUID();
   constructor(@inject(WorkflowCompiler) private readonly compiler: WorkflowCompiler, @unmanaged() private readonly databasePath = path.join(stateRoot(), 'workflow', 'registry.sqlite3')) {}
 
   async onStart(): Promise<void> {
@@ -26,16 +28,18 @@ export class WorkflowRegistry implements KoggWorkflowService, BackendApplication
       await fs.mkdir(path.dirname(this.databasePath), { recursive: true, mode: 0o700 });
       this.database = new DatabaseSync(this.databasePath, { enableForeignKeyConstraints: true, enableDoubleQuotedStringLiterals: false, allowExtension: false });
       this.database.exec('PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; PRAGMA foreign_keys=ON; PRAGMA trusted_schema=OFF; PRAGMA busy_timeout=5000;');
-      this.migrate(); this.assertIntegrity(); const stored = await this.diagnostics(); if (stored.canonicalMismatchCount || stored.catalogMismatchCount || stored.planMismatchCount) throw new WorkflowValidationError('WORKFLOW_STORE_INTEGRITY'); await fs.chmod(this.databasePath, 0o600).catch(error => { if (process.platform !== 'win32') throw error; });
-      const versionCount = this.versionCount(); workflowLog('recovery.started', { versionCount });
-      workflowLog('recovery.completed', { versionCount, activeProcessCount: 0 });
+      this.migrate(); this.assertIntegrity(); const stored = await this.diagnostics(); if (!stored.integrity || !stored.foreignKeys || !stored.immutableTriggers || !stored.schedulerIntegrity || stored.canonicalMismatchCount || stored.catalogMismatchCount || stored.planMismatchCount) throw new WorkflowValidationError('WORKFLOW_STORE_INTEGRITY');
+      const versionCount = this.versionCount(); const pending = this.schedulerRecoveryCounts(); workflowLog('recovery.started', { versionCount, activeRunCount: pending.activeRunCount, pendingOutboxCount: pending.pendingOutboxCount });
+      const recovery = this.recoverScheduler(pending);
+      await fs.chmod(this.databasePath, 0o600).catch(error => { if (process.platform !== 'win32') throw error; });
+      workflowLog('recovery.completed', { versionCount, activeProcessCount: 0, quarantinedRunCount: recovery.quarantinedRunCount });
     } catch (error) {
       // observability-exempt: diagnostics.failed records the sanitized startup failure without raw database text.
       this.database?.close(); this.database = undefined; workflowLog('diagnostics.failed', { errorType: error instanceof Error ? error.name : 'UnknownError' }); throw error;
     }
   }
 
-  async onStop(): Promise<void> { workflowLog('registry.stop.started', {}); try { this.database?.close(); this.database = undefined; workflowLog('registry.stop.completed', {}); } catch (error) { /* observability-exempt: registry.stop.failed emits only a normalized error type. */ workflowLog('registry.stop.failed', { errorType: error instanceof Error ? error.name : 'UnknownError' }); throw error; } }
+  async onStop(): Promise<void> { workflowLog('registry.stop.started', {}); try { this.database?.prepare("UPDATE scheduler_lease SET phase='released',updated_at=? WHERE singleton=1 AND owner_epoch_id=? AND phase='active'").run(new Date().toISOString(), this.schedulerEpochId); this.database?.close(); this.database = undefined; workflowLog('registry.stop.completed', {}); } catch (error) { /* observability-exempt: registry.stop.failed emits only a normalized error type. */ workflowLog('registry.stop.failed', { errorType: error instanceof Error ? error.name : 'UnknownError' }); throw error; } }
   async validate(graph: unknown): Promise<WorkflowValidationProjection> { workflowLog('draft.command.requested', { operation: 'validate' }); const result = this.compiler.validate(graph); if (result.valid) workflowLog('draft.command.completed', { operation: 'validate', nodeCount: result.nodeCount, edgeCount: result.edgeCount }); else workflowLog('draft.command.refused', { operation: 'validate', safeCode: result.code }); return result; }
 
   async saveVersion(input: { requestId: string; templateId: string; expectedVersionNumber: number; graph: unknown }): Promise<WorkflowMutationResult> {
@@ -103,15 +107,19 @@ export class WorkflowRegistry implements KoggWorkflowService, BackendApplication
 
   async listVersions(templateId: string): Promise<readonly WorkflowTemplateVersionProjection[]> { uuid(templateId); return (this.db().prepare('SELECT * FROM template_versions WHERE template_id=? ORDER BY version_number').all(templateId) as Row[]).map(versionProjection); }
 
-  async diagnostics(): Promise<{ integrity: boolean; foreignKeys: boolean; immutableTriggers: boolean; canonicalMismatchCount: number; catalogMismatchCount: number; catalogEntryCount: number; unavailableExecutorCount: number; planMismatchCount: number; versionCount: number; planCount: number; activeProcessCount: number; residualProcessCount: number; recoveryBacklogCount: number; sourceMapsPresent: boolean }> {
+  async diagnostics(): Promise<{ integrity: boolean; foreignKeys: boolean; immutableTriggers: boolean; canonicalMismatchCount: number; catalogMismatchCount: number; catalogEntryCount: number; unavailableExecutorCount: number; planMismatchCount: number; versionCount: number; planCount: number; schedulerIntegrity: boolean; schedulerLeaseActive: boolean; schedulerAdmission: 'enabled' | 'blocked' | 'recovering'; pendingOutboxCount: number; quarantinedRunCount: number; activeProcessCount: number; residualProcessCount: number; recoveryBacklogCount: number; sourceMapsPresent: boolean }> {
     const db = this.db(); const integrity = text(db.prepare('PRAGMA quick_check').get() as Row, 'quick_check') === 'ok'; const foreignKeys = db.prepare('PRAGMA foreign_key_check').all().length === 0;
-    const immutableTriggers = number(db.prepare("SELECT count(*) AS count FROM sqlite_master WHERE type='trigger' AND name LIKE 'workflow_immutable_%'").get() as Row, 'count') === 4;
+    const immutableTriggers = number(db.prepare("SELECT count(*) AS count FROM sqlite_master WHERE type='trigger' AND name LIKE 'workflow_immutable_%'").get() as Row, 'count') === 6;
     let canonicalMismatchCount = 0; for (const row of db.prepare('SELECT graph_json,graph_digest FROM template_versions').all() as Row[]) { try { const graph = this.compiler.decodeAndValidate(JSON.parse(text(row, 'graph_json')) as unknown); if (workflowDigest('template', graph) !== text(row, 'graph_digest')) canonicalMismatchCount++; } catch { /* observability-exempt: aggregate canonical mismatch count is the diagnostic signal; content is never logged. */ canonicalMismatchCount++; } }
     const catalog = this.compiler.catalogStatus();
     const catalogMismatchCount = number(db.prepare('SELECT count(*) AS count FROM template_versions WHERE catalog_digest<>?').get(catalog.digest) as Row, 'count') + number(db.prepare('SELECT count(*) AS count FROM compiled_plans WHERE catalog_digest<>?').get(catalog.digest) as Row, 'count') + (catalog.valid ? 0 : 1);
     let planMismatchCount = 0; for (const row of db.prepare('SELECT * FROM compiled_plans').all() as Row[]) { try { const version = this.version(text(row, 'version_id')); const graph = this.compiler.decodeAndValidate(JSON.parse(text(version, 'graph_json')) as unknown); if (text(row, 'graph_digest') !== text(version, 'graph_digest') || text(row, 'catalog_digest') !== text(version, 'catalog_digest')) throw new WorkflowValidationError('WORKFLOW_STORE_INTEGRITY'); this.compiler.assertPlanIntegrity(plan(row), graph); } catch { /* observability-exempt: aggregate plan mismatch count is the diagnostic signal; plan contents are never logged. */ planMismatchCount++; } }
     const packageRuntime = path.basename(__filename) === 'workflow-registry.js'; const sourceMapsPresent = existsSync(`${__filename}.map`) && (!packageRuntime || (existsSync(path.join(__dirname, 'workflow-compiler.js.map')) && existsSync(path.join(__dirname, 'workflow-node-catalog.js.map'))));
-    return { integrity, foreignKeys, immutableTriggers, canonicalMismatchCount, catalogMismatchCount, catalogEntryCount: catalog.entryCount, unavailableExecutorCount: catalog.unavailableExecutorCount, planMismatchCount, versionCount: this.versionCount(), planCount: number(db.prepare('SELECT count(*) AS count FROM compiled_plans').get() as Row, 'count'), activeProcessCount: 0, residualProcessCount: 0, recoveryBacklogCount: 0, sourceMapsPresent };
+    const lease = db.prepare('SELECT phase,admission FROM scheduler_lease WHERE singleton=1').get() as Row | undefined;
+    const pendingOutboxCount = number(db.prepare("SELECT count(*) AS count FROM workflow_outbox WHERE phase IN ('requested','claimed')").get() as Row, 'count');
+    const quarantinedRunCount = number(db.prepare("SELECT count(*) AS count FROM workflow_runs WHERE state='quarantined'").get() as Row, 'count');
+    const schedulerIntegrity = this.schedulerEventsValid() && this.schedulerRecordsValid();
+    return { integrity: integrity && schedulerIntegrity, foreignKeys, immutableTriggers, canonicalMismatchCount, catalogMismatchCount, catalogEntryCount: catalog.entryCount, unavailableExecutorCount: catalog.unavailableExecutorCount, planMismatchCount, versionCount: this.versionCount(), planCount: number(db.prepare('SELECT count(*) AS count FROM compiled_plans').get() as Row, 'count'), schedulerIntegrity, schedulerLeaseActive: lease ? text(lease, 'phase') === 'active' : false, schedulerAdmission: lease ? text(lease, 'admission') as 'enabled' | 'blocked' | 'recovering' : 'recovering', pendingOutboxCount, quarantinedRunCount, activeProcessCount: 0, residualProcessCount: 0, recoveryBacklogCount: pendingOutboxCount + quarantinedRunCount, sourceMapsPresent };
   }
 
   private transaction(requestId: string, requestDigest: string, action: () => WorkflowMutationResult): WorkflowMutationResult {
@@ -125,10 +133,45 @@ export class WorkflowRegistry implements KoggWorkflowService, BackendApplication
     CREATE TRIGGER IF NOT EXISTS workflow_immutable_versions_update BEFORE UPDATE ON template_versions BEGIN SELECT RAISE(ABORT,'immutable'); END;
     CREATE TRIGGER IF NOT EXISTS workflow_immutable_versions_delete BEFORE DELETE ON template_versions BEGIN SELECT RAISE(ABORT,'immutable'); END;
     CREATE TRIGGER IF NOT EXISTS workflow_immutable_plans_update BEFORE UPDATE ON compiled_plans BEGIN SELECT RAISE(ABORT,'immutable'); END;
-    CREATE TRIGGER IF NOT EXISTS workflow_immutable_plans_delete BEFORE DELETE ON compiled_plans BEGIN SELECT RAISE(ABORT,'immutable'); END;`);
+    CREATE TRIGGER IF NOT EXISTS workflow_immutable_plans_delete BEFORE DELETE ON compiled_plans BEGIN SELECT RAISE(ABORT,'immutable'); END;
+    CREATE TABLE IF NOT EXISTS scheduler_lease(singleton INTEGER PRIMARY KEY CHECK(singleton=1),owner_epoch_id TEXT NOT NULL,fencing_token TEXT NOT NULL,phase TEXT NOT NULL CHECK(phase IN ('active','released')),admission TEXT NOT NULL CHECK(admission IN ('enabled','blocked','recovering')),updated_at TEXT NOT NULL);
+    CREATE TABLE IF NOT EXISTS workflow_runs(run_id TEXT PRIMARY KEY,plan_id TEXT NOT NULL REFERENCES compiled_plans(plan_id),plan_digest TEXT NOT NULL,state TEXT NOT NULL CHECK(state IN ('admitted','running','stopping','completed','failed','cancelled','quarantined')),revision INTEGER NOT NULL CHECK(revision>=1),owner_epoch_id TEXT NOT NULL,safe_code TEXT NOT NULL,created_at TEXT NOT NULL,updated_at TEXT NOT NULL);
+    CREATE TABLE IF NOT EXISTS workflow_node_attempts(run_id TEXT NOT NULL REFERENCES workflow_runs(run_id),node_id TEXT NOT NULL,attempt INTEGER NOT NULL CHECK(attempt>=1),state TEXT NOT NULL CHECK(state IN ('pending','ready','dispatched','running','succeeded','failed','cancelled','quarantined')),fencing_token TEXT NOT NULL,safe_code TEXT NOT NULL,updated_at TEXT NOT NULL,PRIMARY KEY(run_id,node_id,attempt));
+    CREATE TABLE IF NOT EXISTS workflow_outbox(outbox_id TEXT PRIMARY KEY,run_id TEXT NOT NULL REFERENCES workflow_runs(run_id),node_id TEXT NOT NULL,operation_kind TEXT NOT NULL,request_digest TEXT NOT NULL,fencing_token TEXT NOT NULL,phase TEXT NOT NULL CHECK(phase IN ('requested','claimed','completed','quarantined')),safe_code TEXT NOT NULL,created_at TEXT NOT NULL,updated_at TEXT NOT NULL);
+    CREATE TABLE IF NOT EXISTS workflow_scheduler_events(sequence INTEGER PRIMARY KEY AUTOINCREMENT,event_id TEXT NOT NULL UNIQUE,run_id TEXT NOT NULL REFERENCES workflow_runs(run_id),event_name TEXT NOT NULL,safe_code TEXT NOT NULL,previous_event_digest TEXT NOT NULL,event_digest TEXT NOT NULL,created_at TEXT NOT NULL);
+    CREATE TRIGGER IF NOT EXISTS workflow_immutable_scheduler_events_update BEFORE UPDATE ON workflow_scheduler_events BEGIN SELECT RAISE(ABORT,'immutable'); END;
+    CREATE TRIGGER IF NOT EXISTS workflow_immutable_scheduler_events_delete BEFORE DELETE ON workflow_scheduler_events BEGIN SELECT RAISE(ABORT,'immutable'); END;`);
+    this.db().prepare("INSERT OR IGNORE INTO scheduler_lease(singleton,owner_epoch_id,fencing_token,phase,admission,updated_at) VALUES(1,?,?,'released','recovering',?)").run(this.schedulerEpochId, this.schedulerFencingToken, new Date().toISOString());
     this.ensureColumn('template_versions', 'catalog_digest', LEGACY_UNATTESTED_CATALOG); this.ensureColumn('compiled_plans', 'catalog_digest', LEGACY_UNATTESTED_CATALOG); }
   private ensureColumn(table: 'template_versions' | 'compiled_plans', column: 'catalog_digest', value: string): void { const present = (this.db().prepare(`PRAGMA table_info(${table})`).all() as Row[]).some(row => text(row, 'name') === column); if (!present) this.db().exec(`ALTER TABLE ${table} ADD COLUMN ${column} TEXT NOT NULL DEFAULT '${value}'`); }
-  private assertIntegrity(): void { const db = this.db(); if (text(db.prepare('PRAGMA quick_check').get() as Row, 'quick_check') !== 'ok' || db.prepare('PRAGMA foreign_key_check').all().length) throw new WorkflowValidationError('WORKFLOW_STORE_INTEGRITY'); }
+  private assertIntegrity(): void { const db = this.db(); if (text(db.prepare('PRAGMA quick_check').get() as Row, 'quick_check') !== 'ok' || db.prepare('PRAGMA foreign_key_check').all().length || !this.schedulerEventsValid()) throw new WorkflowValidationError('WORKFLOW_STORE_INTEGRITY'); }
+  private schedulerRecoveryCounts(): { activeRunCount: number; pendingOutboxCount: number } { return { activeRunCount: number(this.db().prepare("SELECT count(*) AS count FROM workflow_runs WHERE state IN ('admitted','running','stopping')").get() as Row, 'count'), pendingOutboxCount: number(this.db().prepare("SELECT count(*) AS count FROM workflow_outbox WHERE phase IN ('requested','claimed')").get() as Row, 'count') }; }
+  private recoverScheduler(pending: { activeRunCount: number; pendingOutboxCount: number }): { activeRunCount: number; pendingOutboxCount: number; quarantinedRunCount: number } {
+    const db = this.db(); const activeRuns = db.prepare("SELECT run_id FROM workflow_runs WHERE state IN ('admitted','running','stopping') ORDER BY run_id").all() as Row[]; const now = new Date().toISOString();
+    db.exec('BEGIN IMMEDIATE');
+    try {
+      db.prepare("UPDATE scheduler_lease SET admission='recovering',updated_at=? WHERE singleton=1").run(now);
+      for (const row of activeRuns) {
+        const runId = text(row, 'run_id'); db.prepare("UPDATE workflow_runs SET state='quarantined',revision=revision+1,safe_code='WORKFLOW_OUTCOME_UNKNOWN',updated_at=? WHERE run_id=? AND state IN ('admitted','running','stopping')").run(now, runId);
+        db.prepare("UPDATE workflow_node_attempts SET state='quarantined',safe_code='WORKFLOW_OUTCOME_UNKNOWN',updated_at=? WHERE run_id=? AND state IN ('pending','ready','dispatched','running')").run(now, runId);
+        db.prepare("UPDATE workflow_outbox SET phase='quarantined',safe_code='WORKFLOW_OUTCOME_UNKNOWN',updated_at=? WHERE run_id=? AND phase IN ('requested','claimed')").run(now, runId); this.schedulerEvent(runId, 'run.recovery.quarantined', 'WORKFLOW_OUTCOME_UNKNOWN', now); workflowLog('run.recovery.quarantined', { runId, safeCode: 'WORKFLOW_OUTCOME_UNKNOWN' });
+      }
+      const quarantinedRunCount = number(db.prepare("SELECT count(*) AS count FROM workflow_runs WHERE state='quarantined'").get() as Row, 'count');
+      db.prepare("UPDATE scheduler_lease SET owner_epoch_id=?,fencing_token=?,phase='active',admission=?,updated_at=? WHERE singleton=1").run(this.schedulerEpochId, this.schedulerFencingToken, quarantinedRunCount ? 'blocked' : 'enabled', now); db.exec('COMMIT');
+      return { activeRunCount: pending.activeRunCount, pendingOutboxCount: pending.pendingOutboxCount, quarantinedRunCount };
+    } catch (error) { db.exec('ROLLBACK'); throw error; }
+  }
+  private schedulerEvent(runId: string, eventName: string, safeCode: WorkflowSafeCode, createdAt: string): void {
+    const prior = this.db().prepare('SELECT event_digest FROM workflow_scheduler_events ORDER BY sequence DESC LIMIT 1').get() as Row | undefined; const previousEventDigest = prior ? text(prior, 'event_digest') : '0'.repeat(64); const eventId = randomUUID();
+    const eventDigest = workflowDigest('scheduler-event', { eventId, runId, eventName, safeCode, previousEventDigest, createdAt }); this.db().prepare('INSERT INTO workflow_scheduler_events(event_id,run_id,event_name,safe_code,previous_event_digest,event_digest,created_at) VALUES(?,?,?,?,?,?,?)').run(eventId, runId, eventName, safeCode, previousEventDigest, eventDigest, createdAt);
+  }
+  private schedulerEventsValid(): boolean {
+    let previousEventDigest = '0'.repeat(64); for (const row of this.db().prepare('SELECT * FROM workflow_scheduler_events ORDER BY sequence').all() as Row[]) { const expected = workflowDigest('scheduler-event', { eventId: text(row, 'event_id'), runId: text(row, 'run_id'), eventName: text(row, 'event_name'), safeCode: text(row, 'safe_code'), previousEventDigest, createdAt: text(row, 'created_at') }); if (text(row, 'previous_event_digest') !== previousEventDigest || text(row, 'event_digest') !== expected) return false; previousEventDigest = expected; } return true;
+  }
+  private schedulerRecordsValid(): boolean {
+    const mismatchedRuns = number(this.db().prepare('SELECT count(*) AS count FROM workflow_runs JOIN compiled_plans ON compiled_plans.plan_id=workflow_runs.plan_id WHERE workflow_runs.plan_digest<>compiled_plans.plan_digest').get() as Row, 'count');
+    const malformedOutbox = number(this.db().prepare("SELECT count(*) AS count FROM workflow_outbox WHERE length(request_digest)<>64 OR request_digest GLOB '*[^0-9a-f]*'").get() as Row, 'count'); return mismatchedRuns === 0 && malformedOutbox === 0;
+  }
   private currentVersion(templateId: string): number { const row = this.db().prepare('SELECT coalesce(max(version_number),0) AS count FROM template_versions WHERE template_id=?').get(templateId) as Row; return number(row, 'count'); }
   private version(versionId: string): Row { const row = this.db().prepare('SELECT * FROM template_versions WHERE version_id=?').get(versionId) as Row | undefined; if (!row) throw new WorkflowValidationError('WORKFLOW_SCHEMA_INVALID'); return row; }
   private compiledPlan(planId: string): Row { const row = this.db().prepare('SELECT * FROM compiled_plans WHERE plan_id=?').get(planId) as Row | undefined; if (!row) throw new WorkflowValidationError('WORKFLOW_SCHEMA_INVALID'); return row; }

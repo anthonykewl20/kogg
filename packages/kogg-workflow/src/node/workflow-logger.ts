@@ -14,8 +14,9 @@ type Fields = {
   'compile.refused': { requestId: string; versionId: string; safeCode: WorkflowSafeCode };
   'run.admission.requested': { requestId: string; planId: string };
   'run.admission.refused': { requestId: string; planId: string; safeCode: WorkflowSafeCode; unavailableExecutorCount: number };
-  'recovery.started': { versionCount: number };
-  'recovery.completed': { versionCount: number; activeProcessCount: number };
+  'run.recovery.quarantined': { runId: string; safeCode: 'WORKFLOW_OUTCOME_UNKNOWN' };
+  'recovery.started': { versionCount: number; activeRunCount: number; pendingOutboxCount: number };
+  'recovery.completed': { versionCount: number; activeProcessCount: number; quarantinedRunCount: number };
   'registry.stop.started': Record<string, never>;
   'registry.stop.completed': Record<string, never>;
   'registry.stop.failed': { errorType: string };
@@ -34,6 +35,7 @@ export function workflowLog<K extends keyof Fields>(event: K, fields: Fields[K])
   else if (event === 'compile.refused') console.warn('[kogg:workflow:compiler] compile.refused', fields);
   else if (event === 'run.admission.requested') console.info('[kogg:workflow:engine] run.admission.requested', fields);
   else if (event === 'run.admission.refused') console.warn('[kogg:workflow:engine] run.admission.refused', fields);
+  else if (event === 'run.recovery.quarantined') console.warn('[kogg:workflow:recovery] run.recovery.quarantined', fields);
   else if (event === 'recovery.started') console.info('[kogg:workflow:recovery] recovery.started', fields);
   else if (event === 'recovery.completed') console.info('[kogg:workflow:recovery] recovery.completed', fields);
   else if (event === 'registry.stop.started') console.info('[kogg:workflow:engine] registry.stop.started', fields);

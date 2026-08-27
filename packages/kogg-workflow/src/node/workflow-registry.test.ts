@@ -27,7 +27,7 @@ test('versions a validated graph immutably and compiles the policy-owned trust s
     assert.equal(savedNext.kind, 'completed'); assert.equal(savedNext.version?.versionNumber, 2); assert.notEqual(savedNext.version?.graphDigest, firstDigest); assert.equal(compiled.plan?.graphDigest, firstDigest);
     await registry.onStop(); const restarted = new WorkflowRegistry(compiler, database); await restarted.onStart(); const versions = await restarted.listVersions(TEMPLATE); assert.equal(versions.length, 2); assert.equal(versions[0]?.graphDigest, firstDigest);
     const diagnostics = await restarted.diagnostics(); assert.equal(diagnostics.canonicalMismatchCount, 0); assert.equal(diagnostics.catalogMismatchCount, 0); assert.equal(diagnostics.catalogEntryCount, 14); assert.equal(diagnostics.unavailableExecutorCount, 14); assert.equal(diagnostics.planMismatchCount, 0); assert.equal(diagnostics.residualProcessCount, 0);
-    const catalogCheck = (await new WorkflowDiagnosticContributor(restarted).diagnose()).find(check => check.id === 'workflow.catalog'); assert.equal(catalogCheck?.status, 'fail'); assert.equal(catalogCheck?.details?.unavailableExecutorCount, 14); await restarted.onStop();
+    const checks = await new WorkflowDiagnosticContributor(restarted).diagnose(); const catalogCheck = checks.find(check => check.id === 'workflow.catalog'); assert.equal(catalogCheck?.status, 'fail'); assert.equal(catalogCheck?.details?.unavailableExecutorCount, 14); assert.equal(checks.find(check => check.id === 'workflow.scheduler')?.status, 'pass'); await restarted.onStop();
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 
@@ -94,6 +94,33 @@ test('run admission rechecks the complete trust-spine plan digest and refuses li
     const corrupt = new DatabaseSync(database); corrupt.exec('DROP TRIGGER workflow_immutable_plans_update'); corrupt.prepare('UPDATE compiled_plans SET plan_digest=? WHERE plan_id=?').run('f'.repeat(64), compiled.plan.planId); corrupt.close();
     const refused = await registry.admitRun({ requestId: '20000000-0000-4000-8000-000000000052', planId: compiled.plan.planId });
     assert.deepEqual(refused, { kind: 'refused', code: 'WORKFLOW_STORE_INTEGRITY' }); assert.equal((await registry.diagnostics()).planMismatchCount, 1); await registry.onStop();
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test('restart quarantines durable scheduler and outbox ambiguity without replaying dispatch', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'kogg-workflow-scheduler-recovery-')); const database = path.join(root, 'workflow.sqlite3'); const compiler = workflowCompiler();
+  try {
+    const first = new WorkflowRegistry(compiler, database); await first.onStart();
+    const saved = await first.saveVersion({ requestId: '20000000-0000-4000-8000-000000000060', templateId: TEMPLATE, expectedVersionNumber: 0, graph: validGraph() }); if (saved.kind !== 'completed' || !saved.version) throw new Error('Expected immutable workflow version');
+    const compiled = await first.compile({ requestId: '20000000-0000-4000-8000-000000000061', versionId: saved.version.versionId }); if (compiled.kind !== 'completed' || !compiled.plan) throw new Error('Expected compiled workflow plan'); await first.onStop();
+    const runId = '50000000-0000-4000-8000-000000000001'; const nodeId = validGraph().nodes[0]!.nodeId; const now = new Date().toISOString(); const store = new DatabaseSync(database);
+    store.prepare("INSERT INTO workflow_runs(run_id,plan_id,plan_digest,state,revision,owner_epoch_id,safe_code,created_at,updated_at) VALUES(?,?,?,'running',1,?,'WORKFLOW_OK',?,?)").run(runId, compiled.plan.planId, compiled.plan.planDigest, '50000000-0000-4000-8000-000000000002', now, now);
+    store.prepare("INSERT INTO workflow_node_attempts(run_id,node_id,attempt,state,fencing_token,safe_code,updated_at) VALUES(?,?,1,'running',?,'WORKFLOW_OK',?)").run(runId, nodeId, '50000000-0000-4000-8000-000000000003', now);
+    store.prepare("INSERT INTO workflow_outbox(outbox_id,run_id,node_id,operation_kind,request_digest,fencing_token,phase,safe_code,created_at,updated_at) VALUES(?,?,?,'implementation.agent',?,?, 'claimed','WORKFLOW_OK',?,?)").run('50000000-0000-4000-8000-000000000004', runId, nodeId, 'a'.repeat(64), '50000000-0000-4000-8000-000000000003', now, now); store.close();
+    const recovered = new WorkflowRegistry(compiler, database); await recovered.onStart(); const diagnostics = await recovered.diagnostics();
+    assert.equal(diagnostics.schedulerIntegrity, true); assert.equal(diagnostics.schedulerLeaseActive, true); assert.equal(diagnostics.schedulerAdmission, 'blocked'); assert.equal(diagnostics.pendingOutboxCount, 0); assert.equal(diagnostics.quarantinedRunCount, 1); assert.equal(diagnostics.recoveryBacklogCount, 1);
+    const checks = await new WorkflowDiagnosticContributor(recovered).diagnose(); assert.equal(checks.find(check => check.id === 'workflow.scheduler')?.status, 'fail'); assert.equal(checks.find(check => check.id === 'workflow.recovery')?.status, 'fail'); await recovered.onStop();
+    const verify = new DatabaseSync(database); assert.equal((verify.prepare('SELECT phase FROM workflow_outbox').get() as { phase: string }).phase, 'quarantined'); assert.equal((verify.prepare('SELECT count(*) AS count FROM workflow_scheduler_events').get() as { count: number }).count, 1); verify.close();
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test('refuses startup after immutable scheduler recovery fact corruption', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'kogg-workflow-scheduler-integrity-')); const database = path.join(root, 'workflow.sqlite3'); const compiler = workflowCompiler();
+  try {
+    const first = new WorkflowRegistry(compiler, database); await first.onStart(); const saved = await first.saveVersion({ requestId: '20000000-0000-4000-8000-000000000070', templateId: TEMPLATE, expectedVersionNumber: 0, graph: validGraph() }); if (saved.kind !== 'completed' || !saved.version) throw new Error('Expected immutable workflow version'); const compiled = await first.compile({ requestId: '20000000-0000-4000-8000-000000000071', versionId: saved.version.versionId }); if (compiled.kind !== 'completed' || !compiled.plan) throw new Error('Expected compiled workflow plan'); await first.onStop();
+    const now = new Date().toISOString(); const runId = '51000000-0000-4000-8000-000000000001'; const store = new DatabaseSync(database); store.prepare("INSERT INTO workflow_runs(run_id,plan_id,plan_digest,state,revision,owner_epoch_id,safe_code,created_at,updated_at) VALUES(?,?,?,'running',1,?,'WORKFLOW_OK',?,?)").run(runId, compiled.plan.planId, compiled.plan.planDigest, '51000000-0000-4000-8000-000000000002', now, now); store.close();
+    const recovered = new WorkflowRegistry(compiler, database); await recovered.onStart(); await recovered.onStop(); const corrupt = new DatabaseSync(database); corrupt.exec('DROP TRIGGER workflow_immutable_scheduler_events_update'); corrupt.prepare("UPDATE workflow_scheduler_events SET safe_code='WORKFLOW_OK'").run(); corrupt.close();
+    await assert.rejects(new WorkflowRegistry(compiler, database).onStart(), /WORKFLOW_STORE_INTEGRITY/u);
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 
