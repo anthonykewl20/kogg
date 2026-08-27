@@ -8,6 +8,8 @@ import type { KoggWorkflowService, WorkflowMutationResult, WorkflowSafeCode, Wor
 import { canonicalJson, WorkflowValidationError, workflowDigest } from '../common/workflow-canonical';
 import { WorkflowCompiler } from './workflow-compiler';
 import { workflowLog } from './workflow-logger';
+import type { OperationsOwnerSink, OwnerEventV1, SafeOwnerPayloadV1 } from '@kogg/operations/lib/common/operations-read-model-protocol';
+import { OperationsReadModel } from '@kogg/operations/lib/node/operations-read-model';
 
 // Logs through the closed workflowLog schemas.
 // diagnostic-coverage: workflow.schema, workflow.catalog, workflow.graph, workflow.anchors, workflow.authority, workflow.scheduler, workflow.processes, workflow.cleanup, workflow.recovery, workflow.source-maps
@@ -21,6 +23,7 @@ export class WorkflowRegistry implements KoggWorkflowService, BackendApplication
   private database: DatabaseSync | undefined;
   private readonly schedulerEpochId = randomUUID();
   private readonly schedulerFencingToken = randomUUID();
+  private ownerSink: OperationsOwnerSink | undefined;
   constructor(@inject(WorkflowCompiler) private readonly compiler: WorkflowCompiler, @unmanaged() private readonly databasePath = path.join(stateRoot(), 'workflow', 'registry.sqlite3')) {}
 
   async onStart(): Promise<void> {
@@ -28,9 +31,10 @@ export class WorkflowRegistry implements KoggWorkflowService, BackendApplication
       await fs.mkdir(path.dirname(this.databasePath), { recursive: true, mode: 0o700 });
       this.database = new DatabaseSync(this.databasePath, { enableForeignKeyConstraints: true, enableDoubleQuotedStringLiterals: false, allowExtension: false });
       this.database.exec('PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; PRAGMA foreign_keys=ON; PRAGMA trusted_schema=OFF; PRAGMA busy_timeout=5000;');
-      this.migrate(); this.assertIntegrity(); const stored = await this.diagnostics(); if (!stored.integrity || !stored.foreignKeys || !stored.immutableTriggers || !stored.schedulerIntegrity || stored.canonicalMismatchCount || stored.catalogMismatchCount || stored.planMismatchCount) throw new WorkflowValidationError('WORKFLOW_STORE_INTEGRITY');
+      this.migrate(); this.assertIntegrity(); const stored = await this.diagnostics(); if (!stored.integrity || !stored.foreignKeys || !stored.immutableTriggers || !stored.schedulerIntegrity || !stored.ownerIntegrity || stored.canonicalMismatchCount || stored.catalogMismatchCount || stored.planMismatchCount) throw new WorkflowValidationError('WORKFLOW_STORE_INTEGRITY');
       const versionCount = this.versionCount(); const pending = this.schedulerRecoveryCounts(); workflowLog('recovery.started', { versionCount, activeRunCount: pending.activeRunCount, pendingOutboxCount: pending.pendingOutboxCount });
       const recovery = this.recoverScheduler(pending);
+      this.publishOwnerEvents();
       await fs.chmod(this.databasePath, 0o600).catch(error => { if (process.platform !== 'win32') throw error; });
       workflowLog('recovery.completed', { versionCount, activeProcessCount: 0, quarantinedRunCount: recovery.quarantinedRunCount });
     } catch (error) {
@@ -39,7 +43,30 @@ export class WorkflowRegistry implements KoggWorkflowService, BackendApplication
     }
   }
 
-  async onStop(): Promise<void> { workflowLog('registry.stop.started', {}); try { this.database?.prepare("UPDATE scheduler_lease SET phase='released',updated_at=? WHERE singleton=1 AND owner_epoch_id=? AND phase='active'").run(new Date().toISOString(), this.schedulerEpochId); this.database?.close(); this.database = undefined; workflowLog('registry.stop.completed', {}); } catch (error) { /* observability-exempt: registry.stop.failed emits only a normalized error type. */ workflowLog('registry.stop.failed', { errorType: error instanceof Error ? error.name : 'UnknownError' }); throw error; } }
+  async onStop(): Promise<void> { workflowLog('registry.stop.started', {}); try { this.ownerSink = undefined; this.database?.prepare("UPDATE scheduler_lease SET phase='released',updated_at=? WHERE singleton=1 AND owner_epoch_id=? AND phase='active'").run(new Date().toISOString(), this.schedulerEpochId); this.database?.close(); this.database = undefined; workflowLog('registry.stop.completed', {}); } catch (error) { /* observability-exempt: registry.stop.failed emits only a normalized error type. */ workflowLog('registry.stop.failed', { errorType: error instanceof Error ? error.name : 'UnknownError' }); throw error; } }
+
+  setOwnerSink(sink?: OperationsOwnerSink): void { this.ownerSink = sink; if (sink && this.database) this.publishOwnerEvents(); }
+
+  publishOwnerEvents(): void {
+    if (!this.ownerSink || !this.database) return;
+    const meta = this.database.prepare('SELECT owner_id,owner_epoch_id FROM workflow_owner_meta WHERE singleton=1').get() as Row;
+    let previous = '0'.repeat(64);
+    for (const row of this.database.prepare(`SELECT e.*,r.plan_id,v.graph_json FROM workflow_scheduler_events e JOIN workflow_runs r ON r.run_id=e.run_id JOIN compiled_plans p ON p.plan_id=r.plan_id JOIN template_versions v ON v.version_id=p.version_id ORDER BY e.sequence`).all() as Row[]) {
+      if (text(row, 'previous_event_digest') !== sourcePreviousDigest(this.database, number(row, 'sequence')) || schedulerEventDigest(row) !== text(row, 'event_digest')) {
+        workflowLog('owner.publish.failed', { safeCode: 'WORKFLOW_STORE_INTEGRITY', errorType: 'OwnerEventIntegrityError' }); break;
+      }
+      let projectId: string;
+      try { projectId = this.compiler.decodeAndValidate(JSON.parse(text(row, 'graph_json')) as unknown).projectId; }
+      catch { // observability-exempt: the closed owner publication event reports a fixed correlation-integrity class without graph content.
+        workflowLog('owner.publish.failed', { safeCode: 'WORKFLOW_STORE_INTEGRITY', errorType: 'OwnerCorrelationIntegrityError' }); break;
+      }
+      const mapped = mapOwnerEvent(row, text(meta, 'owner_id'), text(meta, 'owner_epoch_id'), projectId, previous); previous = mapped.eventDigest;
+      try { this.ownerSink.ingest(mapped); }
+      catch (error) { // observability-exempt: the closed owner publication event records only a normalized failure type.
+        workflowLog('owner.publish.failed', { safeCode: 'WORKFLOW_STORE_INTEGRITY', errorType: error instanceof Error ? error.name : 'UnknownError' }); break;
+      }
+    }
+  }
   async validate(graph: unknown): Promise<WorkflowValidationProjection> { workflowLog('draft.command.requested', { operation: 'validate' }); const result = this.compiler.validate(graph); if (result.valid) workflowLog('draft.command.completed', { operation: 'validate', nodeCount: result.nodeCount, edgeCount: result.edgeCount }); else workflowLog('draft.command.refused', { operation: 'validate', safeCode: result.code }); return result; }
 
   async saveVersion(input: { requestId: string; templateId: string; expectedVersionNumber: number; graph: unknown }): Promise<WorkflowMutationResult> {
@@ -107,9 +134,9 @@ export class WorkflowRegistry implements KoggWorkflowService, BackendApplication
 
   async listVersions(templateId: string): Promise<readonly WorkflowTemplateVersionProjection[]> { uuid(templateId); return (this.db().prepare('SELECT * FROM template_versions WHERE template_id=? ORDER BY version_number').all(templateId) as Row[]).map(versionProjection); }
 
-  async diagnostics(): Promise<{ integrity: boolean; foreignKeys: boolean; immutableTriggers: boolean; canonicalMismatchCount: number; catalogMismatchCount: number; catalogEntryCount: number; unavailableExecutorCount: number; planMismatchCount: number; versionCount: number; planCount: number; schedulerIntegrity: boolean; schedulerLeaseActive: boolean; schedulerAdmission: 'enabled' | 'blocked' | 'recovering'; pendingOutboxCount: number; quarantinedRunCount: number; activeProcessCount: number; residualProcessCount: number; recoveryBacklogCount: number; sourceMapsPresent: boolean }> {
+  async diagnostics(): Promise<{ integrity: boolean; foreignKeys: boolean; immutableTriggers: boolean; canonicalMismatchCount: number; catalogMismatchCount: number; catalogEntryCount: number; unavailableExecutorCount: number; planMismatchCount: number; versionCount: number; planCount: number; schedulerIntegrity: boolean; ownerIntegrity: boolean; ownerEventCount: number; schedulerLeaseActive: boolean; schedulerAdmission: 'enabled' | 'blocked' | 'recovering'; pendingOutboxCount: number; quarantinedRunCount: number; activeProcessCount: number; residualProcessCount: number; recoveryBacklogCount: number; sourceMapsPresent: boolean }> {
     const db = this.db(); const integrity = text(db.prepare('PRAGMA quick_check').get() as Row, 'quick_check') === 'ok'; const foreignKeys = db.prepare('PRAGMA foreign_key_check').all().length === 0;
-    const immutableTriggers = number(db.prepare("SELECT count(*) AS count FROM sqlite_master WHERE type='trigger' AND name LIKE 'workflow_immutable_%'").get() as Row, 'count') === 6;
+    const immutableTriggers = number(db.prepare("SELECT count(*) AS count FROM sqlite_master WHERE type='trigger' AND name LIKE 'workflow_immutable_%'").get() as Row, 'count') === 8;
     let canonicalMismatchCount = 0; for (const row of db.prepare('SELECT graph_json,graph_digest FROM template_versions').all() as Row[]) { try { const graph = this.compiler.decodeAndValidate(JSON.parse(text(row, 'graph_json')) as unknown); if (workflowDigest('template', graph) !== text(row, 'graph_digest')) canonicalMismatchCount++; } catch { /* observability-exempt: aggregate canonical mismatch count is the diagnostic signal; content is never logged. */ canonicalMismatchCount++; } }
     const catalog = this.compiler.catalogStatus();
     const catalogMismatchCount = number(db.prepare('SELECT count(*) AS count FROM template_versions WHERE catalog_digest<>?').get(catalog.digest) as Row, 'count') + number(db.prepare('SELECT count(*) AS count FROM compiled_plans WHERE catalog_digest<>?').get(catalog.digest) as Row, 'count') + (catalog.valid ? 0 : 1);
@@ -119,7 +146,8 @@ export class WorkflowRegistry implements KoggWorkflowService, BackendApplication
     const pendingOutboxCount = number(db.prepare("SELECT count(*) AS count FROM workflow_outbox WHERE phase IN ('requested','claimed')").get() as Row, 'count');
     const quarantinedRunCount = number(db.prepare("SELECT count(*) AS count FROM workflow_runs WHERE state='quarantined'").get() as Row, 'count');
     const schedulerIntegrity = this.schedulerEventsValid() && this.schedulerRecordsValid();
-    return { integrity: integrity && schedulerIntegrity, foreignKeys, immutableTriggers, canonicalMismatchCount, catalogMismatchCount, catalogEntryCount: catalog.entryCount, unavailableExecutorCount: catalog.unavailableExecutorCount, planMismatchCount, versionCount: this.versionCount(), planCount: number(db.prepare('SELECT count(*) AS count FROM compiled_plans').get() as Row, 'count'), schedulerIntegrity, schedulerLeaseActive: lease ? text(lease, 'phase') === 'active' : false, schedulerAdmission: lease ? text(lease, 'admission') as 'enabled' | 'blocked' | 'recovering' : 'recovering', pendingOutboxCount, quarantinedRunCount, activeProcessCount: 0, residualProcessCount: 0, recoveryBacklogCount: pendingOutboxCount + quarantinedRunCount, sourceMapsPresent };
+    const ownerIntegrity = this.ownerIdentityValid(); const ownerEventCount = number(db.prepare('SELECT count(*) AS count FROM workflow_scheduler_events').get() as Row, 'count');
+    return { integrity: integrity && schedulerIntegrity && ownerIntegrity, foreignKeys, immutableTriggers, canonicalMismatchCount, catalogMismatchCount, catalogEntryCount: catalog.entryCount, unavailableExecutorCount: catalog.unavailableExecutorCount, planMismatchCount, versionCount: this.versionCount(), planCount: number(db.prepare('SELECT count(*) AS count FROM compiled_plans').get() as Row, 'count'), schedulerIntegrity, ownerIntegrity, ownerEventCount, schedulerLeaseActive: lease ? text(lease, 'phase') === 'active' : false, schedulerAdmission: lease ? text(lease, 'admission') as 'enabled' | 'blocked' | 'recovering' : 'recovering', pendingOutboxCount, quarantinedRunCount, activeProcessCount: 0, residualProcessCount: 0, recoveryBacklogCount: pendingOutboxCount + quarantinedRunCount, sourceMapsPresent };
   }
 
   private transaction(requestId: string, requestDigest: string, action: () => WorkflowMutationResult): WorkflowMutationResult {
@@ -141,10 +169,14 @@ export class WorkflowRegistry implements KoggWorkflowService, BackendApplication
     CREATE TABLE IF NOT EXISTS workflow_scheduler_events(sequence INTEGER PRIMARY KEY AUTOINCREMENT,event_id TEXT NOT NULL UNIQUE,run_id TEXT NOT NULL REFERENCES workflow_runs(run_id),event_name TEXT NOT NULL,safe_code TEXT NOT NULL,previous_event_digest TEXT NOT NULL,event_digest TEXT NOT NULL,created_at TEXT NOT NULL);
     CREATE TRIGGER IF NOT EXISTS workflow_immutable_scheduler_events_update BEFORE UPDATE ON workflow_scheduler_events BEGIN SELECT RAISE(ABORT,'immutable'); END;
     CREATE TRIGGER IF NOT EXISTS workflow_immutable_scheduler_events_delete BEFORE DELETE ON workflow_scheduler_events BEGIN SELECT RAISE(ABORT,'immutable'); END;`);
+    this.db().exec(`CREATE TABLE IF NOT EXISTS workflow_owner_meta(singleton INTEGER PRIMARY KEY CHECK(singleton=1),owner_id TEXT NOT NULL,owner_epoch_id TEXT NOT NULL,identity_digest TEXT NOT NULL);
+    CREATE TRIGGER IF NOT EXISTS workflow_immutable_owner_meta_update BEFORE UPDATE ON workflow_owner_meta BEGIN SELECT RAISE(ABORT,'immutable'); END;
+    CREATE TRIGGER IF NOT EXISTS workflow_immutable_owner_meta_delete BEFORE DELETE ON workflow_owner_meta BEGIN SELECT RAISE(ABORT,'immutable'); END;`);
+    if (!this.db().prepare('SELECT 1 FROM workflow_owner_meta WHERE singleton=1').get()) { const ownerId = randomUUID(); const ownerEpochId = randomUUID(); this.db().prepare('INSERT INTO workflow_owner_meta(singleton,owner_id,owner_epoch_id,identity_digest) VALUES(1,?,?,?)').run(ownerId, ownerEpochId, workflowDigest('owner-identity', { ownerId, ownerEpochId })); }
     this.db().prepare("INSERT OR IGNORE INTO scheduler_lease(singleton,owner_epoch_id,fencing_token,phase,admission,updated_at) VALUES(1,?,?,'released','recovering',?)").run(this.schedulerEpochId, this.schedulerFencingToken, new Date().toISOString());
     this.ensureColumn('template_versions', 'catalog_digest', LEGACY_UNATTESTED_CATALOG); this.ensureColumn('compiled_plans', 'catalog_digest', LEGACY_UNATTESTED_CATALOG); }
   private ensureColumn(table: 'template_versions' | 'compiled_plans', column: 'catalog_digest', value: string): void { const present = (this.db().prepare(`PRAGMA table_info(${table})`).all() as Row[]).some(row => text(row, 'name') === column); if (!present) this.db().exec(`ALTER TABLE ${table} ADD COLUMN ${column} TEXT NOT NULL DEFAULT '${value}'`); }
-  private assertIntegrity(): void { const db = this.db(); if (text(db.prepare('PRAGMA quick_check').get() as Row, 'quick_check') !== 'ok' || db.prepare('PRAGMA foreign_key_check').all().length || !this.schedulerEventsValid()) throw new WorkflowValidationError('WORKFLOW_STORE_INTEGRITY'); }
+  private assertIntegrity(): void { const db = this.db(); if (text(db.prepare('PRAGMA quick_check').get() as Row, 'quick_check') !== 'ok' || db.prepare('PRAGMA foreign_key_check').all().length || !this.schedulerEventsValid() || !this.ownerIdentityValid()) throw new WorkflowValidationError('WORKFLOW_STORE_INTEGRITY'); }
   private schedulerRecoveryCounts(): { activeRunCount: number; pendingOutboxCount: number } { return { activeRunCount: number(this.db().prepare("SELECT count(*) AS count FROM workflow_runs WHERE state IN ('admitted','running','stopping')").get() as Row, 'count'), pendingOutboxCount: number(this.db().prepare("SELECT count(*) AS count FROM workflow_outbox WHERE phase IN ('requested','claimed')").get() as Row, 'count') }; }
   private recoverScheduler(pending: { activeRunCount: number; pendingOutboxCount: number }): { activeRunCount: number; pendingOutboxCount: number; quarantinedRunCount: number } {
     const db = this.db(); const activeRuns = db.prepare("SELECT run_id FROM workflow_runs WHERE state IN ('admitted','running','stopping') ORDER BY run_id").all() as Row[]; const now = new Date().toISOString();
@@ -172,6 +204,7 @@ export class WorkflowRegistry implements KoggWorkflowService, BackendApplication
     const mismatchedRuns = number(this.db().prepare('SELECT count(*) AS count FROM workflow_runs JOIN compiled_plans ON compiled_plans.plan_id=workflow_runs.plan_id WHERE workflow_runs.plan_digest<>compiled_plans.plan_digest').get() as Row, 'count');
     const malformedOutbox = number(this.db().prepare("SELECT count(*) AS count FROM workflow_outbox WHERE length(request_digest)<>64 OR request_digest GLOB '*[^0-9a-f]*'").get() as Row, 'count'); return mismatchedRuns === 0 && malformedOutbox === 0;
   }
+  private ownerIdentityValid(): boolean { const row = this.db().prepare('SELECT * FROM workflow_owner_meta WHERE singleton=1').get() as Row | undefined; if (!row) return false; const ownerId = text(row, 'owner_id'); const ownerEpochId = text(row, 'owner_epoch_id'); return UUID.test(ownerId) && UUID.test(ownerEpochId) && text(row, 'identity_digest') === workflowDigest('owner-identity', { ownerId, ownerEpochId }); }
   private currentVersion(templateId: string): number { const row = this.db().prepare('SELECT coalesce(max(version_number),0) AS count FROM template_versions WHERE template_id=?').get(templateId) as Row; return number(row, 'count'); }
   private version(versionId: string): Row { const row = this.db().prepare('SELECT * FROM template_versions WHERE version_id=?').get(versionId) as Row | undefined; if (!row) throw new WorkflowValidationError('WORKFLOW_SCHEMA_INVALID'); return row; }
   private compiledPlan(planId: string): Row { const row = this.db().prepare('SELECT * FROM compiled_plans WHERE plan_id=?').get(planId) as Row | undefined; if (!row) throw new WorkflowValidationError('WORKFLOW_SCHEMA_INVALID'); return row; }
@@ -187,3 +220,11 @@ function uuid(value: string): void { if (!UUID.test(value)) throw new WorkflowVa
 function safeId(value: string): string { return UUID.test(value) ? value : 'invalid'; }
 function codeOf(error: unknown): WorkflowSafeCode { return error instanceof WorkflowValidationError ? error.code : 'WORKFLOW_INTERNAL'; }
 function stateRoot(): string { return path.resolve(process.env.KOGG_STATE_DIR ?? path.join(process.cwd(), '.kogg', 'state')); }
+
+function sourcePreviousDigest(database: DatabaseSync, sequence: number): string { const row = database.prepare('SELECT event_digest FROM workflow_scheduler_events WHERE sequence<? ORDER BY sequence DESC LIMIT 1').get(sequence) as Row | undefined; return row ? text(row, 'event_digest') : '0'.repeat(64); }
+function schedulerEventDigest(row: Row): string { return workflowDigest('scheduler-event', { eventId: text(row, 'event_id'), runId: text(row, 'run_id'), eventName: text(row, 'event_name'), safeCode: text(row, 'safe_code'), previousEventDigest: text(row, 'previous_event_digest'), createdAt: text(row, 'created_at') }); }
+function mapOwnerEvent(row: Row, ownerInstanceId: string, epochId: string, projectId: string, previousEventDigest: string): OwnerEventV1 {
+  const safePayload: SafeOwnerPayloadV1 = { lifecycle: 'failed', terminalClass: 'failed', safeCode: text(row, 'safe_code'), freshness: 'current' };
+  const unsigned: Omit<OwnerEventV1, 'eventDigest'> = { ownerKind: 'workflow', ownerInstanceId, ownerSchemaVersion: 1, epochId, sequence: String(number(row, 'sequence')), eventId: text(row, 'event_id'), eventKind: 'run.failed', factId: text(row, 'run_id'), factDigest: text(row, 'event_digest'), previousEventDigest, causalParents: [], correlations: { projectId, runId: text(row, 'run_id') }, observedAt: text(row, 'created_at'), safePayload };
+  return { ...unsigned, eventDigest: OperationsReadModel.digest(unsigned) };
+}
