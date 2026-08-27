@@ -5,7 +5,7 @@
   "license": "UNLICENSED",
   "main": "lib/common/interaction-modes-protocol.js",
   "types": "lib/common/interaction-modes-protocol.d.ts",
-  "theiaExtensions": [{ "backend": "lib/node/backend-module" }],
+  "theiaExtensions": [{ "frontend": "lib/browser/frontend-module", "backend": "lib/node/backend-module" }],
   "scripts": {
     "build": "tsc -b",
     "clean": "rimraf lib tsconfig.tsbuildinfo",

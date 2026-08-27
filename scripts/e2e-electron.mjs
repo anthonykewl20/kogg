@@ -183,6 +183,7 @@ try {
     await exerciseNodeDebug(page, application, 'Kogg Electron Debug', 'KOGG_ELECTRON_E2E_READY');
     await exerciseElectronProjects(page, application);
     await exerciseElectronTasks(page, application);
+    await exerciseElectronInteractionModes(page);
     await exerciseElectronOperations(page, application);
     const visible = await page.locator('body').innerText();
     assert.doesNotMatch(visible, /Search Open VSX Registry|Learn more about Theia|custom-agent migration/iu);
@@ -334,6 +335,19 @@ async function exerciseElectronTasks(page, electronApplication) {
     await tasks.getByRole('button', { name: /Revoke approval/u }).waitFor();
     await tasks.getByRole('button', { name: /Revoke approval/u }).click();
     assert.equal(logs.join('\n').includes(canary), false);
+}
+
+async function exerciseElectronInteractionModes(page) {
+    const selector = page.getByLabel(/Mode: Plan; authority: \d+ bounded capabilities; stage: research/u);
+    await selector.waitFor({ state: 'visible', timeout: 15_000 });
+    await selector.click();
+    const build = page.getByRole('option', { name: /Build\./u });
+    await build.waitFor({ state: 'visible', timeout: 10_000 });
+    await build.click();
+    await page.getByText('Mode changes in Electron require the pending native owner-confirmation authority. No authority was changed.').first().waitFor({ timeout: 10_000 });
+    await selector.waitFor({ state: 'visible' });
+    assert.match(logs.join('\n'), /\[kogg:ui:mode-selector\] mode\.transition\.refused/u);
+    await clearNotifications(page);
 }
 
 async function exerciseElectronOperations(page, electronApplication) {

@@ -27,7 +27,7 @@ export class InteractionModesDiagnosticContributor implements KoggDiagnosticCont
         check('interaction-modes.restoration', healthy && value.admission === 'enabled', 'Mode startup restoration is complete.'),
         check('interaction-modes.worktrees', false, 'Build and Kogg worktree transition ownership is not connected.'),
         check('interaction-modes.anchors', false, 'Governed workflow anchor authority is not connected.'),
-        check('interaction-modes.accessibility', false, 'The production always-visible selector is not connected.'),
+        check('interaction-modes.accessibility', true, 'The always-visible selector exposes the selected mode, effective authority, stage, and blocked reasons.'),
         check('interaction-modes.source-maps', existsSync(`${__filename}.map`), existsSync(`${__filename}.map`) ? 'Interaction mode backend source maps are present.' : 'Interaction mode backend source maps are missing.')
       ];
     } catch (error) {
