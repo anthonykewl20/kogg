@@ -5,6 +5,7 @@ import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import test from 'node:test';
 import type { OperationLease, OperationRegistryApi, ProcessLease, StartOperation, StartProcess } from '@kogg/operations/lib/common/operations-protocol';
+import { OperationsReadModel } from '@kogg/operations/lib/node/operations-read-model';
 import type { TaskAdmissionAuthority, TaskAdmissionSnapshot } from '@kogg/tasks/lib/common/tasks-protocol';
 import type { AdapterAttemptBindingV1, AgentAdapterFactory } from '../common/agents-protocol';
 import { AdapterRegistry } from './adapter-registry';
@@ -37,6 +38,30 @@ test('runs a real supervised fixture host through completion and proves cleanup'
     assert.equal(terminal.terminalCode, 'AGENT_OK'); assert.equal(terminal.ownedResourceCount, '0'); assert.deepEqual(terminal.usage, { status: 'complete', source: 'provider-cumulative', inputTokens: '1', outputTokens: '1', totalTokens: '2' });
     assert.equal(registry.diagnostics().residualCount, 0); assert.equal(operations.processes.every(process => process.cleaned), true);
   } finally { await registry.onStop(); if (prior === undefined) delete process.env.KOGG_STATE_DIR; else process.env.KOGG_STATE_DIR = prior; await rm(directory, { recursive: true, force: true }); }
+});
+
+test('publishes restart-safe adapter owner facts into the operations projection', async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), 'kogg-agents-owner-')); const prior = process.env.KOGG_STATE_DIR; process.env.KOGG_STATE_DIR = directory;
+  const authority: TaskAdmissionAuthority = { resolveAdmission: async () => ADMISSION }; const adapters = new AdapterRegistry(); const projection = new OperationsReadModel(path.join(directory, 'operations.sqlite3')); projection.onStart(); projection.registerOwner('adapter');
+  const first = new AgentRegistry(authority, new TestOperations(), adapters, new LocalCredentialLeaseAuthority()); const fixture = new FixtureAdapter(adapters); let second: AgentRegistry | undefined;
+  try {
+    await first.onStart(); first.setOwnerSink(projection); fixture.onStart(); const role = await first.createRoleRevision(roleRequest('20000000-0000-4000-8000-000000000021', '0')); assert.ok(role.role);
+    const started = await first.startAttempt({ schemaVersion: '1', requestId: '30000000-0000-4000-8000-000000000021', expectedRegistryRevision: role.registryRevision, taskAdmissionId: ADMISSION.taskAdmissionId, roleRevisionId: role.role.roleRevisionId, providerId: 'kogg.fixture', modelId: 'fixture.echo', adapterKey: 'kogg.fixture', adapterVersion: '1.0.0', deadlinePolicyId: 'interactive-v1' }); assert.ok(started.attempt);
+    await poll(() => first.getAttempt(started.attempt!.attemptId), value => value.state === 'cleaned');
+    const timeline = projection.timeline(ADMISSION.runId); assert.deepEqual(timeline.map(event => event.eventKind), ['attempt.started', 'attempt.completed']); assert.equal(timeline.every(event => event.attemptId === started.attempt?.attemptId), true);
+    assert.equal(projection.diagnostics().ownerCount, 1); assert.equal(projection.diagnostics().faultCount, 0); const accepted = projection.diagnostics().acceptedEventCount;
+    await first.onStop(); second = new AgentRegistry(authority, new TestOperations(), new AdapterRegistry(), new LocalCredentialLeaseAuthority()); await second.onStart(); second.setOwnerSink(projection);
+    assert.equal(projection.diagnostics().acceptedEventCount, accepted); assert.equal(projection.diagnostics().faultCount, 0); assert.deepEqual(projection.timeline(ADMISSION.runId), timeline);
+  } finally { await second?.onStop(); await first.onStop(); projection.onStop(); if (prior === undefined) delete process.env.KOGG_STATE_DIR; else process.env.KOGG_STATE_DIR = prior; await rm(directory, { recursive: true, force: true }); }
+});
+
+test('refuses startup when a durable adapter owner source fact is altered', async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), 'kogg-agents-owner-integrity-')); const prior = process.env.KOGG_STATE_DIR; process.env.KOGG_STATE_DIR = directory; const first = new AgentRegistry({ resolveAdmission: async () => ADMISSION }, new TestOperations(), new AdapterRegistry(), new LocalCredentialLeaseAuthority());
+  try {
+    await first.onStart(); const role = await first.createRoleRevision(roleRequest('20000000-0000-4000-8000-000000000022', '0')); assert.ok(role.role); await first.onStop();
+    const database = new DatabaseSync(path.join(directory, 'agents', 'registry.sqlite3')); database.exec('DROP TRIGGER agents_events_update'); database.prepare("UPDATE events SET safe_code='PROVIDER_REFUSED' WHERE event_kind='role.revision.created'").run(); database.close();
+    await assert.rejects(new AgentRegistry({ resolveAdmission: async () => ADMISSION }, new TestOperations(), new AdapterRegistry(), new LocalCredentialLeaseAuthority()).onStart(), /AGENT_REGISTRY_INTEGRITY_FAILED/u);
+  } finally { await first.onStop(); if (prior === undefined) delete process.env.KOGG_STATE_DIR; else process.env.KOGG_STATE_DIR = prior; await rm(directory, { recursive: true, force: true }); }
 });
 
 test('refuses an absent exact adapter before creating an operation', async () => {
