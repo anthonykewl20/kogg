@@ -4,6 +4,7 @@ import { KoggDiagnosticContribution, KernelBridgeToken } from '@kogg/contracts';
 import { KernelBackendContribution } from './kernel-backend-contribution';
 import { KernelBridgeImpl } from './kernel-bridge';
 import { KernelDiagnosticContributor } from './kernel-diagnostic-contributor';
+import { KernelTaskBindingService } from './kernel-task-binding-service';
 
 export default new ContainerModule(bind => {
   bind(KernelBridgeImpl).toSelf().inSingletonScope();
@@ -12,4 +13,5 @@ export default new ContainerModule(bind => {
   bind(BackendApplicationContribution).toService(KernelBackendContribution);
   bind(KernelDiagnosticContributor).toSelf().inSingletonScope();
   bind(KoggDiagnosticContribution).toService(KernelDiagnosticContributor);
+  bind(KernelTaskBindingService).toSelf().inSingletonScope();
 });

@@ -120,7 +120,10 @@ export class ProjectRegistry implements KoggProjectsService, ProjectBindingAutho
       bindingRevision: repository.revision,
       available: project.lifecycle === 'available' && repository.availability === 'available',
       active: snapshot.activeProjectId === projectId,
-      executionProfileId: project.executionProfileId ?? 'default'
+      executionProfileId: project.executionProfileId ?? 'default',
+      rootUri: repository.rootUri,
+      repositoryIdentityDigest: stringValue(this.db().prepare('SELECT identity_digest FROM repositories WHERE id = ? AND project_id = ?')
+        .get(repositoryId, projectId) as SqlRow, 'identity_digest')
     };
   }
 

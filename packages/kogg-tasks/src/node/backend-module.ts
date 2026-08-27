@@ -8,6 +8,7 @@ import { TaskRegistry } from './task-registry';
 
 export default new ContainerModule(bind => {
   bind(TaskRegistry).toSelf().inSingletonScope();
+  bind(TaskKernelBindingAuthority).toService(TaskRegistry);
   bind(BackendApplicationContribution).toService(TaskRegistry);
   bind(TaskAdmissionAuthority).toService(TaskRegistry);
   bind(TaskDiagnosticContributor).toSelf().inSingletonScope();

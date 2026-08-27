@@ -97,7 +97,7 @@ try {
     }
 
     await openCommand(page, 'Kogg: Run Diagnostics');
-    await page.getByText(/Diagnostics: FAIL.*kernel\.journal/su).first().waitFor({ timeout: 15_000 });
+    await page.getByText(/Diagnostics: FAIL.*kernel\.checks/su).first().waitFor({ timeout: 15_000 });
     await page.keyboard.press('Escape');
     await openCommand(page, 'Kogg: Export Diagnostic Support Bundle');
     const supportFiles = await waitForSupportBundle(path.join(state, 'support'));
@@ -517,7 +517,7 @@ async function exerciseProjects(page) {
     assert.equal(supportReport.checks.find(check => check.id === 'projects.repositories')?.status, 'warn');
     assert.equal(supportReport.checks.find(check => check.id === 'projects.processes')?.status, 'pass');
     for (const id of ['operations.registry', 'operations.recovery', 'operations.processes', 'operations.cleanup', 'operations.admission']) {
-        assert.equal(supportReport.checks.find(check => check.id === id)?.status, 'pass');
+        assert.equal(supportReport.checks.find(check => check.id === id)?.status, 'pass', id);
     }
     await page.keyboard.press('Escape');
     assert.match(logs.join('\n'), /repository\.revalidation\.completed/iu);
@@ -662,6 +662,9 @@ async function exerciseTasks(page) {
     for (const id of ['claude.processes', 'claude.cleanup', 'claude.recovery', 'claude.source-maps']) {
         assert.equal(supportReport.checks.find(check => check.id === id)?.status, 'pass');
     }
+    for (const id of ['workflow.catalog', 'workflow.authority', 'workflow.scheduler', 'workflow.accessibility']) {
+        assert.equal(supportReport.checks.find(check => check.id === id)?.status, 'fail', id);
+    }
     await page.keyboard.press('Escape');
     assert.equal(logs.join('\n').includes(canary), false);
 }
@@ -779,7 +782,10 @@ async function ensureTasksWidget(page) {
     const widgets = page.locator('.kogg-tasks-widget:visible');
     if (!await widgets.count()) {
         await openCommand(page, 'View: Toggle Kogg Tasks');
-        await widgets.first().waitFor({ state: 'visible', timeout: 10_000 });
+        // Windows CI can still be restoring the saved shell layout after the
+        // command has resolved. Keep this aligned with the shell-start bound
+        // used above instead of treating a slow render as a missing widget.
+        await widgets.first().waitFor({ state: 'visible', timeout: 30_000 });
     }
     const widget = widgets.first();
     const deadline = Date.now() + 10_000;
