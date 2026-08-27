@@ -75,10 +75,9 @@ try {
     await page.waitForTimeout(2_000);
     assert.match(await page.title(), /^workspace(?: - Kogg)?$/u);
 
-    if (process.env.KOGG_E2E_MODES_ONLY === '1') {
-        await createInteractionModeFixture(page);
-        await exerciseInteractionModes(page);
-        process.stdout.write('Kogg browser interaction-mode selector E2E passed.\n');
+    if (process.env.KOGG_E2E_EXECUTION_ONLY === '1') {
+        await exerciseExecution(page);
+        process.stdout.write('Kogg browser execution-refusal E2E passed.\n');
         await browser.close(); browser = undefined;
         await stop(backend); backend = undefined;
         await stop(registry); registry = undefined;
@@ -249,6 +248,7 @@ try {
     if (process.platform !== 'win32') await exerciseNodeDebug(page, 'Kogg E2E Debug', 'KOGG_E2E_READY');
 
     await exerciseProjects(page);
+    await exerciseExecution(page);
     await exerciseTasks(page);
     await createInteractionModeFixture(page);
     await exerciseInteractionModes(page);
@@ -889,83 +889,32 @@ async function exerciseOperations(page) {
     assert.doesNotMatch(visibleOperations, /pid|argv|environment|prompt|source code/iu);
 }
 
-async function exerciseOperationsStream(page) {
-    const first = await ensureOperationsWidget(page);
-    const secondPage = await page.context().newPage();
-    await secondPage.goto(page.url(), { waitUntil: 'domcontentloaded' });
-    await secondPage.locator('body.kogg-application').waitFor({ timeout: 20_000 });
-    let second = await ensureOperationsWidget(secondPage);
-    const initialSequence = await synchronizeStreamSequences(first, second);
-
-    await openCommand(page, 'Kogg: Run Diagnostics');
-    const advancedFirst = await waitForStreamAdvance(first, initialSequence);
-    const advancedSecond = await waitForStreamAdvance(second, initialSequence);
-    const diagnosticMessage = page.getByText(/Diagnostics: (?:FAIL|WARN|PASS)/u).filter({ visible: true }).first();
-    await diagnosticMessage.waitFor({ timeout: 15_000 });
-    assert.doesNotMatch(await diagnosticMessage.innerText(), /operations\.stream/u);
-    await clearNotifications(page);
-
-    await secondPage.reload({ waitUntil: 'domcontentloaded' });
-    await secondPage.locator('body.kogg-application').waitFor({ timeout: 20_000 });
-    second = await ensureOperationsWidget(secondPage);
-    const reloadedSecond = await streamSequence(second);
-    assert(reloadedSecond >= advancedSecond);
-    const reloadedFirst = await waitForStreamAtLeast(first, reloadedSecond);
-    await openCommand(page, 'Kogg: Run Diagnostics');
-    const resumedFirst = await waitForStreamAdvance(first, reloadedFirst);
-    const resumedSecond = await waitForStreamAdvance(second, reloadedSecond);
-    await clearNotifications(page);
-
-    await secondPage.evaluate(() => sessionStorage.setItem('kogg.operations.stream.cursor.v1', 'corrupt-e2e-cursor'));
-    await secondPage.reload({ waitUntil: 'domcontentloaded' });
-    await secondPage.locator('body.kogg-application').waitFor({ timeout: 20_000 });
-    second = await ensureOperationsWidget(secondPage);
-    await second.getByRole('status').filter({ hasText: /Stream: current/u }).waitFor({ timeout: 10_000 });
-    const recoveredSecond = await streamSequence(second);
-    assert(recoveredSecond >= resumedSecond);
-    await waitForStreamAtLeast(first, recoveredSecond);
-    assert.match(logs.join('\n'), /\[kogg:operations:stream\] resync-required/u);
-    await secondPage.close();
-}
-
-async function ensureOperationsWidget(page) {
-    const widgets = page.locator('.kogg-operations-widget');
+async function exerciseExecution(page) {
+    const widgets = page.locator('.kogg-execution-widget');
     if (!await widgets.count()) {
-        await openCommand(page, 'Kogg: Show Operations');
+        await openCommand(page, 'View: Toggle Kogg Execution');
         await widgets.first().waitFor({ state: 'attached', timeout: 10_000 });
     }
     const active = await renderedWidget(widgets);
-    assert(active.area > 0);
-    const widget = widgets.nth(active.index);
-    await widget.getByRole('status').filter({ hasText: /Stream: current/u }).waitFor({ timeout: 10_000 });
-    return widget;
-}
-
-async function streamSequence(widget) {
-    const status = await widget.getByRole('status').filter({ hasText: /Stream:/u }).innerText();
-    const match = /sequence (\d+)/u.exec(status);
-    assert(match, `Missing operations stream sequence in: ${status}`);
-    return BigInt(match[1]);
-}
-
-async function synchronizeStreamSequences(first, second) {
-    const expected = [await streamSequence(first), await streamSequence(second)].reduce((maximum, current) => current > maximum ? current : maximum, 0n);
-    await Promise.all([waitForStreamAtLeast(first, expected), waitForStreamAtLeast(second, expected)]);
-    return expected;
-}
-
-async function waitForStreamAdvance(widget, previous) {
-    return waitForStreamAtLeast(widget, previous + 1n);
-}
-
-async function waitForStreamAtLeast(widget, expected) {
-    const deadline = Date.now() + 15_000;
+    const execution = widgets.nth(active.index);
+    const start = execution.getByRole('button', { name: 'Start run' });
+    await start.waitFor({ state: 'visible', timeout: 15_000 });
+    const qualification = execution.getByRole('status'); let code; const deadline = Date.now() + 15_000;
+    while (/Loading execution state/iu.test(await qualification.innerText()) && Date.now() < deadline) await page.waitForTimeout(50);
     while (Date.now() < deadline) {
-        const current = await streamSequence(widget);
-        if (current >= expected) return current;
-        await new Promise(resolve => setTimeout(resolve, 50));
+        const titleCode = /QUALIFICATION_[A-Z_]+/u.exec(await start.getAttribute('title') ?? '')?.[0];
+        const statusCode = /QUALIFICATION_[A-Z_]+/u.exec(await qualification.innerText())?.[0];
+        if (titleCode && titleCode === statusCode) { code = titleCode; break; }
+        await page.waitForTimeout(50);
     }
-    throw new Error(`Timed out waiting for operations stream sequence ${expected}`);
+    assert(code);
+    assert.equal(await start.evaluate(button => button.disabled), true);
+    assert.equal(await start.getAttribute('title'), `Run start unavailable: ${code}.`);
+    await qualification.getByText(code).waitFor({ timeout: 10_000 });
+    await execution.getByRole('button', { name: 'Refresh' }).click();
+    await execution.getByText(`Run start unavailable: ${code}.`).waitFor({ timeout: 10_000 });
+    assert.match(logs.join('\n'), /\[kogg:execution:widget\] runs\.load\.completed/u);
+    assert.doesNotMatch(await execution.innerText(), /worktreeId|bindingDigest|nonce|refs\/kogg|command|prompt|source code/iu);
 }
 
 async function renderedWidget(widgets) {

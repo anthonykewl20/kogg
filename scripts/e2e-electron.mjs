@@ -186,6 +186,7 @@ try {
 
     await exerciseNodeDebug(page, application, 'Kogg Electron Debug', 'KOGG_ELECTRON_E2E_READY');
     await exerciseElectronProjects(page, application);
+    await exerciseElectronExecution(page, application);
     await exerciseElectronTasks(page, application);
     await exerciseElectronOperations(page, application);
     const visible = await page.locator('body').innerText();
@@ -454,6 +455,32 @@ async function waitForElectronStreamAtLeast(widget, expected) {
         await new Promise(resolve => setTimeout(resolve, 50));
     }
     throw new Error(`Timed out waiting for Electron operations stream sequence ${expected}`);
+}
+
+async function exerciseElectronExecution(page, electronApplication) {
+    const widget = page.locator('.kogg-execution-widget').last();
+    if (!await widget.count()) {
+        await openCommand(page, 'View: Toggle Kogg Execution', electronApplication);
+        await widget.waitFor({ state: 'attached', timeout: 10_000 });
+    }
+    const start = widget.getByRole('button', { name: 'Start run' });
+    await start.waitFor({ state: 'visible', timeout: 15_000 });
+    const qualification = widget.getByRole('status'); let code; const deadline = Date.now() + 15_000;
+    while (/Loading execution state/iu.test(await qualification.innerText()) && Date.now() < deadline) await page.waitForTimeout(50);
+    while (Date.now() < deadline) {
+        const titleCode = /QUALIFICATION_[A-Z_]+/u.exec(await start.getAttribute('title') ?? '')?.[0];
+        const statusCode = /QUALIFICATION_[A-Z_]+/u.exec(await qualification.innerText())?.[0];
+        if (titleCode && titleCode === statusCode) { code = titleCode; break; }
+        await page.waitForTimeout(50);
+    }
+    assert(code);
+    assert.equal(await start.evaluate(button => button.disabled), true);
+    assert.equal(await start.getAttribute('title'), `Run start unavailable: ${code}.`);
+    await qualification.getByText(code).waitFor({ timeout: 10_000 });
+    await widget.getByRole('button', { name: 'Refresh' }).click();
+    await widget.getByText(`Run start unavailable: ${code}.`).waitFor({ timeout: 10_000 });
+    assert.match(logs.join('\n'), /\[kogg:execution:widget\] runs\.load\.completed/u);
+    assert.doesNotMatch(await widget.innerText(), /worktreeId|bindingDigest|nonce|refs\/kogg|command|prompt|source code/iu);
 }
 
 async function createElectronProject(page, projects, name, repository) {
