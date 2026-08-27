@@ -22,9 +22,10 @@ export class ProjectsContribution extends AbstractViewContribution<ProjectsWidge
     });
   }
 
-  async onStart(_application: FrontendApplication): Promise<void> {
+  async onDidInitializeLayout(_application: FrontendApplication): Promise<void> {
     const requestId = crypto.randomUUID();
     try {
+      await this.workspace.ready;
       const reconciliation = await this.service.reconcileWorkspace({ requestId, currentWorkspaceUri: this.workspace.workspace?.resource.toString() });
       if (reconciliation.action === 'open' && reconciliation.workspaceUri) {
         const recoveryKey = `kogg-project-recovery:${reconciliation.workspaceUri}`;

@@ -16,6 +16,7 @@ import type { OperationLease, OperationRegistryApi, ProcessLease } from '@kogg/o
 import { ProjectWorkspaceProjection } from './project-workspace-projection';
 import { ProjectError } from './project-errors';
 import { ProjectDiagnosticContributor } from './project-diagnostic-contributor';
+import { OperationsReadModel } from '@kogg/operations/lib/node/operations-read-model';
 
 test('persists projects, settings, roles, switching, and restart restoration against real Git and SQLite', async () => {
   const fixture = await createFixture();
@@ -103,6 +104,24 @@ test('rejects duplicate and non-Git repositories without mutating registry state
     assert.equal(runtime.registry.diagnostics().activeProcesses, 0);
     await runtime.registry.onStop();
   } finally {
+    await rm(fixture.root, { recursive: true, force: true });
+  }
+});
+
+test('publishes immutable project owner facts without repository paths', async () => {
+  const fixture = await createFixture();
+  let runtime: ReturnType<typeof runtimeFor> | undefined;
+  let projection: OperationsReadModel | undefined;
+  try {
+    runtime = runtimeFor(fixture.state); await runtime.registry.onStart(); projection = new OperationsReadModel(path.join(fixture.state, 'operations', 'projection.sqlite3')); projection.start(); projection.registerOwner('project'); runtime.registry.setOwnerSink(projection);
+    let snapshot = await runtime.registry.createProject({ requestId: randomUUID(), expectedRegistryRevision: 1, displayName: 'Projection', repositoryPath: fixture.repository }); const projectId = snapshot.projects[0]!.id;
+    snapshot = await runtime.registry.renameProject({ requestId: randomUUID(), expectedRegistryRevision: snapshot.revision, projectId, displayName: 'Renamed' });
+    assert.equal(projection.diagnostics().ownerCount, 1); assert.equal(projection.diagnostics().acceptedEventCount, 2); assert.equal(projection.snapshot().runs.length, 0);
+    assert.doesNotMatch(JSON.stringify(projection.snapshot()), new RegExp(fixture.repository.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&'), 'u'));
+  } finally {
+    runtime?.registry.setOwnerSink(undefined);
+    projection?.stop();
+    await runtime?.registry.onStop().catch(() => undefined);
     await rm(fixture.root, { recursive: true, force: true });
   }
 });
@@ -333,5 +352,11 @@ function operationRegistry(): OperationRegistryApi {
     id: randomUUID(), cancellable: true, start() {}, active() {}, waiting() {}, activity() {}, refuse() {}, complete() {}, fail() {}, timeout() {},
     async cancel() {}, async cleanup(run) { await run?.(); }, registerProcess() { return processLease; }
   };
-  return { async startOperation() { return lease; }, async snapshot() { throw new Error('unused'); }, async cancel() { throw new Error('unused'); }, diagnostics() { throw new Error('unused'); } };
+  return {
+    async startOperation() { return lease; },
+    async snapshot() { throw new Error('unused'); },
+    async cancel() { throw new Error('unused'); },
+    async recoveryResult() { return { status: 'missing' }; },
+    diagnostics() { throw new Error('unused'); }
+  };
 }

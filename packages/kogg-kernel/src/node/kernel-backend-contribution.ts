@@ -3,7 +3,7 @@ import { BackendApplicationContribution } from '@theia/core/lib/node';
 import { inject, injectable } from '@theia/core/shared/inversify';
 import { KernelBridgeToken } from '@kogg/contracts';
 
-// diagnostic-coverage: kernel.health, kernel.journal
+// diagnostic-coverage: kernel.bridge, kernel.cleanup
 
 @injectable()
 export class KernelBackendContribution implements BackendApplicationContribution {

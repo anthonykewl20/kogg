@@ -3,6 +3,7 @@
 
 export const KoggTasksServicePath = '/services/kogg-tasks';
 export const KoggTasksService = Symbol('KoggTasksService');
+export const TaskProjectionAuthority = Symbol('TaskProjectionAuthority');
 
 export type TaskResultKind = 'completed' | 'refused' | 'conflict' | 'failed';
 export type TaskLifecycle = 'active' | 'archived';
@@ -42,9 +43,24 @@ export interface ReviewProjection {
   readonly kind: TaskResultKind; readonly code: TaskSafeCode; readonly challenge?: string; readonly expiresAt?: string; readonly projection?: TaskProjection;
 }
 export interface TaskAdmissionSnapshot {
-  readonly taskId: string; readonly specificationId: string; readonly approvalId: string; readonly projectId: string;
+  readonly taskAdmissionId: string; readonly taskId: string; readonly specificationId: string; readonly approvalId: string; readonly projectId: string;
   readonly repositoryId: string; readonly bindingRevision: string; readonly registryRevision: string; readonly taskRevision: string; readonly runId: string;
+  readonly authorizedAt: string; readonly expiresAt: string;
 }
+
+export interface TaskKernelAuthoritySnapshot {
+  readonly taskId: string; readonly taskRevision: number; readonly specificationDigest: string;
+  readonly approvalId: string; readonly approvalDigest: string; readonly approvalCreatedAt: string;
+  readonly projectId: string; readonly repositoryId: string; readonly bindingRevision: number;
+  readonly runId: string; readonly authorizedAt: string; readonly expiresAt: string; readonly executionProfileId: string; readonly rootUri: string;
+  readonly repositoryIdentityDigest: string;
+}
+
+export const TaskKernelBindingAuthority = Symbol('TaskKernelBindingAuthority');
+export interface TaskKernelBindingAuthority {
+  resolveAdmission(admission: TaskAdmissionSnapshot): Promise<TaskKernelAuthoritySnapshot>;
+}
+export interface TaskAdmissionAuthority { resolveAdmission(taskAdmissionId: string): Promise<TaskAdmissionSnapshot | undefined>; }
 
 export interface KoggTasksService {
   list(projectId?: string): Promise<readonly TaskSummary[]>;
@@ -59,3 +75,4 @@ export interface KoggTasksService {
   archive(input: MutationPrecondition & { readonly taskId: string }): Promise<TaskMutationResult>;
   authorizeAdmission(input: MutationPrecondition & { readonly taskId: string; readonly runId: string }): Promise<TaskMutationResult & { readonly admission?: TaskAdmissionSnapshot }>;
 }
+export interface TaskProjectionAuthority { get(taskId: string): Promise<TaskProjection>; }

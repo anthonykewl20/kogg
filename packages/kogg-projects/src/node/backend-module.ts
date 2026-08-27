@@ -7,6 +7,7 @@ import { ProjectDiagnosticContributor } from './project-diagnostic-contributor';
 import { ProjectRegistry } from './project-registry';
 import { ProjectRepositoryProbe } from './project-repository-probe';
 import { ProjectWorkspaceProjection } from './project-workspace-projection';
+import { ProjectOperationsOwnerWiring } from './project-operations-owner-wiring';
 
 export default new ContainerModule(bind => {
   bind(ProjectRepositoryProbe).toSelf().inSingletonScope();
@@ -14,6 +15,8 @@ export default new ContainerModule(bind => {
   bind(ProjectRegistry).toSelf().inSingletonScope();
   bind(ProjectBindingAuthority).toService(ProjectRegistry);
   bind(BackendApplicationContribution).toService(ProjectRegistry);
+  bind(ProjectOperationsOwnerWiring).toSelf().inSingletonScope();
+  bind(BackendApplicationContribution).toService(ProjectOperationsOwnerWiring);
   bind(ProjectDiagnosticContributor).toSelf().inSingletonScope();
   bind(KoggDiagnosticContribution).toService(ProjectDiagnosticContributor);
   bind(ConnectionHandler).toDynamicValue(context => new JsonRpcConnectionHandler<KoggProjectsService>(

@@ -7,6 +7,7 @@ import test from 'node:test';
 import type { ProjectBindingAuthority, ProjectBindingSnapshot } from '@kogg/projects/lib/common/projects-protocol';
 import { TaskDiagnosticContributor } from './task-diagnostic-contributor';
 import { TaskRegistry } from './task-registry';
+import { OperationsReadModel } from '@kogg/operations/lib/node/operations-read-model';
 
 const PROJECT = '11111111-1111-4111-8111-111111111111';
 const REPOSITORY = '22222222-2222-4222-8222-222222222222';
@@ -40,7 +41,18 @@ test('persists the governed draft, freeze, review, approval, revocation, conflic
     assert.equal(forged.code, 'REVIEW_SESSION_CHANGED');
     const approved = await registry.approve({ ...expectation(frozen.projection!, taskId), sessionId: SESSION, challenge: review.challenge! });
     assert.equal(approved.projection?.currentApproval?.lifecycle, 'current');
-    const revoked = await registry.revoke(expectation(approved.projection!, taskId));
+    const runId = crypto.randomUUID();
+    const admissionRequest = { ...expectation(approved.projection!, taskId), runId };
+    const admitted = await registry.authorizeAdmission(admissionRequest);
+    const replayedAdmission = await registry.authorizeAdmission(admissionRequest);
+    assert.equal(replayedAdmission.replay, true);
+    assert.deepEqual(replayedAdmission.admission, admitted.admission);
+    const authoritySnapshot = await registry.resolveAdmission(admitted.admission!);
+    assert.equal(authoritySnapshot.taskRevision, Number(admitted.projection!.taskRevision));
+    assert.equal(authoritySnapshot.approvalDigest.startsWith('sha256:'), true);
+    assert.equal(authoritySnapshot.runId, runId);
+    await assert.rejects(registry.resolveAdmission({ ...admitted.admission!, taskRevision: '1' }), /ADMISSION_NOT_AUTHORIZED/u);
+    const revoked = await registry.revoke(expectation(admitted.projection!, taskId));
     assert.equal(revoked.projection?.currentApproval, undefined);
 
     const checks = await new TaskDiagnosticContributor(registry).diagnose();
@@ -64,6 +76,21 @@ test('fails every task diagnostic safely when registry inspection fails', async 
   const checks = await contributor.diagnose();
   assert.equal(checks.length, 4);
   assert.ok(checks.every(check => check.status === 'fail'));
+});
+
+test('publishes immutable safe task facts into the disposable operations projection', async () => {
+  const temporary = await mkdtemp(path.join(os.tmpdir(), 'kogg-task-owner-projection-test-')); const original = process.env.KOGG_STATE_DIR; process.env.KOGG_STATE_DIR = temporary;
+  const registry = new TaskRegistry(new FixtureAuthority()); const projection = new OperationsReadModel(path.join(temporary, 'operations', 'projection.sqlite3'));
+  try {
+    await registry.onStart(); projection.start(); projection.registerOwner('task'); registry.setOwnerSink(projection);
+    const created = await registry.create({ requestId: crypto.randomUUID(), projectId: PROJECT, repositoryId: REPOSITORY, content: 'never copy this task content' }); const taskId = created.projection!.taskId;
+    const frozen = await registry.freeze(expectation(created.projection!, taskId)); const review = await registry.beginApprovalReview({ requestId: crypto.randomUUID(), taskId, sessionId: SESSION });
+    const approved = await registry.approve({ ...expectation(frozen.projection!, taskId), sessionId: SESSION, challenge: review.challenge! }); const runId = crypto.randomUUID();
+    const admitted = await registry.authorizeAdmission({ ...expectation(approved.projection!, taskId), runId }); assert.equal(admitted.kind, 'completed');
+    const run = projection.snapshot().runs.find(item => item.runId === runId); assert.equal(run?.taskId, taskId); assert.equal(run?.lifecycle, 'unknown');
+    assert(projection.timeline(runId).some(event => event.eventKind === 'admission.authorized')); assert.equal(projection.diagnostics().ownerCount, 1);
+    assert.doesNotMatch(JSON.stringify(projection.snapshot()), /never copy this task content/u);
+  } finally { registry.setOwnerSink(undefined); await registry.onStop(); projection.stop(); if (original === undefined) delete process.env.KOGG_STATE_DIR; else process.env.KOGG_STATE_DIR = original; await rm(temporary, { recursive: true, force: true }); }
 });
 
 test('refuses startup when immutable specification bytes no longer match their digest', async () => {
@@ -94,7 +121,10 @@ test('refuses startup when immutable specification bytes no longer match their d
 class FixtureAuthority implements ProjectBindingAuthority {
   async resolveBinding(projectId: string, repositoryId: string): Promise<ProjectBindingSnapshot | undefined> {
     if (projectId !== PROJECT || repositoryId !== REPOSITORY) return undefined;
-    return { projectId, repositoryId, registryRevision: 1, bindingRevision: 1, available: true, active: true, executionProfileId: 'default' };
+    return {
+      projectId, repositoryId, registryRevision: 1, bindingRevision: 1, available: true, active: true,
+      executionProfileId: 'default', rootUri: 'file:///fixture', repositoryIdentityDigest: 'fixture-identity'
+    };
   }
 }
 function expectation(projection: { registryRevision: string; taskRevision: string }, taskId: string) {

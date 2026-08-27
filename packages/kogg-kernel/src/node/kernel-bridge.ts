@@ -1,16 +1,31 @@
 import { ChildProcessWithoutNullStreams, spawn } from 'node:child_process';
-import { existsSync, mkdirSync } from 'node:fs';
+import { createHash, randomUUID } from 'node:crypto';
+import { existsSync, mkdirSync, readFileSync } from 'node:fs';
 import path from 'node:path';
-import readline from 'node:readline';
 import {
+  canonicalKernelJson,
+  type FrozenSuiteProjectionV1,
+  type FrozenSuiteV1,
+  KERNEL_MAX_FRAME_BYTES,
+  KERNEL_MAX_PENDING_REQUESTS,
+  KERNEL_MAX_PENDING_RESPONSE_BYTES,
+  KERNEL_OPERATIONS,
+  KERNEL_SCHEMA_SET_DIGEST,
   KernelBridge,
   KernelCapabilities,
   KernelEvaluationRequest,
   KernelExecutionQualification,
   KernelHealth,
+  type KernelOperationV2,
+  type KernelResultV2,
+  type ProducerBindingProjectionV1,
+  type ProducerBindingV1,
+  type TaskBindingProjectionV1,
+  type TaskExecutionBindingV1,
   KOGG_RANEX_COMMIT,
   KOGG_RANEX_PROTOCOL,
-  KOGG_RANEX_PROTOCOL_VERSION
+  KOGG_RANEX_PROTOCOL_VERSION,
+  KOGG_RANEX_TREE
 } from '@kogg/contracts';
 import { KoggOperationRegistry, type OperationLease, type OperationRegistryApi, type ProcessLease } from '@kogg/operations/lib/common/operations-protocol';
 import { ILogger } from '@theia/core/lib/common/logger';
@@ -19,15 +34,11 @@ import { Process, ProcessType, type IProcessExitEvent } from '@theia/process/lib
 import { ProcessManager } from '@theia/process/lib/node/process-manager';
 import { PassThrough, type Readable, type Writable } from 'node:stream';
 
-// diagnostic-coverage: kernel.health, kernel.journal
-
-interface RpcResponse {
-  readonly id: string;
-  readonly result?: unknown;
-  readonly error?: { readonly code: string; readonly message: string };
-}
+// diagnostic-coverage: kernel.protocol, kernel.bridge, kernel.cleanup
 
 interface PendingRequest {
+  readonly operationId: string;
+  readonly operation: KernelOperationV2;
   readonly resolve: (value: unknown) => void;
   readonly reject: (reason: Error) => void;
   readonly timer: NodeJS.Timeout;
@@ -37,7 +48,8 @@ interface PendingRequest {
 export class KernelBridgeImpl implements KernelBridge {
   private child: ChildProcessWithoutNullStreams | undefined;
   private readonly pending = new Map<string, PendingRequest>();
-  private sequence = 0;
+  private responseBuffer = Buffer.alloc(0);
+  private adapterArtifactDigest = '';
   private state: 'stopped' | 'starting' | 'ready' | 'failed' = 'stopped';
   private cachedCapabilities: KernelCapabilities | undefined;
   private operation: OperationLease | undefined;
@@ -93,8 +105,8 @@ export class KernelBridgeImpl implements KernelBridge {
     this.processLease.started(this.child.pid);
     this.exitHandled = new Promise(resolve => { this.resolveExit = resolve; });
 
-    const lines = readline.createInterface({ input: this.child.stdout });
-    lines.on('line', line => this.receive(line));
+    this.adapterArtifactDigest = sha256(readFileSync(adapter));
+    this.child.stdout.on('data', data => this.receive(Buffer.from(data)));
     let stderrBytes = 0;
     this.child.stderr.on('data', data => {
       stderrBytes += data.length;
@@ -128,15 +140,16 @@ export class KernelBridgeImpl implements KernelBridge {
   }
 
   handshake(): Promise<KernelCapabilities> {
-    return this.request<KernelCapabilities>('handshake', {
-      protocol: KOGG_RANEX_PROTOCOL,
-      protocolVersion: KOGG_RANEX_PROTOCOL_VERSION,
-      ranexCommit: KOGG_RANEX_COMMIT
+    if (!this.processLease) return Promise.reject(new Error('Ranex process registration is unavailable'));
+    return this.request<KernelCapabilities>('kernel.handshake', {
+      adapterArtifactDigest: this.adapterArtifactDigest,
+      processRegistrationId: this.processLease.id,
+      schemaSetDigest: KERNEL_SCHEMA_SET_DIGEST
     }, true);
   }
 
   health(): Promise<KernelHealth> {
-    return this.request<KernelHealth>('health', {});
+    return this.request<KernelHealth>('kernel.health', {});
   }
 
   async capabilities(): Promise<KernelCapabilities> {
@@ -145,8 +158,20 @@ export class KernelBridgeImpl implements KernelBridge {
     return this.cachedCapabilities;
   }
 
-  evaluate(evaluation: KernelEvaluationRequest): Promise<Record<string, unknown>> {
-    return this.request<Record<string, unknown>>('evaluate', evaluation);
+  execute<TProjection extends KernelJson>(operation: KernelOperationV2, body: KernelJson): Promise<KernelResultV2<TProjection>> {
+    if (operation === 'task.bind' || operation === 'producer.dispatch' || operation === 'suite.freeze') {
+      console.warn('[kogg:kernel:bridge] request.refused', { operation, safeCode: 'KERNEL_AUTHORITY_INVALID' });
+      return Promise.resolve({
+        protocol: KOGG_RANEX_PROTOCOL, requestId: randomUUID(), operationId: randomUUID(), status: 'refused',
+        safeCode: 'KERNEL_AUTHORITY_INVALID', resultDigest: null, journal: null, projection: null
+      });
+    }
+    return this.requestResult<TProjection>(operation, body);
+  }
+
+  bindTask(binding: TaskExecutionBindingV1): Promise<KernelResultV2<TaskBindingProjectionV1>> {
+    const bindingDigest = domainDigest('task-binding', binding as unknown as KernelJson);
+    return this.requestResult<TaskBindingProjectionV1>('task.bind', { binding: binding as unknown as KernelJson, bindingDigest });
   }
 
   qualifyExecution(targetId: string): Promise<KernelExecutionQualification> {
@@ -157,15 +182,21 @@ export class KernelBridgeImpl implements KernelBridge {
     return this.request('journal.verify', {});
   }
 
-  listVerdicts(): Promise<readonly Record<string, unknown>[]> {
-    return this.request('verdict.list', {});
+  freezeSuite(suite: FrozenSuiteV1): Promise<KernelResultV2<FrozenSuiteProjectionV1>> {
+    const suiteDigest = domainDigest('suite', suite as unknown as KernelJson);
+    return this.requestResult<FrozenSuiteProjectionV1>('suite.freeze', { suite: suite as unknown as KernelJson, suiteDigest });
+  }
+
+  async verifyJournal(): Promise<{ readonly valid: boolean; readonly reason?: string }> {
+    const health = await this.health();
+    return health.journal === 'valid' ? { valid: true } : { valid: false, reason: health.journal };
   }
 
   async shutdown(): Promise<void> {
     if (!this.child) return;
     this.expectedExit = true;
     try {
-      await this.request('shutdown', {}, true);
+      this.child.stdin.end();
     } finally {
       await this.terminateChild();
       await this.exitHandled;
@@ -202,41 +233,70 @@ export class KernelBridgeImpl implements KernelBridge {
     return path.resolve(process.env.KOGG_STATE_DIR ?? path.join(this.root, '.kogg', 'state'));
   }
 
-  private request<T>(method: string, params: unknown, allowStarting = false): Promise<T> {
+  private async request<T>(operation: KernelOperationV2, body: KernelJson, allowStarting = false): Promise<T> {
+    const result = await this.requestResult<T>(operation, body, allowStarting);
+    if (result.status !== 'succeeded' || result.projection === null) throw new Error(result.safeCode);
+    return result.projection;
+  }
+
+  private requestResult<T>(operation: KernelOperationV2, body: KernelJson, allowStarting = false): Promise<KernelResultV2<T>> {
     if (!this.child || (!allowStarting && this.state !== 'ready')) {
       return Promise.reject(new Error('Ranex kernel is not ready; operation refused'));
     }
-    const id = `kogg-${++this.sequence}`;
-    return new Promise<T>((resolve, reject) => {
+    if (this.pending.size >= KERNEL_MAX_PENDING_REQUESTS) return Promise.reject(new Error('KERNEL_PROTOCOL_OVERFLOW'));
+    const requestId = randomUUID(); const operationId = randomUUID();
+    const bodyDigest = sha256(Buffer.from(canonicalKernelJson(body), 'utf8'));
+    const idempotencyKey = domainDigest('idempotency', { bodyDigest, operation, version: KERNEL_OPERATIONS[operation] });
+    const envelope = { protocol: KOGG_RANEX_PROTOCOL, requestId, operationId, idempotencyKey, operation, operationVersion: KERNEL_OPERATIONS[operation], ranexCommit: KOGG_RANEX_COMMIT, schemaSetDigest: KERNEL_SCHEMA_SET_DIGEST, bodyDigest, body } as const;
+    const payload = Buffer.from(canonicalKernelJson(envelope), 'utf8');
+    if (payload.length > KERNEL_MAX_FRAME_BYTES) return Promise.reject(new Error('KERNEL_PROTOCOL_OVERFLOW'));
+    const frame = Buffer.allocUnsafe(4 + payload.length); frame.writeUInt32BE(payload.length, 0); payload.copy(frame, 4);
+    return new Promise<KernelResultV2<T>>((resolve, reject) => {
       const timer = setTimeout(() => {
-        this.pending.delete(id);
-        reject(new Error(`Ranex request ${method} exceeded its 15 second bound`));
+        this.pending.delete(requestId);
+        console.warn('[kogg:kernel:bridge] request.refused', { requestId, operationId, operation, safeCode: 'KERNEL_OUTCOME_UNKNOWN' });
+        reject(new Error('KERNEL_OUTCOME_UNKNOWN'));
       }, 15_000);
-      this.pending.set(id, { resolve: value => resolve(value as T), reject, timer });
+      this.pending.set(requestId, { operationId, operation, resolve: value => resolve(value as KernelResultV2<T>), reject, timer });
       this.processLease?.activity();
-      this.child?.stdin.write(`${JSON.stringify({ id, method, params })}\n`);
+      console.info('[kogg:kernel:bridge] request.validated', { requestId, operationId, operation, operationVersion: KERNEL_OPERATIONS[operation] });
+      this.child?.stdin.write(frame);
     });
   }
 
-  private receive(line: string): void {
-    let response: RpcResponse;
-    try {
-      response = JSON.parse(line) as RpcResponse;
-    } catch (error) {
-      console.error('[kogg:kernel:bridge] protocol-response.invalid', {
-        errorType: error instanceof Error ? error.name : 'UnknownError'
-      });
-      this.failAll(new Error('Ranex emitted malformed protocol output'));
-      this.child?.kill();
-      return;
+  private receive(chunk: Buffer): void {
+    this.responseBuffer = Buffer.concat([this.responseBuffer, chunk]);
+    if (this.responseBuffer.length > KERNEL_MAX_PENDING_RESPONSE_BYTES) return this.protocolFailure('KERNEL_PROTOCOL_OVERFLOW');
+    while (this.responseBuffer.length >= 4) {
+      const length = this.responseBuffer.readUInt32BE(0);
+      if (length === 0 || length > KERNEL_MAX_FRAME_BYTES) return this.protocolFailure('KERNEL_PROTOCOL_OVERFLOW');
+      if (this.responseBuffer.length < length + 4) return;
+      const payload = this.responseBuffer.subarray(4, length + 4); this.responseBuffer = this.responseBuffer.subarray(length + 4);
+      try { this.acceptResult(payload); }
+      catch { /* observability-exempt: the content-free safe code below is the complete protocol failure projection. */ return this.protocolFailure('KERNEL_PROTOCOL_INVALID'); }
     }
-    const pending = this.pending.get(response.id);
+  }
+
+  private acceptResult(payload: Buffer): void {
+    const text = payload.toString('utf8'); const response = JSON.parse(text) as KernelResultV2;
+    if (canonicalKernelJson(response as unknown as KernelJson) !== text) throw new Error('noncanonical');
+    if (!response || Object.keys(response).sort().join(',') !== 'journal,operationId,projection,protocol,requestId,resultDigest,safeCode,status' || response.protocol !== KOGG_RANEX_PROTOCOL) throw new Error('schema');
+    const pending = this.pending.get(response.requestId);
     if (!pending) return;
+    if (response.operationId !== pending.operationId || !['succeeded', 'refused', 'unknown'].includes(response.status)) throw new Error('correlation');
+    if ((response.status === 'succeeded') !== (response.safeCode === 'KERNEL_OK')) throw new Error('safe-code');
+    if (!validJournal(response.journal) || (response.status === 'succeeded' && JOURNALED_OPERATIONS.has(pending.operation)) !== (response.journal !== null)) throw new Error('journal');
+    if (response.projection !== null && !validOperationProjection(pending.operation, response.projection)) throw new Error('projection');
+    if ((response.projection === null) !== (response.resultDigest === null) || (response.projection !== null && sha256(Buffer.from(canonicalKernelJson(response.projection as KernelJson), 'utf8')) !== response.resultDigest)) throw new Error('digest');
     clearTimeout(pending.timer);
-    this.pending.delete(response.id);
+    this.pending.delete(response.requestId);
     this.processLease?.activity();
-    if (response.error) pending.reject(new Error(`${response.error.code}: ${response.error.message}`));
-    else pending.resolve(response.result);
+    pending.resolve(response);
+  }
+
+  private protocolFailure(code: 'KERNEL_PROTOCOL_INVALID' | 'KERNEL_PROTOCOL_OVERFLOW'): void {
+    console.error('[kogg:kernel:bridge] request.refused', { safeCode: code });
+    this.failAll(new Error(code)); this.child?.kill();
   }
 
   private onExit(code: number | null, signal: NodeJS.Signals | null): void {
@@ -272,7 +332,11 @@ export class KernelBridgeImpl implements KernelBridge {
     if (
       capabilities.protocol !== KOGG_RANEX_PROTOCOL ||
       capabilities.protocolVersion !== KOGG_RANEX_PROTOCOL_VERSION ||
-      capabilities.ranexCommit !== KOGG_RANEX_COMMIT
+      capabilities.ranexCommit !== KOGG_RANEX_COMMIT ||
+      capabilities.ranexTree !== KOGG_RANEX_TREE ||
+      capabilities.schemaSetDigest !== KERNEL_SCHEMA_SET_DIGEST ||
+      capabilities.adapterArtifactDigest !== this.adapterArtifactDigest ||
+      capabilities.operations.some(operation => KERNEL_OPERATIONS[operation.operation] !== operation.version)
     ) {
       throw new Error('Ranex protocol or revision mismatch; governed operations are blocked');
     }
@@ -287,6 +351,39 @@ export class KernelBridgeImpl implements KernelBridge {
     if (!managed.killed) managed.kill('SIGKILL');
   }
 }
+
+function sha256(value: Uint8Array): `sha256:${string}` { return `sha256:${createHash('sha256').update(value).digest('hex')}`; }
+function domainDigest(domain: string, value: KernelJson): `sha256:${string}` {
+  return sha256(Buffer.concat([Buffer.from(`kogg:${domain}:v1\n`, 'utf8'), Buffer.from(canonicalKernelJson(value), 'utf8')]));
+}
+const JOURNALED_OPERATIONS = new Set<KernelOperationV2>([
+  'task.bind', 'producer.dispatch', 'suite.freeze', 'suite.execute', 'evidence.admit', 'gate.evaluate', 'operation.reconcile', 'operation.cancel'
+]);
+function validJournal(value: KernelResultV2['journal']): boolean {
+  return value === null || (Object.keys(value).sort().join(',') === 'rootDigest,sequence'
+    && /^(?:0|[1-9][0-9]*)$/u.test(value.sequence) && /^sha256:[0-9a-f]{64}$/u.test(value.rootDigest));
+}
+function validOperationProjection(operation: KernelOperationV2, value: unknown): boolean {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  const projection = value as Record<string, unknown>;
+  if (operation === 'task.bind') {
+    return Object.keys(projection).sort().join(',') === 'taskBindingDigest,taskId,taskRevision'
+      && validUuid(projection.taskId) && Number.isSafeInteger(projection.taskRevision) && Number(projection.taskRevision) > 0
+      && validDigest(projection.taskBindingDigest);
+  }
+  if (operation === 'producer.dispatch') {
+    return Object.keys(projection).sort().join(',') === 'attemptId,producerBindingDigest,producerId'
+      && validUuid(projection.attemptId) && validUuid(projection.producerId) && validDigest(projection.producerBindingDigest);
+  }
+  if (operation === 'suite.freeze') {
+    return Object.keys(projection).sort().join(',') === 'suiteDigest,suiteId,suiteRevision'
+      && validUuid(projection.suiteId) && Number.isSafeInteger(projection.suiteRevision) && Number(projection.suiteRevision) > 0
+      && validDigest(projection.suiteDigest);
+  }
+  return true;
+}
+function validUuid(value: unknown): boolean { return typeof value === 'string' && /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u.test(value); }
+function validDigest(value: unknown): boolean { return typeof value === 'string' && /^sha256:[0-9a-f]{64}$/u.test(value); }
 
 class KoggKernelProcess extends Process {
   readonly child: ChildProcessWithoutNullStreams;

@@ -21,6 +21,8 @@ export interface ProjectBindingSnapshot {
   readonly available: boolean;
   readonly active: boolean;
   readonly executionProfileId: string;
+  readonly rootUri: string;
+  readonly repositoryIdentityDigest: string;
 }
 
 export interface ProjectBindingAuthority {
