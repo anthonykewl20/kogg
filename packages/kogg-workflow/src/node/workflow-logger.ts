@@ -17,6 +17,9 @@ type Fields = {
   'compile.refused': { requestId: string; versionId: string; safeCode: WorkflowSafeCode };
   'run.admission.requested': { requestId: string; planId: string };
   'run.admission.refused': { requestId: string; planId: string; safeCode: WorkflowSafeCode; unavailableExecutorCount: number };
+  'run.admitted': { requestId: string; planId: string; runId: string; nodeCount: number };
+  'run.completed': { planId: string; runId: string; completedNodeCount: number; safeCode: 'WORKFLOW_OK'; processCount: 0; residualProcessCount: 0 };
+  'run.failed': { planId: string; runId: string; completedNodeCount: number; failedNodeCount: number; safeCode: WorkflowSafeCode; processCount: 0; residualProcessCount: 0 };
   'node.execution.started': { runId: string; nodeId: string; nodeKind: string; attempt: number; executorId: string };
   'node.execution.completed': { runId: string; nodeId: string; nodeKind: string; attempt: number; executorId: string; output: string; safeCode: WorkflowSafeCode; processCount: number; residualProcessCount: number };
   'node.execution.refused': { runId: string; nodeId: string; nodeKind: string; attempt: number; executorId: string; safeCode: WorkflowSafeCode; processCount: number; residualProcessCount: number };
@@ -45,6 +48,9 @@ export function workflowLog<K extends keyof Fields>(event: K, fields: Fields[K])
   else if (event === 'compile.refused') console.warn('[kogg:workflow:compiler] compile.refused', fields);
   else if (event === 'run.admission.requested') console.info('[kogg:workflow:engine] run.admission.requested', fields);
   else if (event === 'run.admission.refused') console.warn('[kogg:workflow:engine] run.admission.refused', fields);
+  else if (event === 'run.admitted') console.info('[kogg:workflow:engine] run.admitted', fields);
+  else if (event === 'run.completed') console.info('[kogg:workflow:engine] run.completed', fields);
+  else if (event === 'run.failed') console.warn('[kogg:workflow:engine] run.failed', fields);
   else if (event === 'node.execution.started') console.info('[kogg:workflow:engine] node.execution.started', fields);
   else if (event === 'node.execution.completed') console.info('[kogg:workflow:engine] node.execution.completed', fields);
   else if (event === 'node.execution.refused') console.warn('[kogg:workflow:engine] node.execution.refused', fields);

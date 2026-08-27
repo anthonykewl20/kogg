@@ -34,13 +34,14 @@ const DEFINITIONS: Readonly<Record<EditableNodeKind, Omit<WorkflowCatalogEntryV1
 export class WorkflowNodeCatalog {
   readonly entries: readonly WorkflowCatalogEntryV1[];
   readonly digest: string;
-  constructor(@inject(WorkflowExecutorRegistry) executors: WorkflowExecutorRegistry) {
+  constructor(@inject(WorkflowExecutorRegistry) private readonly executors: WorkflowExecutorRegistry) {
     this.entries = (Object.keys(DEFINITIONS) as EditableNodeKind[]).sort().map(kind => {
       const binding = executors.binding(kind); if (binding) executors.resolveExact(kind, binding); return { kind, kindVersion: '1', inputPorts: ['in'], ...DEFINITIONS[kind], executor: binding ? { status: 'available', ...binding } : { status: 'unavailable', safeCode: 'WORKFLOW_EXECUTOR_INCOMPATIBLE' } };
     });
     this.digest = workflowDigest('catalog', { schemaVersion: '1', entries: this.entries });
   }
   entry(kind: EditableNodeKind): WorkflowCatalogEntryV1 { const value = this.entries.find(item => item.kind === kind); if (!value) throw new Error('Closed workflow catalog is incomplete'); return value; }
+  executeControl(request: Parameters<WorkflowExecutorRegistry['execute']>[0]) { const binding = this.executors.binding(request.node.kind); if (!binding) return { kind: 'refused', code: 'WORKFLOW_EXECUTOR_INCOMPATIBLE', processCount: 0, residualProcessCount: 0 } as const; return this.executors.execute(request, binding); }
   diagnostics(): { readonly valid: boolean; readonly entryCount: number; readonly availableExecutorCount: number; readonly unavailableExecutorCount: number } {
     return { valid: this.entries.length === 14 && new Set(this.entries.map(entry => `${entry.kind}@${entry.kindVersion}`)).size === 14, entryCount: this.entries.length, availableExecutorCount: this.entries.filter(entry => entry.executor.status === 'available').length, unavailableExecutorCount: this.entries.filter(entry => entry.executor.status === 'unavailable').length };
   }
