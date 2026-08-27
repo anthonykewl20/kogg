@@ -54,6 +54,11 @@ export interface PhysicalAllocationIntentV1 {
   readonly expectedRevision: string; readonly allocationName: string; readonly allocationNonce: string;
   readonly quotaBytes: string; readonly quotaInodes: string; readonly helperDigest: string; readonly mountQuotaDigest: string;
 }
+export interface FailPhysicalAllocationV1 {
+  readonly requestId: string; readonly intentId: string; readonly worktreeId: string; readonly expectedRevision: string;
+  readonly bindingDigest: string; readonly fencingToken: string;
+  readonly safeCode: 'ALLOCATION_INTEGRITY_FAILED' | 'ALLOCATION_QUALIFICATION_INVALID' | 'CLEANUP_IDENTITY_MISMATCH';
+}
 export interface PreparePhysicalCleanupV1 { readonly requestId: string; readonly worktreeId: string; readonly expectedRevision: string; readonly bindingDigest: string }
 export interface PhysicalCleanupIntentV1 {
   readonly schemaVersion: 1; readonly intentId: string; readonly worktreeId: string; readonly fencingToken: string;
@@ -269,6 +274,38 @@ export class ExecutionAllocationRegistry implements BackendApplicationContributi
       this.event(database, request.worktreeId, 'allocation.proof.recorded', 'ALLOCATION_OK'); this.bump(database);
     });
     log('allocation.proof.completed', { requestId: request.requestId, worktreeId: request.worktreeId });
+    return this.summary(request.worktreeId);
+  }
+
+  async failPhysicalAllocation(request: FailPhysicalAllocationV1): Promise<ExecutionAllocationSummaryV1> {
+    await this.ensureStarted(); validatePhysicalAllocationFailure(request);
+    const requestDigest = digest('kogg-execution-physical-allocation-failure-v1', JSON.stringify(request));
+    log('allocation.failure.requested', { requestId: request.requestId, worktreeId: request.worktreeId, intentId: request.intentId });
+    const replay = this.databaseOrThrow().prepare('SELECT request_digest,worktree_id FROM physical_allocation_failure_results WHERE request_id=?').get(request.requestId) as SqlRow | undefined;
+    if (replay) {
+      if (String(replay.request_digest) !== requestDigest || String(replay.worktree_id) !== request.worktreeId) refusePhysicalAllocation(request, 'ALLOCATION_REQUEST_REPLAY_MISMATCH');
+      return this.summary(request.worktreeId);
+    }
+    const row = this.databaseOrThrow().prepare('SELECT state,revision,binding_digest FROM allocations WHERE worktree_id=?').get(request.worktreeId) as SqlRow | undefined;
+    const intent = this.databaseOrThrow().prepare("SELECT * FROM allocation_intents WHERE intent_id=? AND intent_type='allocation'").get(request.intentId) as SqlRow | undefined;
+    if (!row || !intent) refusePhysicalAllocation(request, 'ALLOCATION_INTEGRITY_FAILED');
+    if (String(row.binding_digest) !== request.bindingDigest || String(intent.worktree_id) !== request.worktreeId
+      || String(intent.fencing_token) !== request.fencingToken) refusePhysicalAllocation(request, 'ALLOCATION_BINDING_MISMATCH');
+    if (String(row.revision) !== request.expectedRevision) refusePhysicalAllocation(request, 'ALLOCATION_REVISION_CONFLICT');
+    if (String(row.state) !== 'admitted' || String(intent.phase) !== 'requested') refusePhysicalAllocation(request, 'ALLOCATION_STATE_INVALID');
+    const now = new Date().toISOString();
+    this.transaction(database => {
+      const intentResult = database.prepare("UPDATE allocation_intents SET phase='quarantined',safe_code=?,updated_at=? WHERE intent_id=? AND intent_type='allocation' AND phase='requested' AND fencing_token=?")
+        .run(request.safeCode, now, request.intentId, request.fencingToken);
+      const allocationResult = database.prepare("UPDATE allocations SET state='quarantined',cleanup_state='failed',safe_code=?,revision=revision+1,updated_at=? WHERE worktree_id=? AND revision=? AND state='admitted' AND binding_digest=?")
+        .run(request.safeCode, now, request.worktreeId, Number(request.expectedRevision), request.bindingDigest);
+      if (intentResult.changes !== 1 || allocationResult.changes !== 1) throw new AllocationRegistryError('ALLOCATION_REVISION_CONFLICT');
+      database.prepare('INSERT INTO physical_allocation_failure_results(request_id,request_digest,intent_id,worktree_id,created_at) VALUES(?,?,?,?,?)')
+        .run(request.requestId, requestDigest, request.intentId, request.worktreeId, now);
+      database.prepare("UPDATE execution_meta SET admission='blocked',revision=revision+1 WHERE singleton=1").run();
+      this.event(database, request.worktreeId, 'allocation.quarantined', request.safeCode);
+    });
+    log('allocation.quarantined', { requestId: request.requestId, worktreeId: request.worktreeId, intentId: request.intentId, safeCode: request.safeCode });
     return this.summary(request.worktreeId);
   }
 
@@ -566,6 +603,7 @@ export class ExecutionAllocationRegistry implements BackendApplicationContributi
       CREATE TABLE IF NOT EXISTS request_results(request_id TEXT PRIMARY KEY,request_digest TEXT NOT NULL,worktree_id TEXT NOT NULL REFERENCES allocations(worktree_id),created_at TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS physical_allocation_results(request_id TEXT PRIMARY KEY,request_digest TEXT NOT NULL,worktree_id TEXT NOT NULL REFERENCES allocations(worktree_id),filesystem_identity_digest TEXT NOT NULL,created_at TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS physical_allocation_prepare_results(request_id TEXT PRIMARY KEY,request_digest TEXT NOT NULL,intent_id TEXT NOT NULL UNIQUE REFERENCES allocation_intents(intent_id),worktree_id TEXT NOT NULL REFERENCES allocations(worktree_id),created_at TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS physical_allocation_failure_results(request_id TEXT PRIMARY KEY,request_digest TEXT NOT NULL,intent_id TEXT NOT NULL UNIQUE REFERENCES allocation_intents(intent_id),worktree_id TEXT NOT NULL REFERENCES allocations(worktree_id),created_at TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS cleanup_request_results(request_id TEXT PRIMARY KEY,request_digest TEXT NOT NULL,request_kind TEXT NOT NULL CHECK(request_kind IN ('prepare','complete','failure')),intent_id TEXT NOT NULL REFERENCES allocation_intents(intent_id),worktree_id TEXT NOT NULL REFERENCES allocations(worktree_id),created_at TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS lifecycle_request_results(request_id TEXT PRIMARY KEY,request_digest TEXT NOT NULL,response_kind TEXT NOT NULL CHECK(response_kind IN ('state','seal','import-intent','import-complete')),resource_id TEXT NOT NULL,created_at TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS candidates(candidate_id TEXT PRIMARY KEY,worktree_id TEXT NOT NULL UNIQUE REFERENCES allocations(worktree_id),candidate_json TEXT NOT NULL,candidate_commit TEXT NOT NULL,candidate_tree TEXT NOT NULL,object_closure_digest TEXT NOT NULL,mutation_policy_digest TEXT NOT NULL,quarantine_ref_digest TEXT,retention_class TEXT NOT NULL CHECK(retention_class IN ('pending-evidence','rejected','incident','completed')),retention_until TEXT NOT NULL,created_at TEXT NOT NULL,updated_at TEXT);
@@ -694,6 +732,12 @@ function validatePhysicalAllocationPrepare(request: PreparePhysicalAllocationV1)
     || ![request.requestId, request.worktreeId].every(value => UUID.test(value))
     || ![request.bindingDigest, request.helperDigest, request.mountQuotaDigest].every(value => DIGEST.test(value))
     || !DECIMAL.test(request.expectedRevision) || request.expectedRevision === '0') throw new AllocationRegistryError('ALLOCATION_PROTOCOL_INVALID');
+}
+function validatePhysicalAllocationFailure(request: FailPhysicalAllocationV1): void {
+  if (!request || Object.keys(request).sort().join(',') !== 'bindingDigest,expectedRevision,fencingToken,intentId,requestId,safeCode,worktreeId'
+    || ![request.requestId, request.intentId, request.worktreeId].every(value => UUID.test(value)) || !DIGEST.test(request.bindingDigest)
+    || !SHA256.test(request.fencingToken) || !DECIMAL.test(request.expectedRevision) || request.expectedRevision === '0'
+    || !['ALLOCATION_INTEGRITY_FAILED', 'ALLOCATION_QUALIFICATION_INVALID', 'CLEANUP_IDENTITY_MISMATCH'].includes(request.safeCode)) throw new AllocationRegistryError('ALLOCATION_PROTOCOL_INVALID');
 }
 function validateSealed(request: RecordSealedCandidateV1): void {
   if (!request || Object.keys(request).sort().join(',') !== 'bindingDigest,candidate,expectedRevision,requestId,worktreeId'
@@ -910,6 +954,7 @@ const LOG_FIELDS = {
   'request.refused': ['requestId', 'runId', 'safeCode'], 'allocation.requested': ['requestId', 'runId'],
   'allocation.reserved': ['requestId', 'runId', 'worktreeId'], 'recovery.started': ['resourceCount'],
   'allocation.intent.requested': ['requestId', 'worktreeId'], 'allocation.intent.recorded': ['requestId', 'worktreeId', 'intentId'],
+  'allocation.failure.requested': ['requestId', 'worktreeId', 'intentId'], 'allocation.quarantined': ['requestId', 'worktreeId', 'intentId', 'safeCode'],
   'allocation.proof.requested': ['requestId', 'worktreeId'], 'allocation.proof.completed': ['requestId', 'worktreeId'],
   'allocation.proof.refused': ['requestId', 'worktreeId', 'safeCode'],
   'state.requested': ['requestId', 'worktreeId', 'state'], 'state.completed': ['requestId', 'worktreeId', 'state'],

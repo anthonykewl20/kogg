@@ -155,6 +155,22 @@ test('fences physical allocation behind one durable pre-effect intent and quaran
   } finally { recovered.onStop(); await rm(root, { recursive: true, force: true }); }
 });
 
+test('atomically quarantines a refused physical allocation effect and blocks admission immediately', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'kogg-allocation-failure-')); process.env.KOGG_STATE_DIR = root;
+  const registry = allocationRegistry(); await registry.onStart();
+  try {
+    const allocation = await registry.reserve(allocationRequest());
+    const intent = await registry.preparePhysicalAllocation({ requestId: '19500000-0000-4000-8000-000000000001', worktreeId: allocation.worktreeId, expectedRevision: allocation.revision, bindingDigest: allocation.bindingDigest, helperDigest: `sha256:${'8'.repeat(64)}`, mountQuotaDigest: `sha256:${'9'.repeat(64)}` });
+    const failure = { requestId: '19500000-0000-4000-8000-000000000002', intentId: intent.intentId, worktreeId: allocation.worktreeId, expectedRevision: intent.expectedRevision, bindingDigest: allocation.bindingDigest, fencingToken: intent.fencingToken, safeCode: 'ALLOCATION_QUALIFICATION_INVALID' as const };
+    const quarantined = await registry.failPhysicalAllocation(failure);
+    assert.equal(quarantined.state, 'quarantined'); assert.equal(quarantined.cleanupState, 'failed'); assert.equal(quarantined.safeCode, failure.safeCode);
+    assert.deepEqual(await registry.failPhysicalAllocation(failure), quarantined);
+    const diagnostics = registry.diagnostics(); assert.equal(diagnostics.admission, 'blocked'); assert.equal(diagnostics.pendingAllocationIntentCount, 0); assert.equal(diagnostics.quarantinedCount, 1);
+    await assert.rejects(() => registry.failPhysicalAllocation({ ...failure, safeCode: 'ALLOCATION_INTEGRITY_FAILED' }),
+      (error: unknown) => error instanceof AllocationRegistryError && error.code === 'ALLOCATION_REQUEST_REPLAY_MISMATCH');
+  } finally { registry.onStop(); await rm(root, { recursive: true, force: true }); }
+});
+
 test('records one sealed candidate only after the legal stopping state and replays the exact request', async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), 'kogg-allocation-seal-')); process.env.KOGG_STATE_DIR = root; const registry = allocationRegistry(); await registry.onStart();
   try {
