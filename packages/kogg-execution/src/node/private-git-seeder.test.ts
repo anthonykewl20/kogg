@@ -76,7 +76,7 @@ test('kills and records controller Git commands that exceed their idle deadline'
   try {
     const operation = await registry.startOperation({ kind: 'worktree' }); operation.start(); operation.active();
     const runner = new ControllerGitRunner(binary, { home, globalConfig, templateDirectory }, 50, 250, 1024);
-    await assert.rejects(() => runner.run(operation, 'private-verify', root, []),
+    await assert.rejects(() => runner.run(operation, 'private-verify', root, runner.protectedArguments(['rev-parse', '--verify', 'HEAD'])),
       (error: unknown) => error instanceof GitRunError && error.code === 'GIT_SEED_TIMEOUT');
     await operation.cleanup(); operation.fail('PROCESS_EXIT_NONZERO', 'GitRunError');
     assert.equal(registry.diagnostics().activeCount, 0); assert.equal(registry.diagnostics().residualCount, 0);
@@ -97,10 +97,23 @@ test('kills and records controller Git commands that exceed the closed output li
   try {
     const operation = await registry.startOperation({ kind: 'worktree' }); operation.start(); operation.active();
     const runner = new ControllerGitRunner(binary, { home, globalConfig, templateDirectory }, 1_000, 2_000, 8);
-    await assert.rejects(() => runner.run(operation, 'private-verify', root, []),
+    await assert.rejects(() => runner.run(operation, 'private-verify', root, runner.protectedArguments(['rev-parse', '--verify', 'HEAD'])),
       (error: unknown) => error instanceof GitRunError && error.code === 'GIT_SEED_OUTPUT_LIMIT');
     await operation.cleanup(); operation.fail('PROCESS_EXIT_NONZERO', 'GitRunError');
     assert.equal(registry.diagnostics().activeCount, 0); assert.equal(registry.diagnostics().residualCount, 0);
+  } finally { await registry.onStop(); await rm(root, { recursive: true, force: true }); }
+});
+
+test('refuses a Git argument vector outside the closed phase catalog before spawning', {
+  skip: process.platform === 'win32' ? 'The qualified execution controller is Linux-only' : false
+}, async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'kogg-git-catalog-')); const home = path.join(root, 'home'); const templateDirectory = path.join(root, 'template');
+  await Promise.all([mkdir(home), mkdir(templateDirectory)]); const binary = execFileSync('which', ['git'], { encoding: 'utf8' }).trim(); const globalConfig = path.join(home, 'global.gitconfig'); await writeFile(globalConfig, '', { mode: 0o600 });
+  process.env.KOGG_STATE_DIR = path.join(root, 'state'); const registry = new OperationRegistry(); await registry.onStart();
+  try {
+    const operation = await registry.startOperation({ kind: 'worktree' }); operation.start(); operation.active(); const runner = new ControllerGitRunner(binary, { home, globalConfig, templateDirectory });
+    await assert.rejects(() => runner.run(operation, 'private-verify', root, runner.protectedArguments(['config', '--global', '--list'])), (error: unknown) => error instanceof GitRunError && error.code === 'GIT_SEED_FAILED');
+    await operation.cleanup(); operation.fail('PROCESS_EXIT_NONZERO', 'GitRunError'); assert.equal(registry.diagnostics().residualCount, 0);
   } finally { await registry.onStop(); await rm(root, { recursive: true, force: true }); }
 });
 

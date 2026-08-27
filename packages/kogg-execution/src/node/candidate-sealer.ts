@@ -10,7 +10,7 @@ import { executionLog } from './execution-logger';
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u;
 const SHA1 = /^[0-9a-f]{40}$/u; const SHA256 = /^[0-9a-f]{64}$/u; const DECIMAL = /^(?:0|[1-9][0-9]*)$/u;
 const MAX_ENTRIES = 100_000; const MAX_OBJECT_BYTES = 100 * 1024 * 1024; const MAX_SYMLINKS = 1_000;
-const MUTATION_POLICY_DIGEST = `sha256:${createHash('sha256').update('kogg-candidate-mutation-policy-v1').digest('hex')}`;
+export const CANDIDATE_MUTATION_POLICY_DIGEST = `sha256:${createHash('sha256').update('kogg-candidate-mutation-policy-v1').digest('hex')}`;
 
 export class CandidateSealer {
   constructor(private readonly operations: OperationRegistryApi, private readonly git: ControllerGitRunner) {}
@@ -50,7 +50,7 @@ export class CandidateSealer {
       return {
         schemaVersion: 1, candidateId: randomUUID(), worktreeId: request.worktreeId, runId: request.runId,
         attemptId: request.attemptId, baseCommit: request.baseCommit, baseTree: request.baseTree,
-        candidateCommit, candidateTree, objectClosureDigest, mutationPolicyDigest: MUTATION_POLICY_DIGEST,
+        candidateCommit, candidateTree, objectClosureDigest, mutationPolicyDigest: CANDIDATE_MUTATION_POLICY_DIGEST,
         sealedAt, retentionClass: 'pending-evidence', retentionUntil, safeCode: 'SEAL_OK'
       };
     } catch (error) {

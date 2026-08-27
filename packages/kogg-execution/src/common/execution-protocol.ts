@@ -10,6 +10,8 @@ export type ExecutionAllocationCode = 'ALLOCATION_OK' | 'ALLOCATION_ADMISSION_BL
   | 'RECOVERY_OWNER_UNAVAILABLE';
 export type ExecutionSealCode = 'SEAL_OK' | 'SEAL_FAILED' | 'SEAL_BASE_MISMATCH' | 'SEAL_NO_CHANGE' | 'SEAL_DIRTY'
   | 'SEAL_HEAD_INVALID' | 'SEAL_ANCESTRY_INVALID' | 'SEAL_MERGE_COMMIT' | 'SEAL_MUTATION_POLICY' | 'SEAL_OBJECT_INVALID';
+export type ExecutionImportCode = 'IMPORT_OK' | 'IMPORT_FAILED' | 'IMPORT_PROTOCOL_INVALID' | 'IMPORT_SOURCE_CHANGED'
+  | 'IMPORT_CANDIDATE_INVALID' | 'IMPORT_REF_EXISTS' | 'IMPORT_SOURCE_INTEGRITY_FAILED';
 export type ExecutionState = 'requested' | 'refused' | 'admitted' | 'allocated' | 'seeding' | 'verified' | 'ready'
   | 'leased' | 'executing' | 'stopping' | 'sealed' | 'candidate-imported' | 'retained' | 'cleaning' | 'cleaned'
   | 'failed' | 'timed-out' | 'cancelled' | 'cleanup-failed' | 'quarantined' | 'recovery-required' | 'reconciling';
@@ -42,8 +44,16 @@ export interface CandidateBindingV1 {
   readonly schemaVersion: 1; readonly candidateId: string; readonly worktreeId: string; readonly runId: string;
   readonly attemptId: string; readonly baseCommit: string; readonly baseTree: string; readonly candidateCommit: string;
   readonly candidateTree: string; readonly objectClosureDigest: string; readonly mutationPolicyDigest: string;
-  readonly sealedAt: string; readonly retentionClass: 'pending-evidence'; readonly retentionUntil: string;
+  readonly quarantineRefDigest?: string; readonly sealedAt: string; readonly retentionClass: 'pending-evidence'; readonly retentionUntil: string;
   readonly safeCode: ExecutionSealCode;
+}
+export interface ImportCandidateV1 {
+  readonly projectId: string; readonly repositoryId: string; readonly sourceRoot: string; readonly sourceGitDirectory: string; readonly privateRoot: string;
+  readonly bundlePath: string; readonly expectedSourceHead: string; readonly expectedSourceTree: string;
+  readonly objectFormat: 'sha1' | 'sha256'; readonly candidate: CandidateBindingV1;
+}
+export interface ImportedCandidateV1 extends Omit<CandidateBindingV1, 'safeCode'> {
+  readonly quarantineRefDigest: string; readonly safeCode: 'IMPORT_OK';
 }
 
 export interface ExecutionQualificationProjection {
