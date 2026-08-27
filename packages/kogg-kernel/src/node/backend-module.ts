@@ -7,6 +7,7 @@ import { KernelDiagnosticContributor } from './kernel-diagnostic-contributor';
 import { KernelTaskBindingService } from './kernel-task-binding-service';
 import { KernelRepositoryStateAuthority } from './kernel-repository-state-authority';
 import { KernelEvidenceAdmissionService } from './kernel-evidence-admission-service';
+import { KernelGateEvaluationService } from './kernel-gate-evaluation-service';
 
 export default new ContainerModule(bind => {
   bind(KernelBridgeImpl).toSelf().inSingletonScope();
@@ -18,4 +19,5 @@ export default new ContainerModule(bind => {
   bind(KernelTaskBindingService).toSelf().inSingletonScope();
   bind(KernelRepositoryStateAuthority).toSelf().inSingletonScope();
   bind(KernelEvidenceAdmissionService).toSelf().inSingletonScope();
+  bind(KernelGateEvaluationService).toSelf().inSingletonScope();
 });

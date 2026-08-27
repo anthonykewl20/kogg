@@ -4,7 +4,7 @@ export const KOGG_RANEX_PROTOCOL = 'kogg.ranex/v2' as const;
 export const KOGG_RANEX_PROTOCOL_VERSION = 2 as const;
 export const KOGG_RANEX_COMMIT = '5586d68b0936f554759022caabe847087f1d03ef' as const;
 export const KOGG_RANEX_TREE = '581ce66c54116d4be48b96c3a0359fbdd9d3077f' as const;
-export const KERNEL_SCHEMA_SET_DIGEST = 'sha256:76be6566aef1a98cb5a18c0133c63043ddd42d804c995809d4cbb6145dc77622' as const;
+export const KERNEL_SCHEMA_SET_DIGEST = 'sha256:72d3744f64fa150f4e0b4bed73ff5ad305e75a21f99f28e44eb3bbcf33ef0899' as const;
 export const KERNEL_MAX_FRAME_BYTES = 1024 * 1024;
 export const KERNEL_MAX_DEPTH = 32;
 export const KERNEL_MAX_MEMBERS = 4096;
@@ -228,6 +228,31 @@ export interface EvidenceAdmissionProjectionV1 {
   readonly claimType: string;
 }
 
+export interface GateRequirementV1 {
+  readonly claimType: string;
+  readonly checkDefinitionDigest: KoggDigest;
+  readonly requiredOutcome: 'pass';
+}
+
+export interface GateEvaluationExpectationV1 {
+  readonly verdictId: string;
+  readonly taskBindingDigest: KoggDigest;
+  readonly suiteDigest: KoggDigest;
+  readonly subjectStateDigest: KoggDigest;
+  readonly gateCatalogDigest: KoggDigest;
+  readonly requirements: readonly GateRequirementV1[];
+  readonly authorityDigest: KoggDigest;
+  readonly ranexProvenanceDigest: KoggDigest;
+  readonly evaluatedAt: string;
+}
+
+export interface GateEvaluationProjectionV1 {
+  readonly verdictDigest: KoggDigest;
+  readonly verdictId: string;
+  readonly decision: VerdictBindingV1['decision'];
+  readonly evidenceCount: number;
+}
+
 export interface VerdictBindingV1 {
   readonly verdictId: string;
   readonly taskBindingDigest: KoggDigest;
@@ -268,6 +293,7 @@ export interface KernelBridge {
   freezeSuite(suite: FrozenSuiteV1): Promise<KernelResultV2<FrozenSuiteProjectionV1>>;
   executeCheck(execution: CheckExecutionV1): Promise<KernelResultV2<CheckExecutionProjectionV1>>;
   admitEvidence(evidence: EvidenceManifestV1, currentSubject: RepositoryStateV1): Promise<KernelResultV2<EvidenceAdmissionProjectionV1>>;
+  evaluateGate(expectation: GateEvaluationExpectationV1, currentSubject: RepositoryStateV1): Promise<KernelResultV2<GateEvaluationProjectionV1>>;
   verifyJournal(): Promise<{ readonly valid: boolean; readonly reason?: string }>;
   shutdown(): Promise<void>;
 }
