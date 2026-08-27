@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { createServer, request as httpRequest, type IncomingHttpHeaders } from 'node:http';
+import type { Socket } from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
@@ -20,10 +21,12 @@ test('admits transition intent only through authenticated same-origin CSRF-prote
   const browserAuth = new BrowserAuthContribution(); const transitionAuthority = new ModeTransitionAuthority();
   const registry = new InteractionModeRegistry(new TaskAuthority(), transitionAuthority); await registry.onStart(); context.after(() => registry.onStop());
   const controller = new InteractionModeHttpController(browserAuth, transitionAuthority, registry); const app = express(); browserAuth.configure(app); controller.configure(app);
-  const server = createServer(app); await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
+  const server = createServer(app); const serverSockets = new Set<Socket>();
+  server.on('connection', socket => { serverSockets.add(socket); socket.once('close', () => serverSockets.delete(socket)); });
+  await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
   context.after(async () => {
-    server.closeAllConnections();
-    await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
+    const closed = new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
+    server.closeIdleConnections(); server.closeAllConnections(); for (const socket of serverSockets) socket.destroy(); await closed;
   });
   const address = server.address(); assert(address && typeof address !== 'string'); const base = `http://127.0.0.1:${address.port}`;
   const login = await exchange(`${base}/kogg/auth/login`, 'POST', { 'content-type': 'application/x-www-form-urlencoded' }, 'token=http-test-token');
@@ -45,7 +48,7 @@ function exchange(url: string, method: 'GET' | 'POST', headers: Readonly<Record<
   return new Promise((resolve, reject) => {
     const request = httpRequest(url, { method, agent: false, headers: { ...headers, connection: 'close', ...(body === undefined ? {} : { 'content-length': String(Buffer.byteLength(body)) }) } }, response => {
       const chunks: Buffer[] = []; response.on('data', chunk => chunks.push(Buffer.from(chunk))); response.once('error', reject); response.once('end', () => {
-        const bytes = Buffer.concat(chunks); resolve({ status: response.statusCode ?? 0, headers: response.headers, bytes, json: () => JSON.parse(bytes.toString('utf8')) as unknown });
+        const bytes = Buffer.concat(chunks); response.destroy(); request.destroy(); resolve({ status: response.statusCode ?? 0, headers: response.headers, bytes, json: () => JSON.parse(bytes.toString('utf8')) as unknown });
       });
     });
     request.setTimeout(5_000, () => request.destroy(new Error('HTTP test request timed out'))); request.once('error', reject); request.end(body);
