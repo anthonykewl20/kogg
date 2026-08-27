@@ -18,6 +18,13 @@ type Fields = {
   'run.admission.requested': { requestId: string; planId: string; taskAdmissionId: string };
   'run.admission.refused': { requestId: string; planId: string; taskAdmissionId: string; safeCode: WorkflowSafeCode; unavailableExecutorCount: number };
   'run.admitted': { requestId: string; planId: string; taskAdmissionId: string; runId: string; nodeCount: number };
+  'approval.waiting': { runId: string; nodeId: string; safeCode: 'WORKFLOW_APPROVAL_REQUIRED' };
+  'approval.review.requested': { requestId: string; runId: string; nodeId: string };
+  'approval.review.completed': { requestId: string; runId: string; nodeId: string };
+  'approval.review.refused': { requestId: string; runId: string; nodeId: string; safeCode: WorkflowSafeCode };
+  'approval.continue.requested': { requestId: string; runId: string; nodeId: string };
+  'approval.continue.completed': { requestId: string; runId: string; nodeId: string };
+  'approval.continue.refused': { requestId: string; runId: string; nodeId: string; safeCode: WorkflowSafeCode };
   'run.completed': { planId: string; runId: string; completedNodeCount: number; skippedNodeCount: number; safeCode: 'WORKFLOW_OK'; processCount: 0; residualProcessCount: 0 };
   'run.failed': { planId: string; runId: string; completedNodeCount: number; skippedNodeCount: number; failedNodeCount: number; safeCode: WorkflowSafeCode; processCount: 0; residualProcessCount: number };
   'node.execution.started': { runId: string; nodeId: string; nodeKind: string; attempt: number; executorId: string };
@@ -50,6 +57,13 @@ export function workflowLog<K extends keyof Fields>(event: K, fields: Fields[K])
   else if (event === 'run.admission.requested') console.info('[kogg:workflow:engine] run.admission.requested', fields);
   else if (event === 'run.admission.refused') console.warn('[kogg:workflow:engine] run.admission.refused', fields);
   else if (event === 'run.admitted') console.info('[kogg:workflow:engine] run.admitted', fields);
+  else if (event === 'approval.waiting') console.info('[kogg:workflow:engine] approval.waiting', fields);
+  else if (event === 'approval.review.requested') console.info('[kogg:workflow:engine] approval.review.requested', fields);
+  else if (event === 'approval.review.completed') console.info('[kogg:workflow:engine] approval.review.completed', fields);
+  else if (event === 'approval.review.refused') console.warn('[kogg:workflow:engine] approval.review.refused', fields);
+  else if (event === 'approval.continue.requested') console.info('[kogg:workflow:engine] approval.continue.requested', fields);
+  else if (event === 'approval.continue.completed') console.info('[kogg:workflow:engine] approval.continue.completed', fields);
+  else if (event === 'approval.continue.refused') console.warn('[kogg:workflow:engine] approval.continue.refused', fields);
   else if (event === 'run.completed') console.info('[kogg:workflow:engine] run.completed', fields);
   else if (event === 'run.failed') console.warn('[kogg:workflow:engine] run.failed', fields);
   else if (event === 'node.execution.started') console.info('[kogg:workflow:engine] node.execution.started', fields);

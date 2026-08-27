@@ -15,6 +15,7 @@ export class WorkflowCompiler {
   catalogEntry(kind: EditableNodeKind) { return this.catalog.entry(kind); }
   executeControl(request: Parameters<WorkflowNodeCatalog['executeControl']>[0]) { return this.catalog.executeControl(request); }
   executeTaskApproval(request: Parameters<WorkflowNodeCatalog['executeTaskApproval']>[0]) { return this.catalog.executeTaskApproval(request); }
+  executeContinuation(request: Parameters<WorkflowNodeCatalog['executeContinuation']>[0]) { return this.catalog.executeContinuation(request); }
   validate(input: unknown): WorkflowValidationProjection {
     try { const graph = decodeGraph(input); const checked = this.check(graph); return { valid: true, code: 'WORKFLOW_OK', graphDigest: workflowDigest('template', graph), ...checked }; }
     catch (error) { /* observability-exempt: the RPC-owning registry logs the sanitized validation outcome; this pure projection retains no input. */ return { valid: false, code: error instanceof WorkflowValidationError ? error.code : 'WORKFLOW_INTERNAL', nodeCount: count(input, 'nodes'), edgeCount: count(input, 'edges'), rootCount: 0 }; }
