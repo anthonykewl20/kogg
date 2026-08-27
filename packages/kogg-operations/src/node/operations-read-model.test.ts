@@ -45,6 +45,18 @@ test('accepts a chained owner stream idempotently and rebuilds an identical safe
   } finally { await fixture.close(); }
 });
 
+test('fails metric projection closed and diagnoses undeclared high-cardinality labels', async () => {
+  const fixture = await createFixture(); const originalError = console.error; const logs: string[] = []; console.error = (...values: unknown[]) => logs.push(JSON.stringify(values));
+  try {
+    const owner = fixture.owner('workflow'); fixture.model.ingest(owner.event('run.completed', { runId: randomUUID() }, { lifecycle: 'completed' }));
+    const database = (fixture.model as unknown as { db(): { prepare(sql: string): { run(...values: unknown[]): unknown } } }).db();
+    database.prepare("UPDATE metric_values SET labels_json=? WHERE metric_name='kogg_operations_total'").run(`{"run_id":"${randomUUID()}"}`);
+    assert.equal(fixture.model.diagnostics().metricViolationCount, 1);
+    assert.throws(() => fixture.model.metrics(), (error: unknown) => error instanceof ProjectionFault && error.safeCode === 'METRIC_CONTRACT_INVALID');
+    assert.match(logs.join('\n'), /METRIC_CONTRACT_INVALID/u); assert.doesNotMatch(logs.join('\n'), /run_id/u);
+  } finally { console.error = originalError; await fixture.close(); }
+});
+
 test('persists chain conflicts as degraded faults without cursor advance', async () => {
   const fixture = await createFixture();
   try {

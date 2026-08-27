@@ -40,6 +40,28 @@ const TERMINAL_RUN_EVENTS: Readonly<Record<string, RunLifecycle>> = {
 };
 const RUN_LIFECYCLES = new Set<RunLifecycle>(['queued', 'active', 'waiting', 'retrying', 'blocked', 'failed', 'cancelling', 'cleaning', 'recovered', 'completed', 'unknown']);
 const HISTOGRAM_BUCKETS = [10, 50, 100, 250, 500, 1_000, 2_500, 5_000, 15_000, 60_000, 300_000] as const;
+const METRIC_VALUE_LIMIT = 4_096;
+const METRIC_LABEL_VALUES: Readonly<Record<string, ReadonlySet<string>>> = {
+  owner_kind: new Set(OWNER_KINDS), operation_kind: new Set(['workflow-run']), node_kind: new Set(['agent']),
+  terminal_class: new Set(['completed', 'failed', 'cancelled', 'recovered', 'passed', 'refused', 'committed', 'quarantined']),
+  safe_code_class: new Set(['none', 'timeout', 'authority', 'process', 'integrity', 'other']),
+  lifecycle_class: RUN_LIFECYCLES, process_kind: CLOSED_STRING_VALUES.processKind!,
+  abnormal_class: new Set(['none', 'exited', 'spawn-failed', 'timed-out', 'residual', 'lost', 'quarantined', 'inventory-unknown'])
+};
+const METRIC_CONTRACTS: Readonly<Record<string, { readonly kind: OperationsMetricValueV1['kind']; readonly labels: readonly string[] }>> = {
+  kogg_operations_total: { kind: 'counter', labels: ['operation_kind', 'owner_kind', 'terminal_class'] },
+  kogg_attempts_total: { kind: 'counter', labels: ['node_kind', 'owner_kind', 'terminal_class'] },
+  kogg_retries_total: { kind: 'counter', labels: ['node_kind', 'safe_code_class'] },
+  kogg_refusals_total: { kind: 'counter', labels: ['owner_kind', 'safe_code_class'] },
+  kogg_recoveries_total: { kind: 'counter', labels: ['owner_kind', 'terminal_class'] },
+  kogg_quarantines_total: { kind: 'counter', labels: ['owner_kind', 'safe_code_class'] },
+  kogg_runs_active: { kind: 'gauge', labels: ['lifecycle_class'] },
+  kogg_processes_active: { kind: 'gauge', labels: ['abnormal_class', 'process_kind'] },
+  kogg_queue_wait_ms: { kind: 'histogram', labels: ['owner_kind', 'terminal_class'] },
+  kogg_run_duration_ms: { kind: 'histogram', labels: ['owner_kind', 'terminal_class'] },
+  kogg_process_cleanup_ms: { kind: 'histogram', labels: ['process_kind', 'terminal_class'] },
+  kogg_recovery_duration_ms: { kind: 'histogram', labels: ['owner_kind', 'terminal_class'] }
+};
 const STREAM_CHANGE_LIMIT = 1_000;
 const STREAM_BYTE_LIMIT = 1_048_576;
 
@@ -249,7 +271,9 @@ export class OperationsReadModel implements BackendApplicationContribution {
   metrics(): OperationsMetricsSnapshotV1 {
     this.start();
     const projectionEpoch = String(this.meta().projection_epoch);
-    const values = (this.db().prepare('SELECT metric_name,metric_kind,labels_json,bucket_upper_bound,value FROM metric_values WHERE projection_epoch=? ORDER BY metric_name,labels_json,bucket_upper_bound').all(projectionEpoch) as Row[]).map(row => ({
+    const rows = this.metricRows(projectionEpoch); const violationCount = metricViolationCount(rows);
+    if (violationCount) { console.error('[kogg:operations:metrics] validation.failed', { safeCode: 'METRIC_CONTRACT_INVALID', violationCount }); throw new ProjectionFault('METRIC_CONTRACT_INVALID'); }
+    const values = rows.map(row => ({
       name: String(row.metric_name) as OperationsMetricValueV1['name'], kind: String(row.metric_kind) as OperationsMetricValueV1['kind'], labels: JSON.parse(String(row.labels_json)) as Record<string, string>, ...(Number(row.bucket_upper_bound) < 0 ? {} : { bucketUpperBound: Number(row.bucket_upper_bound) }), value: Number(row.value)
     }));
     return { schemaVersion: 1, projectionEpoch, values };
@@ -276,7 +300,7 @@ export class OperationsReadModel implements BackendApplicationContribution {
       ownerCount: this.ownerCount(), acceptedEventCount: this.count('SELECT count(*) AS count FROM accepted_events'), faultCount: this.faultCount(),
       causalGapCount: this.count("SELECT count(*) AS count FROM projection_faults WHERE safe_code LIKE 'CAUSAL_%'"),
       processAbnormalCount: this.count('SELECT count(*) AS count FROM process_projection WHERE abnormal=1'),
-      metricViolationCount: 0
+      metricViolationCount: metricViolationCount(this.metricRows(String(this.meta().projection_epoch)))
     };
   }
 
@@ -415,6 +439,8 @@ export class OperationsReadModel implements BackendApplicationContribution {
     return (this.db().prepare('SELECT * FROM run_projection ORDER BY run_id').all() as Row[]).map(row => this.runFromRow(row));
   }
 
+  private metricRows(projectionEpoch: string): Row[] { return this.db().prepare('SELECT metric_name,metric_kind,labels_json,bucket_upper_bound,value FROM metric_values WHERE projection_epoch=? ORDER BY metric_name,labels_json,bucket_upper_bound').all(projectionEpoch) as Row[]; }
+
   private runFromRow(row: Row): OperationsProjectionRunV1 {
     return {
       runId: String(row.run_id), ...(row.task_id ? { taskId: String(row.task_id) } : {}), ...(row.project_id ? { projectId: String(row.project_id) } : {}), lifecycle: String(row.lifecycle) as RunLifecycle,
@@ -547,6 +573,21 @@ function safeSequence(value: unknown): string { return typeof value === 'string'
 function summary(eventKind: string): string { return eventKind.slice(eventKind.indexOf('.') + 1); }
 function terminalClass(eventKind: string): string | undefined { const suffix = eventKind.slice(eventKind.lastIndexOf('.') + 1); return ['failed', 'cancelled', 'completed', 'recovered', 'passed', 'refused', 'committed', 'quarantined'].includes(suffix) ? suffix : undefined; }
 function safeCodeClass(value?: string): string { if (!value) return 'none'; if (value.includes('TIMEOUT')) return 'timeout'; if (value.includes('AUTH')) return 'authority'; if (value.includes('CLEANUP') || value.includes('PROCESS')) return 'process'; if (value.includes('INTEGRITY') || value.includes('DIGEST')) return 'integrity'; return 'other'; }
+function metricViolationCount(rows: readonly Row[]): number {
+  let violations = Math.max(0, rows.length - METRIC_VALUE_LIMIT);
+  for (const row of rows) {
+    const contract = METRIC_CONTRACTS[String(row.metric_name)]; const kind = String(row.metric_kind); const bound = Number(row.bucket_upper_bound); const value = Number(row.value); let labels: unknown;
+    try { labels = JSON.parse(String(row.labels_json)); } catch { // observability-exempt: The aggregate validation.failed event reports the closed violation count without emitting persisted label bytes.
+      violations++; continue;
+    }
+    const validLabels = labels !== null && typeof labels === 'object' && !Array.isArray(labels)
+      && canonical(labels) === String(row.labels_json) && Object.keys(labels).sort().join(',') === contract?.labels.join(',')
+      && Object.entries(labels).every(([key, label]) => typeof label === 'string' && METRIC_LABEL_VALUES[key]?.has(label));
+    const validBucket = contract?.kind === 'histogram' ? HISTOGRAM_BUCKETS.includes(bound as typeof HISTOGRAM_BUCKETS[number]) : bound === -1;
+    if (!contract || kind !== contract.kind || !validLabels || !validBucket || !Number.isSafeInteger(value) || value < 0) violations++;
+  }
+  return violations;
+}
 function errorType(error: unknown): string { return error instanceof Error ? error.name : 'UnknownError'; }
 function validateRunQuery(query: OperationsRunQueryV1): void { if (!query || typeof query !== 'object' || Object.keys(query).some(key => !['lifecycle', 'abnormalOnly', 'sort', 'pageCursor', 'pageSize'].includes(key)) || !['run-id-asc', 'lifecycle-asc'].includes(query.sort) || !Number.isSafeInteger(query.pageSize) || query.pageSize < 1 || query.pageSize > 100 || (query.lifecycle !== undefined && !RUN_LIFECYCLES.has(query.lifecycle)) || (query.abnormalOnly !== undefined && typeof query.abnormalOnly !== 'boolean')) throw new ProjectionFault('PROJECTION_QUERY_INVALID'); }
 function isCursor(value: unknown): value is { kind: string; projectionEpoch: string; queryDigest: string; lastKey: string; sortKey: string; expiresAt: number } { if (!value || typeof value !== 'object') return false; const row = value as Record<string, unknown>; return Object.keys(row).sort().join(',') === ['kind', 'projectionEpoch', 'queryDigest', 'lastKey', 'sortKey', 'expiresAt'].sort().join(',') && ['runs', 'timeline', 'stream'].includes(String(row.kind)) && typeof row.projectionEpoch === 'string' && DIGEST.test(String(row.queryDigest)) && typeof row.lastKey === 'string' && typeof row.sortKey === 'string' && typeof row.expiresAt === 'number' && Number.isSafeInteger(row.expiresAt); }
