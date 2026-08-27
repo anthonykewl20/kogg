@@ -9,6 +9,7 @@ import { WorkflowCompiler } from './workflow-compiler';
 import { WorkflowDiagnosticContributor, WORKFLOW_CHECKS } from './workflow-diagnostic-contributor';
 import { WorkflowRegistry } from './workflow-registry';
 import { WorkflowNodeCatalog } from './workflow-node-catalog';
+import { OperationsReadModel } from '@kogg/operations/lib/node/operations-read-model';
 
 // diagnostic-coverage: workflow.schema, workflow.catalog, workflow.graph, workflow.anchors, workflow.authority, workflow.scheduler, workflow.processes, workflow.cleanup, workflow.recovery, workflow.source-maps
 
@@ -111,6 +112,34 @@ test('restart quarantines durable scheduler and outbox ambiguity without replayi
     assert.equal(diagnostics.schedulerIntegrity, true); assert.equal(diagnostics.schedulerLeaseActive, true); assert.equal(diagnostics.schedulerAdmission, 'blocked'); assert.equal(diagnostics.pendingOutboxCount, 0); assert.equal(diagnostics.quarantinedRunCount, 1); assert.equal(diagnostics.recoveryBacklogCount, 1);
     const checks = await new WorkflowDiagnosticContributor(recovered).diagnose(); assert.equal(checks.find(check => check.id === 'workflow.scheduler')?.status, 'fail'); assert.equal(checks.find(check => check.id === 'workflow.recovery')?.status, 'fail'); await recovered.onStop();
     const verify = new DatabaseSync(database); assert.equal((verify.prepare('SELECT phase FROM workflow_outbox').get() as { phase: string }).phase, 'quarantined'); assert.equal((verify.prepare('SELECT count(*) AS count FROM workflow_scheduler_events').get() as { count: number }).count, 1); verify.close();
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test('publishes immutable scheduler recovery facts through a stable workflow owner across restart', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'kogg-workflow-owner-')); const database = path.join(root, 'workflow.sqlite3'); const projectionPath = path.join(root, 'operations.sqlite3'); const compiler = workflowCompiler();
+  try {
+    const first = new WorkflowRegistry(compiler, database); await first.onStart();
+    const saved = await first.saveVersion({ requestId: '20000000-0000-4000-8000-000000000080', templateId: TEMPLATE, expectedVersionNumber: 0, graph: validGraph() }); if (saved.kind !== 'completed' || !saved.version) throw new Error('Expected immutable workflow version');
+    const compiled = await first.compile({ requestId: '20000000-0000-4000-8000-000000000081', versionId: saved.version.versionId }); if (compiled.kind !== 'completed' || !compiled.plan) throw new Error('Expected compiled workflow plan'); await first.onStop();
+    const runId = '52000000-0000-4000-8000-000000000001'; const now = new Date().toISOString(); const store = new DatabaseSync(database);
+    store.prepare("INSERT INTO workflow_runs(run_id,plan_id,plan_digest,state,revision,owner_epoch_id,safe_code,created_at,updated_at) VALUES(?,?,?,'running',1,?,'WORKFLOW_OK',?,?)").run(runId, compiled.plan.planId, compiled.plan.planDigest, '52000000-0000-4000-8000-000000000002', now, now); store.close();
+    const projection = new OperationsReadModel(projectionPath); projection.start(); projection.registerOwner('workflow');
+    const recovered = new WorkflowRegistry(compiler, database); recovered.setOwnerSink(projection); await recovered.onStart();
+    assert.equal(projection.diagnostics().acceptedEventCount, 1); assert.equal(projection.diagnostics().ownerCount, 1); assert.equal(projection.snapshot().runs[0]?.runId, runId); assert.equal(projection.snapshot().runs[0]?.projectId, PROJECT); assert.equal(projection.snapshot().runs[0]?.lifecycle, 'failed');
+    const identityBefore = new DatabaseSync(database); const ownerBefore = identityBefore.prepare('SELECT owner_id,owner_epoch_id FROM workflow_owner_meta').get() as { owner_id: string; owner_epoch_id: string }; identityBefore.close(); await recovered.onStop();
+    const restarted = new WorkflowRegistry(compiler, database); restarted.setOwnerSink(projection); await restarted.onStart(); assert.equal(projection.diagnostics().acceptedEventCount, 1);
+    const identityAfter = new DatabaseSync(database); const ownerAfter = identityAfter.prepare('SELECT owner_id,owner_epoch_id FROM workflow_owner_meta').get() as { owner_id: string; owner_epoch_id: string }; identityAfter.close(); assert.deepEqual(ownerAfter, ownerBefore);
+    assert.equal(JSON.stringify(projection.snapshot()).includes('configurationDigest'), false); assert.equal(JSON.stringify(projection.snapshot()).includes('requestedEffects'), false);
+    await restarted.onStop(); projection.stop();
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test('refuses startup after stable workflow owner identity corruption', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'kogg-workflow-owner-integrity-')); const database = path.join(root, 'workflow.sqlite3'); const compiler = workflowCompiler();
+  try {
+    const first = new WorkflowRegistry(compiler, database); await first.onStart(); await first.onStop();
+    const corrupt = new DatabaseSync(database); corrupt.exec('DROP TRIGGER workflow_immutable_owner_meta_update'); corrupt.prepare('UPDATE workflow_owner_meta SET owner_epoch_id=?').run('53000000-0000-4000-8000-000000000001'); corrupt.close();
+    await assert.rejects(new WorkflowRegistry(compiler, database).onStart(), /WORKFLOW_STORE_INTEGRITY/u);
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 
