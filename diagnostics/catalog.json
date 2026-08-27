@@ -22,6 +22,15 @@
     { "id": "tasks.registry", "owner": "kogg-tasks", "description": "The task registry schema, integrity, permissions, immutable triggers, and writer state are valid." },
     { "id": "tasks.revisions", "owner": "kogg-tasks", "description": "Task specification revisions and canonical digests verify successfully." },
     { "id": "tasks.bindings", "owner": "kogg-tasks", "description": "Task repository bindings remain current and available." },
-    { "id": "tasks.approvals", "owner": "kogg-tasks", "description": "Current task approvals match immutable frozen revisions." }
+    { "id": "tasks.approvals", "owner": "kogg-tasks", "description": "Current task approvals match immutable frozen revisions." },
+    { "id": "interaction-modes.registry", "owner": "kogg-interaction-modes", "description": "The task mode registry and immutable event chain are valid." },
+    { "id": "interaction-modes.authority", "owner": "kogg-interaction-modes", "description": "Selected mode ceilings agree with effective task-bound authority." },
+    { "id": "interaction-modes.transitions", "owner": "kogg-interaction-modes", "description": "Mode transition intents, confirmation, cleanup, and commits are consistent." },
+    { "id": "interaction-modes.operations", "owner": "kogg-interaction-modes", "description": "Closed operation capabilities agree with current mode authority." },
+    { "id": "interaction-modes.restoration", "owner": "kogg-interaction-modes", "description": "Persisted task modes restore without silently broadening authority." },
+    { "id": "interaction-modes.worktrees", "owner": "kogg-interaction-modes", "description": "Build and Kogg worktree ownership and cleanup are proven." },
+    { "id": "interaction-modes.anchors", "owner": "kogg-interaction-modes", "description": "The governed Kogg workflow trust anchors are available." },
+    { "id": "interaction-modes.accessibility", "owner": "kogg-interaction-modes", "description": "Mode selector status and blocked reasons retain accessible semantics." },
+    { "id": "interaction-modes.source-maps", "owner": "kogg-interaction-modes", "description": "Interaction mode frontend and backend source maps are present." }
   ]
 }

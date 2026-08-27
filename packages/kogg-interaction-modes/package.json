@@ -1,0 +1,26 @@
+{
+  "name": "@kogg/interaction-modes",
+  "version": "0.1.0",
+  "private": true,
+  "license": "UNLICENSED",
+  "main": "lib/common/interaction-modes-protocol.js",
+  "types": "lib/common/interaction-modes-protocol.d.ts",
+  "theiaExtensions": [{ "backend": "lib/node/backend-module" }],
+  "scripts": {
+    "build": "tsc -b",
+    "clean": "rimraf lib tsconfig.tsbuildinfo",
+    "typecheck": "tsc --noEmit",
+    "test": "node --test lib/node/*.test.js"
+  },
+  "dependencies": {
+    "@kogg/contracts": "0.1.0",
+    "@kogg/tasks": "0.1.0",
+    "@theia/core": "1.74.1",
+    "inversify": "6.2.2"
+  },
+  "devDependencies": {
+    "@types/node": "22.15.3",
+    "rimraf": "6.0.1",
+    "typescript": "5.9.3"
+  }
+}
