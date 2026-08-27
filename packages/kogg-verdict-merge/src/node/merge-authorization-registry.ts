@@ -24,6 +24,7 @@ type AuthorizationRecord = MergeAuthorizationProjectionV1 & { readonly actorAuth
 export type PrivateMergeIntent = MergeIntentProjectionV1 & { readonly requestId: string; readonly authorizationDigest: string; readonly exactBindingsDigest: string; readonly repositoryIdentityDigest: string; readonly taskId: string; readonly taskRevisionId: string; readonly generation: '1'; readonly explanationId?: string; readonly projectId?: string; readonly repositoryId?: string };
 type IntentRecord = PrivateMergeIntent;
 export type MergeLifecycleState = 'preflighting' | 'constructing' | 'cas-ready' | 'cas-started' | 'post-verifying' | 'committed' | 'cleaning' | 'completed' | 'refused' | 'failed' | 'recovery-required' | 'quarantined';
+export interface MergeRecoveryCandidate { readonly intent: PrivateMergeIntent; readonly state: string; readonly expectedMergeOid?: string }
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u;
 const DIGEST = /^(?:sha256:)?[0-9a-f]{64}$/u;
 
@@ -208,6 +209,17 @@ export class MergeAuthorizationRegistry implements BackendApplicationContributio
     if (lifecycle) return text(lifecycle, 'state');
     const initial = this.db().prepare('SELECT state FROM merge_events WHERE merge_id=? ORDER BY sequence DESC LIMIT 1').get(mergeId) as Row | undefined;
     return initial ? text(initial, 'state') : 'missing';
+  }
+
+  recoveryCandidates(): readonly MergeRecoveryCandidate[] {
+    const terminal = new Set(['completed', 'refused', 'failed', 'quarantined']);
+    const result: MergeRecoveryCandidate[] = [];
+    for (const row of this.db().prepare('SELECT merge_id,record_json FROM merge_intents ORDER BY rowid').all() as Row[]) {
+      const mergeId = text(row, 'merge_id'); const state = this.mergeState(mergeId); if (terminal.has(state)) continue;
+      const oidRow = this.db().prepare('SELECT expected_merge_oid FROM merge_lifecycle_events WHERE merge_id=? AND expected_merge_oid IS NOT NULL ORDER BY sequence DESC LIMIT 1').get(mergeId) as Row | undefined;
+      result.push({ intent: decodeIntentRecord(JSON.parse(text(row, 'record_json')) as unknown), state, ...(oidRow ? { expectedMergeOid: text(oidRow, 'expected_merge_oid') } : {}) });
+    }
+    return result;
   }
 
   private requireActor(context: MergeAuthorizationContextV1, scope: string): Actor { const actor = this.authority.verify(context, scope); if (!actor) throw new MergeAuthorizationError('AUTHORIZATION_REQUIRED'); return actor; }
