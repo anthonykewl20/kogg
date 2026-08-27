@@ -11,6 +11,7 @@ import {
 import { BrowserAuthContribution } from './browser-auth-contribution';
 import { CoreDiagnosticContributor } from './core-diagnostic-contributor';
 import { KoggDiagnosticsServiceImpl } from './diagnostics-service-impl';
+import { DiagnosticOwnerJournal } from './diagnostic-owner-journal';
 
 class KoggSocketWriteBuffer extends SocketWriteBuffer {
   protected override get maxBufferSize(): number {
@@ -26,6 +27,8 @@ export default new ContainerModule((bind, unbind, isBound) => {
   bind(BackendApplicationContribution).toService(BrowserAuthContribution);
   bind(CoreDiagnosticContributor).toSelf().inSingletonScope();
   bind(KoggDiagnosticContribution).toService(CoreDiagnosticContributor);
+  bind(DiagnosticOwnerJournal).toSelf().inSingletonScope();
+  bind(BackendApplicationContribution).toService(DiagnosticOwnerJournal);
   bind(KoggDiagnosticsServiceImpl).toSelf().inSingletonScope();
   bind(ConnectionHandler).toDynamicValue(context => new JsonRpcConnectionHandler<KoggDiagnosticsService>(
     KoggDiagnosticsServicePath,

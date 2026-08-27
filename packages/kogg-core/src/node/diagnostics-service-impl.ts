@@ -14,6 +14,8 @@ import {
 } from '@kogg/contracts';
 import { KoggOperationRegistry, type OperationRegistryApi } from '@kogg/operations/lib/common/operations-protocol';
 import { runOperation } from '@kogg/operations/lib/node/run-operation';
+import { randomUUID } from 'node:crypto';
+import { DiagnosticOwnerJournal } from './diagnostic-owner-journal';
 
 // diagnostic-coverage: core.runtime, operations.registry, operations.cleanup
 
@@ -22,7 +24,8 @@ export class KoggDiagnosticsServiceImpl implements KoggDiagnosticsService {
   constructor(
     @inject(ContributionProvider) @named(KoggDiagnosticContribution)
     private readonly contributors: ContributionProvider<KoggDiagnosticContributor>,
-    @inject(KoggOperationRegistry) private readonly operations: OperationRegistryApi
+    @inject(KoggOperationRegistry) private readonly operations: OperationRegistryApi,
+    @inject(DiagnosticOwnerJournal) private readonly owner: DiagnosticOwnerJournal
   ) {}
 
   async run(): Promise<KoggDiagnosticReport> {
@@ -30,6 +33,9 @@ export class KoggDiagnosticsServiceImpl implements KoggDiagnosticsService {
   }
 
   private async runChecks(): Promise<KoggDiagnosticReport> {
+    const reportId = randomUUID();
+    const startedAt = new Date().toISOString();
+    this.owner.started(reportId, startedAt);
     console.info('[kogg:core:diagnostics] run.started');
     const checks: KoggDiagnosticCheck[] = [];
     for (const contributor of this.contributors.getContributions()) {
@@ -54,6 +60,7 @@ export class KoggDiagnosticsServiceImpl implements KoggDiagnosticsService {
       overall: overall(checks),
       checks: checks.sort((left, right) => left.id.localeCompare(right.id))
     };
+    this.owner.completed(reportId, report.overall, report.checks.length, report.generatedAt);
     console.info('[kogg:core:diagnostics] run.completed', { overall: report.overall, checkCount: report.checks.length });
     return report;
   }
