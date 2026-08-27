@@ -48,11 +48,13 @@ export interface ExecutionRunProjectionV1 {
 }
 export interface GetExecutionRunV1 { readonly requestId: string; readonly runId: string; }
 export interface ListExecutionRunsV1 { readonly requestId: string; readonly projectId: string; }
+export interface GetExecutionQualificationV1 { readonly requestId: string; }
 export interface ExecutionRunListV1 {
   readonly schemaVersion: 1; readonly projectId: string; readonly runs: readonly ExecutionRunProjectionV1[];
   readonly truncated: boolean;
 }
 export interface KoggExecutionService {
+  qualification(request: GetExecutionQualificationV1): Promise<ExecutionQualificationProjection>;
   getRun(request: GetExecutionRunV1): Promise<ExecutionRunProjectionV1 | undefined>;
   listRuns(request: ListExecutionRunsV1): Promise<ExecutionRunListV1>;
 }

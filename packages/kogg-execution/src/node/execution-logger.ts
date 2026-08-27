@@ -20,6 +20,9 @@ type Fields = {
   'service.import.requested': { eventVersion: 1; requestId: string; worktreeId: string };
   'service.import.completed': { eventVersion: 1; requestId: string; worktreeId: string };
   'service.import.failed': { eventVersion: 1; requestId: string; worktreeId: string; safeCode: string; errorType: string };
+  'service.qualification.requested': { eventVersion: 1; requestId: string };
+  'service.qualification.completed': { eventVersion: 1; requestId: string; targetId: string; safeCode: ExecutionQualificationCode };
+  'service.qualification.refused': { eventVersion: 1; safeCode: ExecutionQualificationCode };
 };
 const ALLOWED: { [K in keyof Fields]: readonly (keyof Fields[K])[] } = {
   'qualification.started': ['targetId'],
@@ -38,7 +41,10 @@ const ALLOWED: { [K in keyof Fields]: readonly (keyof Fields[K])[] } = {
   'service.seal.failed': ['eventVersion', 'requestId', 'worktreeId', 'safeCode', 'errorType'],
   'service.import.requested': ['eventVersion', 'requestId', 'worktreeId'],
   'service.import.completed': ['eventVersion', 'requestId', 'worktreeId'],
-  'service.import.failed': ['eventVersion', 'requestId', 'worktreeId', 'safeCode', 'errorType']
+  'service.import.failed': ['eventVersion', 'requestId', 'worktreeId', 'safeCode', 'errorType'],
+  'service.qualification.requested': ['eventVersion', 'requestId'],
+  'service.qualification.completed': ['eventVersion', 'requestId', 'targetId', 'safeCode'],
+  'service.qualification.refused': ['eventVersion', 'safeCode']
 };
 let violations = 0;
 export function executionLog<K extends keyof Fields>(event: K, fields: Fields[K]): void {
@@ -46,8 +52,8 @@ export function executionLog<K extends keyof Fields>(event: K, fields: Fields[K]
   if (Object.keys(values).sort().join(',') !== [...allowed].sort().join(',') || Object.entries(values).some(([key, value]) => !validLogValue(key, value))) {
     violations++; console.error('[kogg:execution:target] logging.schema.violation', { event }); return;
   }
-  if (event === 'service.seal.requested' || event === 'service.seal.completed' || event === 'service.import.requested' || event === 'service.import.completed') console.info('[kogg:execution:service]', event, fields);
-  else if (event === 'service.seal.failed' || event === 'service.import.failed') console.error('[kogg:execution:service]', event, fields);
+  if (event.startsWith('service.') && !event.endsWith('.failed') && !event.endsWith('.refused')) console.info('[kogg:execution:service]', event, fields);
+  else if (event.startsWith('service.')) console.error('[kogg:execution:service]', event, fields);
   else if (event === 'import.started') console.info('[kogg:execution:candidate] import.started', fields);
   else if (event === 'import.completed') console.info('[kogg:execution:candidate] import.completed', fields);
   else if (event === 'import.refused') console.error('[kogg:execution:candidate] import.refused', fields);

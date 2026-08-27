@@ -6,7 +6,7 @@
   "main": "lib/common/execution-protocol.js",
   "types": "lib/common/execution-protocol.d.ts",
   "theiaExtensions": [
-    { "backend": "lib/node/backend-module" }
+    { "frontend": "lib/browser/frontend-module", "backend": "lib/node/backend-module" }
   ],
   "scripts": {
     "build": "tsc -b",
@@ -17,6 +17,7 @@
   "dependencies": {
     "@kogg/contracts": "0.1.0",
     "@kogg/operations": "0.1.0",
+    "@kogg/projects": "0.1.0",
     "@theia/core": "1.74.1",
     "inversify": "6.2.2"
   },
