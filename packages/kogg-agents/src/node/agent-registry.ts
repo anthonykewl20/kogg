@@ -137,7 +137,7 @@ export class AgentRegistry implements KoggAgentsService, BackendApplicationContr
         if (!request.workflowPlanDigest || !SHA256.test(request.workflowPlanDigest) || !this.workspaceAuthority) throw new AgentError('WORKSPACE_UNTRUSTED');
         let workspace;
         try {
-          workspace = await this.workspaceAuthority.prepareWorkspace({ schemaVersion: '1', requestId: request.requestId, attemptId, taskAdmissionId: request.taskAdmissionId, taskId: admission.taskId, projectId: admission.projectId, repositoryId: admission.repositoryId, repositoryBindingRevision: admission.bindingRevision, specificationId: admission.specificationId, approvalId: admission.approvalId, runId: admission.runId, roleRevisionId: role.roleRevisionId, workflowPlanDigest: request.workflowPlanDigest });
+          workspace = await this.workspaceAuthority.prepareWorkspace({ schemaVersion: '1', requestId: request.requestId, attemptId, taskAdmissionId: request.taskAdmissionId, taskId: admission.taskId, projectId: admission.projectId, repositoryId: admission.repositoryId, repositoryBindingRevision: admission.bindingRevision, specificationId: admission.specificationId, taskRevisionId: admission.taskRevisionId, taskRevisionDigest: admission.taskRevisionDigest, approvalId: admission.approvalId, approvalDigest: admission.approvalDigest, runId: admission.runId, roleRevisionId: role.roleRevisionId, workflowPlanDigest: request.workflowPlanDigest });
         } catch { // observability-exempt: the closed refusal below records only safe identifiers and WORKSPACE_UNTRUSTED.
           throw new AgentError('WORKSPACE_UNTRUSTED');
         }
@@ -256,7 +256,8 @@ function normalizedProvider(value: RoleRevisionV1['providerPolicy']): RoleRevisi
 function unique(values: readonly string[]): readonly string[] { return [...new Set(values)].sort(); }
 function sameAdmission(left: NonNullable<Awaited<ReturnType<AdmissionAuthority['resolveAdmission']>>>, right: NonNullable<Awaited<ReturnType<AdmissionAuthority['resolveAdmission']>>>): boolean {
   return left.taskAdmissionId === right.taskAdmissionId && left.taskId === right.taskId && left.specificationId === right.specificationId
-    && left.approvalId === right.approvalId && left.projectId === right.projectId && left.repositoryId === right.repositoryId
+    && left.taskRevisionId === right.taskRevisionId && left.taskRevisionDigest === right.taskRevisionDigest
+    && left.approvalId === right.approvalId && left.approvalDigest === right.approvalDigest && left.projectId === right.projectId && left.repositoryId === right.repositoryId
     && left.bindingRevision === right.bindingRevision && left.registryRevision === right.registryRevision
     && left.taskRevision === right.taskRevision && left.runId === right.runId;
 }

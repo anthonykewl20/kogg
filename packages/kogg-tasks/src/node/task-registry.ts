@@ -207,7 +207,11 @@ export class TaskRegistry implements KoggTasksService, TaskAdmissionAuthority, T
       const next = num(task, 'task_revision') + 1; const taskAdmissionId = randomUUID(); const authorizedAt = new Date().toISOString();
       db.prepare('UPDATE tasks SET task_revision=? WHERE task_id=?').run(next, input.taskId);
       this.event(db, input.taskId, next, revision, 'admission.authorized', taskAdmissionId, input.runId);
-      const admission: TaskAdmissionSnapshot = { taskAdmissionId, taskId: input.taskId, specificationId: str(current, 'specification_id'), approvalId: approval,
+      const approvalRow = db.prepare('SELECT approval_digest FROM approvals WHERE approval_id=?').get(approval) as Row | undefined;
+      if (!approvalRow) throw new Failure('INTEGRITY_FAILED');
+      const specificationId = str(current, 'specification_id');
+      const admission: TaskAdmissionSnapshot = { taskAdmissionId, taskId: input.taskId, specificationId, taskRevisionId: specificationId,
+        taskRevisionDigest: str(current, 'specification_digest'), approvalId: approval, approvalDigest: `sha256:${str(approvalRow, 'approval_digest')}`,
         projectId: str(task, 'project_id'), repositoryId: str(task, 'repository_id'), bindingRevision: dec(task, 'binding_revision'),
         registryRevision: String(revision), taskRevision: String(next), runId: input.runId, authorizedAt,
         expiresAt: new Date(Date.parse(authorizedAt) + 15 * 60_000).toISOString() };
@@ -238,10 +242,12 @@ export class TaskRegistry implements KoggTasksService, TaskAdmissionAuthority, T
       const approval = this.db().prepare('SELECT * FROM approvals WHERE approval_id = ?').get(admission.approvalId) as Row | undefined;
       const storedAdmission = this.db().prepare('SELECT * FROM admissions WHERE run_id = ?').get(admission.runId) as Row | undefined;
       const binding = await this.projects.resolveBinding(str(task, 'project_id'), str(task, 'repository_id'));
-      if (!approval || !storedAdmission || !equal(canonicalRequestDigest(admission), str(storedAdmission, 'admission_digest'))
+      if (!approval || !storedAdmission || !admissionDigestMatches(admission, str(storedAdmission, 'admission_digest'))
         || Date.parse(admission.expiresAt) <= Date.now() || !binding || !matches(task, binding) || str(task, 'lifecycle') !== 'active' || str(specification, 'lifecycle') !== 'frozen'
         || str(task, 'current_specification_id') !== admission.specificationId || optional(task, 'current_approval_id') !== admission.approvalId
         || str(approval, 'specification_id') !== admission.specificationId || dec(task, 'task_revision') !== admission.taskRevision
+        || admission.taskRevisionId !== admission.specificationId || admission.taskRevisionDigest !== str(specification, 'specification_digest')
+        || admission.approvalDigest !== `sha256:${str(approval, 'approval_digest')}`
         || str(task, 'project_id') !== admission.projectId || str(task, 'repository_id') !== admission.repositoryId
         || dec(task, 'binding_revision') !== admission.bindingRevision) throw new Refusal('ADMISSION_NOT_AUTHORIZED');
       const result = {
@@ -367,9 +373,17 @@ export class TaskRegistry implements KoggTasksService, TaskAdmissionAuthority, T
       });
       if (canonical.digest !== str(spec, 'specification_digest') || canonical.bytes.length !== num(spec, 'byte_length')) throw new Failure('INTEGRITY_FAILED');
     }
-    for (const row of db.prepare(`SELECT a.*,t.task_admission_id FROM admissions a
-      JOIN task_admissions t ON t.run_id=a.run_id ORDER BY a.run_id`).all() as Row[]) {
-      if (!equal(canonicalRequestDigest(this.admission(row)), str(row, 'admission_digest'))) throw new Failure('INTEGRITY_FAILED');
+    for (const approval of db.prepare(`SELECT a.*,s.specification_digest,t.project_id,t.repository_id,t.binding_revision
+      FROM approvals a JOIN specifications s ON s.specification_id=a.specification_id JOIN tasks t ON t.task_id=a.task_id`).all() as Row[]) {
+      const digest = canonicalRequestDigest({ version: 'kogg.task-approval.v1', approvalId: str(approval, 'approval_id'), taskId: str(approval, 'task_id'),
+        specificationId: str(approval, 'specification_id'), specificationDigest: str(approval, 'specification_digest'), projectId: str(approval, 'project_id'),
+        repositoryId: str(approval, 'repository_id'), bindingRevision: dec(approval, 'binding_revision') });
+      if (!equal(digest, str(approval, 'approval_digest'))) throw new Failure('INTEGRITY_FAILED');
+    }
+    for (const row of db.prepare(`SELECT a.*,t.task_admission_id,s.specification_digest AS task_revision_digest,p.approval_digest AS task_approval_digest FROM admissions a
+      JOIN task_admissions t ON t.run_id=a.run_id JOIN specifications s ON s.specification_id=a.specification_id
+      JOIN approvals p ON p.approval_id=a.approval_id ORDER BY a.run_id`).all() as Row[]) {
+      if (!admissionDigestMatches(this.admission(row), str(row, 'admission_digest'))) throw new Failure('INTEGRITY_FAILED');
     }
     const admissionMismatchCount = num(db.prepare(`SELECT count(*) AS count FROM admissions a
       LEFT JOIN task_admissions t ON t.run_id=a.run_id WHERE t.task_admission_id IS NULL`).get() as Row, 'count');
@@ -422,18 +436,21 @@ export class TaskRegistry implements KoggTasksService, TaskAdmissionAuthority, T
   private admission(row: Row): TaskAdmissionSnapshot {
     return {
       taskAdmissionId: str(row, 'task_admission_id'), taskId: str(row, 'task_id'), taskRevision: dec(row, 'task_revision'), specificationId: str(row, 'specification_id'),
-      approvalId: str(row, 'approval_id'), projectId: str(row, 'project_id'), repositoryId: str(row, 'repository_id'),
+      taskRevisionId: str(row, 'specification_id'), taskRevisionDigest: str(row, 'task_revision_digest'),
+      approvalId: str(row, 'approval_id'), approvalDigest: `sha256:${str(row, 'task_approval_digest')}`, projectId: str(row, 'project_id'), repositoryId: str(row, 'repository_id'),
       bindingRevision: dec(row, 'binding_revision'), registryRevision: dec(row, 'registry_revision'), runId: str(row, 'run_id'),
       authorizedAt: str(row, 'authorized_at'), expiresAt: str(row, 'expires_at')
     };
   }
   private admissionRowByRun(runId: string): Row | undefined {
-    return this.db().prepare(`SELECT a.*,t.task_admission_id FROM admissions a
-      JOIN task_admissions t ON t.run_id=a.run_id WHERE a.run_id=?`).get(runId) as Row | undefined;
+    return this.db().prepare(`SELECT a.*,t.task_admission_id,s.specification_digest AS task_revision_digest,p.approval_digest AS task_approval_digest FROM admissions a
+      JOIN task_admissions t ON t.run_id=a.run_id JOIN specifications s ON s.specification_id=a.specification_id
+      JOIN approvals p ON p.approval_id=a.approval_id WHERE a.run_id=?`).get(runId) as Row | undefined;
   }
   private admissionRowById(taskAdmissionId: string): Row | undefined {
-    return this.db().prepare(`SELECT a.*,t.task_admission_id FROM task_admissions t
-      JOIN admissions a ON a.run_id=t.run_id WHERE t.task_admission_id=?`).get(taskAdmissionId) as Row | undefined;
+    return this.db().prepare(`SELECT a.*,t.task_admission_id,s.specification_digest AS task_revision_digest,p.approval_digest AS task_approval_digest FROM task_admissions t
+      JOIN admissions a ON a.run_id=t.run_id JOIN specifications s ON s.specification_id=a.specification_id
+      JOIN approvals p ON p.approval_id=a.approval_id WHERE t.task_admission_id=?`).get(taskAdmissionId) as Row | undefined;
   }
   private async binding(taskId: string): Promise<ProjectBindingSnapshot | undefined> {
     try { uuid(taskId); const task = this.task(taskId); return this.projects.resolveBinding(str(task, 'project_id'), str(task, 'repository_id')); }
@@ -500,3 +517,8 @@ function errorName(error: unknown): string { return error instanceof Error ? err
 function stateRoot(): string { const root = process.env.KOGG_ROOT ? path.resolve(process.env.KOGG_ROOT) : process.cwd(); return path.resolve(process.env.KOGG_STATE_DIR ?? path.join(root, '.kogg', 'state')); }
 function eol(content: string): 'none' | 'lf' | 'crlf' | 'mixed' { const crlf = /\r\n/u.test(content); const rest = content.replace(/\r\n/gu, ''); const lf = /\n/u.test(rest); const cr = /\r/u.test(rest); if (!crlf && !lf && !cr) return 'none'; if (crlf && !lf && !cr) return 'crlf'; if (!crlf && lf && !cr) return 'lf'; return 'mixed'; }
 function eventDigest(row: Row): string { return canonicalRequestDigest({ eventId: str(row, 'event_id'), taskId: str(row, 'task_id'), taskRevision: dec(row, 'task_revision'), registryRevision: dec(row, 'registry_revision'), eventType: str(row, 'event_type'), subjectId: str(row, 'subject_id'), previousDigest: str(row, 'previous_event_digest') }); }
+function admissionDigestMatches(admission: TaskAdmissionSnapshot, storedDigest: string): boolean {
+  if (equal(canonicalRequestDigest(admission), storedDigest)) return true;
+  const { taskRevisionId: _taskRevisionId, taskRevisionDigest: _taskRevisionDigest, approvalDigest: _approvalDigest, ...legacy } = admission;
+  return equal(canonicalRequestDigest(legacy), storedDigest);
+}
