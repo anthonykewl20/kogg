@@ -36,9 +36,14 @@ export class ExecutionTargetRegistry implements BackendApplicationContribution {
     return authorized;
   }
   async authorizePhysicalAllocation(binding: ExecutionBindingV1, helperDigest: string, mountQuotaDigest: string): Promise<boolean> {
-    if (!await this.authorize(binding)) return false;
+    const authority = await this.physicalAllocationAuthority(binding, helperDigest);
+    return authority !== undefined && equal(authority.mountQuotaDigest, mountQuotaDigest);
+  }
+  async physicalAllocationAuthority(binding: ExecutionBindingV1, helperDigest: string): Promise<{ readonly helperDigest: string; readonly mountQuotaDigest: string } | undefined> {
+    if (!DIGEST.test(helperDigest) || !await this.authorize(binding)) return undefined;
     const authority = this.authority;
-    return authority !== undefined && equal(authority.launcherDigest, helperDigest) && equal(authority.mountQuotaDigest, mountQuotaDigest);
+    if (!authority || !equal(authority.launcherDigest, helperDigest)) return undefined;
+    return { helperDigest: authority.launcherDigest, mountQuotaDigest: authority.mountQuotaDigest };
   }
   async refresh(): Promise<ExecutionQualificationProjection> {
     executionLog('qualification.started', { targetId: this.targetId });
