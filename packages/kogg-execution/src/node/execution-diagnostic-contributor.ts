@@ -1,5 +1,7 @@
 import { inject, injectable } from '@theia/core/shared/inversify';
 import type { KoggDiagnosticCheck, KoggDiagnosticContributor } from '@kogg/contracts';
+import { KoggOperationRegistry, type OperationRegistryApi } from '@kogg/operations/lib/common/operations-protocol';
+import { ExecutionAllocationRegistry } from './execution-allocation-registry';
 import { ExecutionTargetRegistry } from './execution-target-registry';
 
 // Every execution catalog check is returned even when inspection fails; absent production owners fail rather than disappear.
@@ -8,19 +10,24 @@ export const EXECUTION_CHECKS = ['execution.target-qualification', 'execution.wo
 @injectable()
 export class ExecutionDiagnosticContributor implements KoggDiagnosticContributor {
   readonly id = 'execution';
-  constructor(@inject(ExecutionTargetRegistry) private readonly targets: ExecutionTargetRegistry) {}
+  constructor(@inject(ExecutionTargetRegistry) private readonly targets: ExecutionTargetRegistry,
+    @inject(ExecutionAllocationRegistry) private readonly allocations: ExecutionAllocationRegistry,
+    @inject(KoggOperationRegistry) private readonly operations: OperationRegistryApi) {}
   async diagnose(): Promise<readonly KoggDiagnosticCheck[]> {
     try {
-      const value = this.targets.projection();
+      const target = this.targets.projection(); const allocation = this.allocations.diagnostics(); const operation = this.operations.diagnostics();
+      const registryHealthy = allocation.integrity && allocation.foreignKeys && allocation.permissions
+        && allocation.quarantinedCount === 0 && allocation.recoveryRequiredCount === 0 && allocation.cleanupFailureCount === 0
+        && allocation.loggingViolationCount === 0;
       return [
-        { id: 'execution.target-qualification', ...result(value.qualified, value.qualified ? 'The exact writable-agent Linux target is currently qualified.' : `Execution target refused with ${value.safeCode}.`) },
-        { id: 'execution.worktree-registry', ...result(value.activeAllocationCount === 0, 'No private execution allocations are active.') },
-        { id: 'execution.git-independence', ...result(value.activeAllocationCount === 0, 'No allocation is awaiting Git independence proof.') },
-        { id: 'execution.source-integrity', ...result(value.activeAllocationCount === 0, 'No source-integrity verification is pending.') },
-        { id: 'execution.process-cleanup', ...result(value.residualProcessCount === 0, 'No execution process residual is recorded.') },
-        { id: 'execution.capacity', ...result(value.activeAllocationCount === 0, 'Execution capacity has no active reservation.') },
-        { id: 'execution.recovery', ...result(value.recoveryComplete && value.residualProcessCount === 0, 'Execution startup recovery is complete.') },
-        { id: 'execution.source-maps', ...result(value.sourceMapsPresent, value.sourceMapsPresent ? 'Execution backend source maps are present.' : 'Execution backend source maps are missing.') }
+        { id: 'execution.target-qualification', ...result(target.qualified, target.qualified ? 'The exact writable-agent Linux target is currently qualified.' : `Execution target refused with ${target.safeCode}.`) },
+        { id: 'execution.worktree-registry', ...result(registryHealthy, registryHealthy ? 'The durable private allocation registry is consistent.' : 'The durable private allocation registry requires recovery.') },
+        { id: 'execution.git-independence', ...result(allocation.unverifiedCount === 0, 'No allocation is awaiting Git independence proof.') },
+        { id: 'execution.source-integrity', ...result(allocation.unverifiedCount === 0, 'No source-integrity verification is pending.') },
+        { id: 'execution.process-cleanup', ...result(operation.residualCount === 0 && operation.cleanupFailureCount === 0, 'No execution process residual is recorded.') },
+        { id: 'execution.capacity', ...result(allocation.admission === 'enabled' && allocation.reservationCount < 64, 'Execution reservation capacity is available.') },
+        { id: 'execution.recovery', ...result(allocation.admission === 'enabled' && operation.recoveryComplete && operation.admission === 'enabled', 'Execution startup recovery is complete.') },
+        { id: 'execution.source-maps', ...result(target.sourceMapsPresent, target.sourceMapsPresent ? 'Execution backend source maps are present.' : 'Execution backend source maps are missing.') }
       ];
     } catch (error) { console.error('[kogg:execution:target] diagnostics.failed', { errorType: error instanceof Error ? error.name : 'UnknownError' }); return EXECUTION_CHECKS.map(id => check(id, false, 'Execution diagnostics could not run.')); }
   }

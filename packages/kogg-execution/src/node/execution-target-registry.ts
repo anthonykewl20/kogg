@@ -33,7 +33,7 @@ export class ExecutionTargetRegistry implements BackendApplicationContribution {
       const result = await this.kernel.qualifyExecution(this.targetId);
       const code = validate(result, this.targetId, Date.now());
       if (code) return this.invalidate(code);
-      this.value = { qualified: true, targetId: result.targetId, profileId: result.profileId, safeCode: 'EXECUTION_OK', qualificationId: result.qualificationId, expiresAt: result.expiresAt, recoveryComplete: true, activeAllocationCount: 0, residualProcessCount: 0, sourceMapsPresent: true };
+      this.value = { qualified: true, targetId: result.targetId, profileId: result.profileId, safeCode: 'EXECUTION_OK', qualificationId: result.qualificationId, expiresAt: result.expiresAt, sourceMapsPresent: true };
       executionLog('qualification.completed', { targetId: result.targetId, qualificationId: result.qualificationId }); return this.projection();
     } catch (error) { // observability-exempt: The closed failure log intentionally discards raw kernel errors and qualification bodies.
       this.value = refused(this.targetId, 'QUALIFICATION_FAILED'); executionLog('qualification.failed', { targetId: this.targetId, safeCode: 'QUALIFICATION_FAILED', errorType: error instanceof Error ? error.name : 'UnknownError' }); return this.projection();
@@ -55,4 +55,4 @@ function validate(value: KernelExecutionQualification, targetId: string, now: nu
   return undefined;
 }
 function supportedKernel(release: string): boolean { const match = /^(\d+)\.(\d+)(?:\.|$)/u.exec(release); if (!match) return false; const major = Number(match[1]); const minor = Number(match[2]); return Number.isSafeInteger(major) && Number.isSafeInteger(minor) && (major > 6 || (major === 6 && minor >= 6)); }
-function refused(targetId: string, safeCode: ExecutionQualificationCode): ExecutionQualificationProjection { return { qualified: false, targetId, profileId: 'kogg-writable-agent-v1', safeCode, recoveryComplete: true, activeAllocationCount: 0, residualProcessCount: 0, sourceMapsPresent: true }; }
+function refused(targetId: string, safeCode: ExecutionQualificationCode): ExecutionQualificationProjection { return { qualified: false, targetId, profileId: 'kogg-writable-agent-v1', safeCode, sourceMapsPresent: true }; }

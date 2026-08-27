@@ -1,6 +1,8 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { KOGG_RANEX_COMMIT, type KernelBridge, type KernelExecutionQualification } from '@kogg/contracts';
+import type { OperationRegistryApi } from '@kogg/operations/lib/common/operations-protocol';
+import type { ExecutionAllocationRegistry } from './execution-allocation-registry';
 import { EXECUTION_CHECKS, ExecutionDiagnosticContributor } from './execution-diagnostic-contributor';
 import { executionLog, executionLoggingDiagnostics } from './execution-logger';
 import { ExecutionTargetRegistry } from './execution-target-registry';
@@ -24,7 +26,7 @@ test('refuses the pinned kernel until the exact writable profile exists', async 
 test('accepts only a fresh closed exact qualification and reports every catalog check', async () => {
   const registry = new ExecutionTargetRegistry(bridge(async () => qualification()), { platform: 'linux', arch: 'x64' }); await registry.onStart();
   assert.equal(registry.projection().qualified, true); assert.equal(registry.projection().safeCode, 'EXECUTION_OK');
-  const checks = await new ExecutionDiagnosticContributor(registry).diagnose(); assert.deepEqual(checks.map(check => check.id), [...EXECUTION_CHECKS]); assert.equal(checks.every(check => check.status === 'pass'), true);
+  const checks = await new ExecutionDiagnosticContributor(registry, healthyAllocations(), healthyOperations()).diagnose(); assert.deepEqual(checks.map(check => check.id), [...EXECUTION_CHECKS]); assert.equal(checks.every(check => check.status === 'pass'), true);
 });
 
 test('invalid, expired, and failed owner results remain unqualified with closed failures', async () => {
@@ -48,3 +50,5 @@ function qualification(): KernelExecutionQualification {
   const checkedAt = new Date(Date.now() - 1_000).toISOString(); const expiresAt = new Date(Date.now() + 4 * 60_000).toISOString(); const digest = `sha256:${'a'.repeat(64)}`;
   return { schemaVersion: 1, qualificationId: '10000000-0000-4000-8000-000000000001', targetId: 'local-qualified-linux', architecture: 'amd64', profileId: 'kogg-writable-agent-v1', profileDigest: digest, bootIdDigest: digest, kernelRelease: '6.6.1', landlockAbi: '4', cgroupProfileDigest: digest, mountQuotaDigest: digest, launcherDigest: digest, bubblewrapDigest: digest, seccompDigest: digest, brokerDigest: digest, ranexCommit: KOGG_RANEX_COMMIT, checkedAt, expiresAt, status: 'qualified', refusalCodes: [] };
 }
+function healthyAllocations(): ExecutionAllocationRegistry { return { diagnostics: () => ({ integrity: true, foreignKeys: true, permissions: true, admission: 'enabled', activeCount: 0, quarantinedCount: 0, recoveryRequiredCount: 0, unverifiedCount: 0, cleanupFailureCount: 0, reservationCount: 0, loggingViolationCount: 0 }) } as ExecutionAllocationRegistry; }
+function healthyOperations(): OperationRegistryApi { return { diagnostics: () => ({ integrity: true, foreignKeys: true, permissions: true, recoveryComplete: true, activeCount: 0, stalledCount: 0, residualCount: 0, cleanupFailureCount: 0, admission: 'enabled' }) } as OperationRegistryApi; }
