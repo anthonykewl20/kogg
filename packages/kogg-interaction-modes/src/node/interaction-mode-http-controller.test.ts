@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { mkdtemp, rm } from 'node:fs/promises';
-import { createServer } from 'node:http';
+import { createServer, request as httpRequest, type IncomingHttpHeaders } from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
@@ -26,19 +26,30 @@ test('admits transition intent only through authenticated same-origin CSRF-prote
     await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
   });
   const address = server.address(); assert(address && typeof address !== 'string'); const base = `http://127.0.0.1:${address.port}`;
-  const login = await fetch(`${base}/kogg/auth/login`, { method: 'POST', redirect: 'manual', signal: AbortSignal.timeout(5_000), headers: { 'content-type': 'application/x-www-form-urlencoded', connection: 'close' }, body: 'token=http-test-token' });
-  const cookie = (login.headers.get('set-cookie') ?? '').split(';', 1)[0]; assert(cookie);
-  const csrfResponse = await fetch(`${base}/kogg/auth/csrf`, { signal: AbortSignal.timeout(5_000), headers: { cookie, connection: 'close' } }); const csrf = String((await csrfResponse.json() as { csrfToken?: string }).csrfToken ?? ''); assert(csrf);
+  const login = await exchange(`${base}/kogg/auth/login`, 'POST', { 'content-type': 'application/x-www-form-urlencoded' }, 'token=http-test-token');
+  const cookie = (login.headers['set-cookie']?.[0] ?? '').split(';', 1)[0]; assert(cookie);
+  const csrfResponse = await exchange(`${base}/kogg/auth/csrf`, 'GET', { cookie }); const csrf = String((csrfResponse.json() as { csrfToken?: string }).csrfToken ?? ''); assert(csrf);
   const request = { transitionId: '80000000-0000-4000-8000-000000000001', requestId: '80000000-0000-4000-8000-000000000002', taskId: TASK.taskId, expectedSequence: '0', fromMode: 'plan', toMode: 'build', requestedConfigurationDigest: `sha256:${'8'.repeat(64)}` };
   const refused = await post(`${base}/kogg/modes/transitions/request`, request, { cookie, origin: base, csrf: 'wrong' }); assert.equal(refused.status, 403); assert.equal(registry.diagnostics().transitionCount, 0);
   const accepted = await post(`${base}/kogg/modes/transitions/request`, request, { cookie, origin: base, csrf }); assert.equal(accepted.status, 200);
-  const pending = await accepted.json() as { state: string; safeCode: string; mode: { state: string } }; assert.equal(pending.state, 'awaiting-confirmation'); assert.equal(pending.safeCode, 'MODE_EXPANSION_CONFIRMATION_REQUIRED'); assert.equal(pending.mode.state, 'transition-pending');
+  const pending = accepted.json() as { state: string; safeCode: string; mode: { state: string } }; assert.equal(pending.state, 'awaiting-confirmation'); assert.equal(pending.safeCode, 'MODE_EXPANSION_CONFIRMATION_REQUIRED'); assert.equal(pending.mode.state, 'transition-pending');
   const cancel = { requestId: '80000000-0000-4000-8000-000000000003', transitionId: request.transitionId, taskId: TASK.taskId };
-  const cancelled = await post(`${base}/kogg/modes/transitions/cancel`, cancel, { cookie, origin: base, csrf }); assert.equal(cancelled.status, 200); assert.equal((await cancelled.json() as { state: string }).state, 'cancelled');
+  const cancelled = await post(`${base}/kogg/modes/transitions/cancel`, cancel, { cookie, origin: base, csrf }); assert.equal(cancelled.status, 200); assert.equal((cancelled.json() as { state: string }).state, 'cancelled');
 });
 
-async function post(url: string, body: unknown, authority: { cookie: string; origin: string; csrf: string }): Promise<Response> {
-  return fetch(url, { method: 'POST', signal: AbortSignal.timeout(5_000), headers: { 'content-type': 'application/json', connection: 'close', cookie: authority.cookie, origin: authority.origin, 'x-kogg-csrf': authority.csrf }, body: JSON.stringify(body) });
+async function post(url: string, body: unknown, authority: { cookie: string; origin: string; csrf: string }): Promise<HttpResult> {
+  return exchange(url, 'POST', { 'content-type': 'application/json', cookie: authority.cookie, origin: authority.origin, 'x-kogg-csrf': authority.csrf }, JSON.stringify(body));
+}
+interface HttpResult { readonly status: number; readonly headers: IncomingHttpHeaders; readonly bytes: Buffer; json(): unknown; }
+function exchange(url: string, method: 'GET' | 'POST', headers: Readonly<Record<string, string>>, body?: string): Promise<HttpResult> {
+  return new Promise((resolve, reject) => {
+    const request = httpRequest(url, { method, agent: false, headers: { ...headers, connection: 'close', ...(body === undefined ? {} : { 'content-length': String(Buffer.byteLength(body)) }) } }, response => {
+      const chunks: Buffer[] = []; response.on('data', chunk => chunks.push(Buffer.from(chunk))); response.once('error', reject); response.once('end', () => {
+        const bytes = Buffer.concat(chunks); resolve({ status: response.statusCode ?? 0, headers: response.headers, bytes, json: () => JSON.parse(bytes.toString('utf8')) as unknown });
+      });
+    });
+    request.setTimeout(5_000, () => request.destroy(new Error('HTTP test request timed out'))); request.once('error', reject); request.end(body);
+  });
 }
 function restore(name: string, value: string | undefined): void { if (value === undefined) delete process.env[name]; else process.env[name] = value; }
 class TaskAuthority { async get(taskId: string): Promise<TaskProjection> { return { ...TASK, taskId }; } }
