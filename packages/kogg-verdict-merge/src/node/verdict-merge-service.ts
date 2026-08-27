@@ -3,7 +3,7 @@ import path from 'node:path';
 import { DatabaseSync, type SQLOutputValue } from 'node:sqlite';
 import { BackendApplicationContribution } from '@theia/core/lib/node';
 import { inject, injectable, unmanaged } from '@theia/core/shared/inversify';
-import type { KoggVerdictMergeService, VerdictExplanationResultV1, VerdictExplanationV1, VerdictMergeSafeCode } from '../common/verdict-merge-protocol';
+import type { KoggVerdictMergeService, MergeCandidateProjectionV1, VerdictExplanationResultV1, VerdictExplanationV1, VerdictMergeSafeCode } from '../common/verdict-merge-protocol';
 import { canonicalJson, decodeVerdictQuery, validateExplanation, VerdictMergeProtocolError, verdictMergeDigest } from '../common/verdict-merge-canonical';
 import { VerdictProjectionAuthority } from './verdict-projection-authority';
 
@@ -26,6 +26,17 @@ export class VerdictMergeService implements KoggVerdictMergeService, BackendAppl
       this.transaction(() => { this.db().prepare('INSERT INTO explanations(explanation_id,query_digest,explanation_digest,explanation_json,created_at) VALUES(?,?,?,?,?)').run(explanation.explanationId, queryDigest, explanation.explanationDigest, canonicalJson(explanation), explanation.verifiedAt); this.db().prepare('INSERT INTO requests(request_id,query_digest,query_json,result_json) VALUES(?,?,?,?)').run(requestId, queryDigest, canonicalJson(query), JSON.stringify(result)); });
       console.info('[kogg:verdict:currentness]', explanation.currentness, { requestId, queryId, safeCode }); console.info('[kogg:verdict:service] explanation.completed', { requestId, queryId, safeCode, gateCount: explanation.gateRows.length }); return result;
     } catch (error) { /* observability-exempt: refused logs the closed failure code and safe request identifiers for this path. */ const safeCode: VerdictMergeSafeCode = error instanceof VerdictMergeProtocolError ? 'PROTOCOL_INVALID' : error instanceof Error && error.message === 'STORE_INTEGRITY_FAILED' ? 'STORE_INTEGRITY_FAILED' : 'INTERNAL_FAILURE'; return this.refused(requestId, queryId, safeCode); }
+  }
+  async mergeCandidates(): Promise<readonly MergeCandidateProjectionV1[]> {
+    console.info('[kogg:verdict:service] candidates.requested');
+    try {
+      this.assertIntegrity(); const candidates: MergeCandidateProjectionV1[] = [];
+      for (const row of this.db().prepare('SELECT e.explanation_json,r.query_json FROM explanations e JOIN requests r ON r.query_digest=e.query_digest ORDER BY e.created_at DESC LIMIT 100').all() as Row[]) {
+        const explanation = JSON.parse(text(row, 'explanation_json')) as VerdictExplanationV1; const query = decodeVerdictQuery(JSON.parse(text(row, 'query_json')) as unknown);
+        candidates.push({ explanationId: explanation.explanationId, ranexDecision: explanation.ranexDecision, currentness: explanation.currentness, destinationRef: query.destinationRef, expectedBaseOid: query.expectedBaseOid, subjectOid: query.subjectOid, subjectTreeOid: query.subjectTreeOid, mergePolicyId: 'local-two-parent-no-ff-v1', requiredCount: explanation.requiredCount, passCount: explanation.passCount, failCount: explanation.failCount, blockedCount: explanation.blockedCount, expiresAt: explanation.expiresAt });
+      }
+      console.info('[kogg:verdict:service] candidates.completed', { candidateCount: candidates.length }); return candidates;
+    } catch (error) { console.error('[kogg:verdict:service] candidates.failed', { errorType: error instanceof Error ? error.name : 'UnknownError', safeCode: 'STORE_INTEGRITY_FAILED' }); return []; }
   }
   diagnostics() { this.assertIntegrity(); const explanationCount = this.count(); const sourceMapsPresent = existsSync(`${__filename}.map`) && existsSync(path.join(__dirname, 'verdict-projection-authority.js.map')); return { integrity: true, explanationCount, provenanceReady: explanationCount > 0, bindingsReady: explanationCount > 0, currentnessReady: explanationCount > 0, explanationReady: explanationCount > 0, authorizationReady: false, preflightReady: false, processCount: 0, residualProcessCount: 0, atomicityReady: false, recoveryReady: true, sourceMapsPresent }; }
   async currentAuthorizationBinding(explanationId: string, now: Date): Promise<{ readonly query: ReturnType<typeof decodeVerdictQuery>; readonly explanation: VerdictExplanationV1 } | undefined> {
