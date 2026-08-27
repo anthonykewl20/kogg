@@ -29,6 +29,8 @@ test('accepts only a fresh closed exact qualification and reports every catalog 
 
 test('invalid, expired, and failed owner results remain unqualified with closed failures', async () => {
   const invalid = new ExecutionTargetRegistry(bridge(async () => ({ ...qualification(), extra: 'private' } as never)), { platform: 'linux', arch: 'x64' }); await invalid.onStart(); assert.equal(invalid.projection().safeCode, 'QUALIFICATION_PROTOCOL_INVALID');
+  const unknownRefusal = new ExecutionTargetRegistry(bridge(async () => ({ ...qualification(), status: 'refused', refusalCodes: ['PRIVATE_REASON'] } as never)), { platform: 'linux', arch: 'x64' }); await unknownRefusal.onStart(); assert.equal(unknownRefusal.projection().safeCode, 'QUALIFICATION_PROTOCOL_INVALID');
+  const futureKernel = new ExecutionTargetRegistry(bridge(async () => ({ ...qualification(), kernelRelease: '7.0.0' })), { platform: 'linux', arch: 'x64' }); await futureKernel.onStart(); assert.equal(futureKernel.projection().qualified, true);
   const expiredValue = qualification(); const expired = new ExecutionTargetRegistry(bridge(async () => ({ ...expiredValue, checkedAt: '2020-01-01T00:00:00.000Z', expiresAt: '2020-01-01T00:05:00.000Z' })), { platform: 'linux', arch: 'x64' }); await expired.onStart(); assert.equal(expired.projection().safeCode, 'QUALIFICATION_EXPIRED');
   const failed = new ExecutionTargetRegistry(bridge(async () => { throw new Error('private kernel body'); }), { platform: 'linux', arch: 'x64' }); await failed.onStart(); assert.equal(failed.projection().safeCode, 'QUALIFICATION_FAILED');
 });

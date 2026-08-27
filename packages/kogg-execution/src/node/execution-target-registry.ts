@@ -11,6 +11,7 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{1
 const SYMBOLIC = /^[a-z0-9][a-z0-9._:-]{0,127}$/u;
 const DIGEST = /^sha256:[0-9a-f]{64}$/u;
 const DECIMAL = /^(?:0|[1-9][0-9]*)$/u;
+const REFUSALS = new Set(['QUALIFICATION_PLATFORM_UNSUPPORTED', 'QUALIFICATION_PROFILE_UNAVAILABLE', 'QUALIFICATION_BOOT_CHANGED', 'QUALIFICATION_KERNEL_UNSUPPORTED', 'QUALIFICATION_LANDLOCK_UNAVAILABLE', 'QUALIFICATION_CGROUP_UNAVAILABLE', 'QUALIFICATION_QUOTA_UNAVAILABLE', 'QUALIFICATION_LAUNCHER_MISMATCH', 'QUALIFICATION_BUBBLEWRAP_MISMATCH', 'QUALIFICATION_SECCOMP_MISMATCH', 'QUALIFICATION_BROKER_UNAVAILABLE', 'QUALIFICATION_ATTESTATION_INVALID']);
 const FIELDS = ['schemaVersion', 'qualificationId', 'targetId', 'architecture', 'profileId', 'profileDigest', 'bootIdDigest', 'kernelRelease', 'landlockAbi', 'cgroupProfileDigest', 'mountQuotaDigest', 'launcherDigest', 'bubblewrapDigest', 'seccompDigest', 'brokerDigest', 'ranexCommit', 'checkedAt', 'expiresAt', 'status', 'refusalCodes'] as const;
 
 @injectable()
@@ -46,11 +47,12 @@ function validate(value: KernelExecutionQualification, targetId: string, now: nu
   if (value.schemaVersion !== 1 || !UUID.test(value.qualificationId) || value.targetId !== targetId || !SYMBOLIC.test(value.targetId)
     || value.architecture !== 'amd64' || value.profileId !== 'kogg-writable-agent-v1' || value.ranexCommit !== KOGG_RANEX_COMMIT
     || ![value.profileDigest, value.bootIdDigest, value.cgroupProfileDigest, value.mountQuotaDigest, value.launcherDigest, value.bubblewrapDigest, value.seccompDigest, value.brokerDigest].every(item => DIGEST.test(item))
-    || !DECIMAL.test(value.landlockAbi) || Number(value.landlockAbi) < 4 || typeof value.kernelRelease !== 'string' || !/^6\.(?:[6-9]|[1-9][0-9])(?:\.|$)/u.test(value.kernelRelease)
-    || !Array.isArray(value.refusalCodes) || value.refusalCodes.some(code => !SYMBOLIC.test(code.toLowerCase().replaceAll('_', '-')))) return 'QUALIFICATION_PROTOCOL_INVALID';
+    || !DECIMAL.test(value.landlockAbi) || Number(value.landlockAbi) < 4 || !supportedKernel(value.kernelRelease)
+    || !Array.isArray(value.refusalCodes) || value.refusalCodes.length > REFUSALS.size || new Set(value.refusalCodes).size !== value.refusalCodes.length || value.refusalCodes.some(code => !REFUSALS.has(code))) return 'QUALIFICATION_PROTOCOL_INVALID';
   if (value.status !== 'qualified' || value.refusalCodes.length) return 'QUALIFICATION_PROFILE_UNAVAILABLE';
   const checked = Date.parse(value.checkedAt); const expires = Date.parse(value.expiresAt);
   if (!Number.isFinite(checked) || !Number.isFinite(expires) || checked > now || expires <= now || expires - checked > 5 * 60_000) return 'QUALIFICATION_EXPIRED';
   return undefined;
 }
+function supportedKernel(release: string): boolean { const match = /^(\d+)\.(\d+)(?:\.|$)/u.exec(release); if (!match) return false; const major = Number(match[1]); const minor = Number(match[2]); return Number.isSafeInteger(major) && Number.isSafeInteger(minor) && (major > 6 || (major === 6 && minor >= 6)); }
 function refused(targetId: string, safeCode: ExecutionQualificationCode): ExecutionQualificationProjection { return { qualified: false, targetId, profileId: 'kogg-writable-agent-v1', safeCode, recoveryComplete: true, activeAllocationCount: 0, residualProcessCount: 0, sourceMapsPresent: true }; }

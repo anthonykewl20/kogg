@@ -40,6 +40,11 @@ export interface KernelEvaluationRequest {
   readonly suiteManifest?: Record<string, unknown>;
 }
 
+export type KernelExecutionQualificationRefusalCode = 'QUALIFICATION_PLATFORM_UNSUPPORTED' | 'QUALIFICATION_PROFILE_UNAVAILABLE'
+  | 'QUALIFICATION_BOOT_CHANGED' | 'QUALIFICATION_KERNEL_UNSUPPORTED' | 'QUALIFICATION_LANDLOCK_UNAVAILABLE'
+  | 'QUALIFICATION_CGROUP_UNAVAILABLE' | 'QUALIFICATION_QUOTA_UNAVAILABLE' | 'QUALIFICATION_LAUNCHER_MISMATCH'
+  | 'QUALIFICATION_BUBBLEWRAP_MISMATCH' | 'QUALIFICATION_SECCOMP_MISMATCH' | 'QUALIFICATION_BROKER_UNAVAILABLE'
+  | 'QUALIFICATION_ATTESTATION_INVALID';
 export interface KernelExecutionQualification {
   readonly schemaVersion: 1;
   readonly qualificationId: string;
@@ -60,7 +65,7 @@ export interface KernelExecutionQualification {
   readonly checkedAt: string;
   readonly expiresAt: string;
   readonly status: 'qualified' | 'refused';
-  readonly refusalCodes: readonly string[];
+  readonly refusalCodes: readonly KernelExecutionQualificationRefusalCode[];
 }
 
 export interface KernelBridge {
