@@ -11,5 +11,12 @@
 .kogg-package-list article p { margin: 4px 0 0; color: var(--theia-descriptionForeground); }
 .kogg-form-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px; }
 .kogg-form-grid label, .kogg-panel > label { display: block; margin: 10px 0; }
+.kogg-workflow-view-switch { display: flex; gap: 8px; margin: 12px 0; }
+.kogg-workflow-view-switch [aria-pressed="true"] { outline: 2px solid var(--theia-focusBorder); outline-offset: 2px; }
+.kogg-workflow-canvas { display: flex; align-items: stretch; gap: 24px; overflow-x: auto; padding: 12px 2px 18px; }
+.kogg-workflow-canvas article { position: relative; box-sizing: border-box; flex: 0 0 240px; min-height: 150px; padding: 14px; border: 1px solid var(--theia-panel-border); border-radius: 6px; background: var(--theia-sideBar-background); }
+.kogg-workflow-canvas article:not(:last-child)::after { content: '→'; position: absolute; right: -19px; top: 58px; color: var(--theia-descriptionForeground); }
+.kogg-workflow-canvas article > span, .kogg-workflow-canvas article > strong { display: block; margin-bottom: 8px; }
+.kogg-workflow-canvas article:focus { outline: 2px solid var(--theia-focusBorder); outline-offset: 2px; }
 .kogg-blocked { color: var(--theia-notificationsWarningIcon-foreground); }
 .kogg-advisory-reply pre { white-space: pre-wrap; font-family: var(--theia-ui-font-family); }
