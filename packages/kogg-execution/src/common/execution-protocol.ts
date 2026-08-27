@@ -26,7 +26,7 @@ export type ExecutionState = 'requested' | 'refused' | 'admitted' | 'allocated' 
 
 export interface ExecutionBindingV1 {
   readonly schemaVersion: 1; readonly projectId: string; readonly projectRevision: string;
-  readonly repositoryId: string; readonly repositoryBindingRevision: string; readonly taskId: string;
+  readonly repositoryId: string; readonly repositoryBindingRevision: string; readonly repositoryIdentityDigest: string; readonly taskId: string;
   readonly taskRevisionId: string; readonly taskRevisionDigest: string; readonly approvalDigest: string;
   readonly runId: string; readonly attemptId: string; readonly workflowPlanDigest: string;
   readonly baseCommit: string; readonly baseTree: string; readonly gitObjectFormat: 'sha1' | 'sha256';

@@ -14,12 +14,12 @@ export class ProductionPrivateGitSeeder implements PrivateGitSeedAuthority {
 
   seed(request: PrivateGitSeedRequest): Promise<PrivateGitSeedResult> {
     if (process.platform !== 'linux' || process.arch !== 'x64') throw new SeedError('GIT_SEED_FAILED');
-    this.delegate ??= new PrivateGitSeeder(this.operations, productionRunner());
+    this.delegate ??= new PrivateGitSeeder(this.operations, productionControllerGitRunner());
     return this.delegate.seed(request);
   }
 }
 
-function productionRunner(): ControllerGitRunner {
+export function productionControllerGitRunner(): ControllerGitRunner {
   const root = path.join(stateRoot(), 'execution', 'controller-git');
   const home = path.join(root, 'home'); const templateDirectory = path.join(root, 'template');
   secureDirectory(root); secureDirectory(home); secureDirectory(templateDirectory);

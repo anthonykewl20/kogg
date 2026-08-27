@@ -81,7 +81,19 @@ export interface AgentWorkspaceAuthorizationRequestV1 {
   readonly approvalId: string; readonly approvalDigest: string; readonly runId: string; readonly roleRevisionId: string; readonly workflowPlanDigest: string;
 }
 export interface AgentWorkspaceAuthorizationResultV1 { readonly allowed: boolean; readonly code: AgentSafeCode; readonly worktreeId?: string; readonly workspaceGrantDigest?: string; }
-export interface AgentWorkspaceAuthority { prepareWorkspace(request: AgentWorkspaceAuthorizationRequestV1): Promise<AgentWorkspaceAuthorizationResultV1>; }
+export interface AgentWorkspaceLifecycleRequestV1 {
+  readonly schemaVersion: '1'; readonly requestId: string; readonly attemptId: string; readonly worktreeId: string;
+  readonly workspaceGrantDigest: string;
+}
+export interface AgentWorkspaceFinalizationRequestV1 extends AgentWorkspaceLifecycleRequestV1 {
+  readonly outcome: 'completed' | 'failed' | 'cancelled' | 'timed-out';
+}
+export interface AgentWorkspaceLifecycleResultV1 { readonly completed: boolean; readonly code: AgentSafeCode; }
+export interface AgentWorkspaceAuthority {
+  prepareWorkspace(request: AgentWorkspaceAuthorizationRequestV1): Promise<AgentWorkspaceAuthorizationResultV1>;
+  activateWorkspace(request: AgentWorkspaceLifecycleRequestV1): Promise<AgentWorkspaceLifecycleResultV1>;
+  finalizeWorkspace(request: AgentWorkspaceFinalizationRequestV1): Promise<AgentWorkspaceLifecycleResultV1>;
+}
 export interface AgentBindingAuthorizationRequestV1 { readonly roleRevisionId: string; readonly providerId: string; readonly modelId: string; readonly adapterKey: string; readonly adapterVersion: string; readonly deadlinePolicyId: string; }
 export interface AgentBindingAuthorizationResultV1 { readonly allowed: boolean; readonly code: AgentSafeCode; readonly registryRevision: Decimal; }
 export interface AgentBindingAuthorizer { authorizeBinding(request: AgentBindingAuthorizationRequestV1): Promise<AgentBindingAuthorizationResultV1>; }

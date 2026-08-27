@@ -26,12 +26,12 @@ const SYMBOLIC = /^[a-z0-9][a-z0-9._:-]{0,127}$/u;
 const SHA1 = /^[0-9a-f]{40}$/u; const SHA256 = /^[0-9a-f]{64}$/u;
 const BINDING_FIELDS = ['schemaVersion', 'projectId', 'projectRevision', 'repositoryId', 'repositoryBindingRevision', 'taskId',
   'taskRevisionId', 'taskRevisionDigest', 'approvalDigest', 'runId', 'attemptId', 'workflowPlanDigest', 'baseCommit', 'baseTree',
-  'gitObjectFormat', 'targetId', 'qualificationId', 'qualificationDigest', 'profileId', 'profileDigest'] as const;
+  'gitObjectFormat', 'repositoryIdentityDigest', 'targetId', 'qualificationId', 'qualificationDigest', 'profileId', 'profileDigest'] as const;
 const LEGAL_TRANSITIONS: Readonly<Record<ExecutionState, readonly ExecutionState[]>> = {
   requested: ['refused', 'admitted'], refused: [], admitted: ['failed'], allocated: ['seeding', 'cleaning', 'quarantined'],
   seeding: ['verified', 'failed', 'timed-out', 'recovery-required'], verified: ['ready', 'cleaning', 'quarantined'], ready: ['leased', 'cleaning', 'quarantined'],
   leased: ['executing', 'cancelled', 'recovery-required'], executing: ['stopping', 'timed-out', 'failed', 'recovery-required'],
-  stopping: ['sealed', 'cancelled', 'timed-out', 'failed', 'cleanup-failed'], sealed: ['candidate-imported', 'recovery-required'],
+  stopping: ['sealed', 'cleaning', 'cancelled', 'timed-out', 'failed', 'cleanup-failed'], sealed: ['candidate-imported', 'recovery-required'],
   'candidate-imported': ['recovery-required'], retained: ['cleaning'], cleaning: ['cleaned', 'cleanup-failed', 'quarantined'],
   'cleanup-failed': ['cleaning', 'quarantined'], 'recovery-required': ['reconciling'], reconciling: ['refused', 'admitted', 'allocated', 'seeding', 'verified', 'ready', 'leased', 'executing', 'stopping', 'sealed', 'candidate-imported', 'retained', 'cleaning', 'cleaned', 'failed', 'timed-out', 'cancelled', 'cleanup-failed', 'quarantined'],
   cleaned: [], failed: ['cleaning'], 'timed-out': ['cleaning'], cancelled: ['cleaning'], quarantined: []
@@ -51,6 +51,7 @@ export interface ExecutionAllocationDiagnostics {
   readonly quarantinedRepositoryLeaseCount: number; readonly activeQuotaProjectLeaseCount: number; readonly quarantinedQuotaProjectLeaseCount: number;
   readonly pendingCleanupIntentCount: number; readonly retentionViolationCount: number; readonly loggingViolationCount: number;
 }
+export interface ExecutionWorkspaceContextV1 { readonly allocation: ExecutionAllocationSummaryV1; readonly binding: ExecutionBindingV1; }
 
 export interface PreparePhysicalAllocationV1 { readonly requestId: string; readonly worktreeId: string; readonly expectedRevision: string; readonly bindingDigest: string; readonly helperDigest: string; readonly mountQuotaDigest: string }
 export interface PhysicalAllocationIntentV1 {
@@ -225,6 +226,16 @@ export class ExecutionAllocationRegistry implements BackendApplicationContributi
     });
     log('state.completed', { requestId: request.requestId, worktreeId: request.worktreeId, state: request.nextState });
     return this.summary(request.worktreeId);
+  }
+
+  async workspaceContext(worktreeId: string): Promise<ExecutionWorkspaceContextV1> {
+    await this.ensureStarted();
+    if (!UUID.test(worktreeId)) throw new AllocationRegistryError('ALLOCATION_PROTOCOL_INVALID');
+    const row = this.databaseOrThrow().prepare('SELECT binding_json FROM allocations WHERE worktree_id=?').get(worktreeId) as SqlRow | undefined;
+    if (!row) throw new AllocationRegistryError('ALLOCATION_INTEGRITY_FAILED');
+    const binding = JSON.parse(String(row.binding_json)) as ExecutionBindingV1;
+    validateBinding(binding);
+    return { allocation: this.summary(worktreeId), binding };
   }
 
   async preparePhysicalAllocation(request: PreparePhysicalAllocationV1): Promise<PhysicalAllocationIntentV1> {
@@ -834,7 +845,7 @@ function validateBinding(value: ExecutionBindingV1): void {
   if (!value || Object.keys(value).sort().join(',') !== [...BINDING_FIELDS].sort().join(',') || value.schemaVersion !== 1
     || ![value.projectId, value.repositoryId, value.taskId, value.taskRevisionId, value.runId, value.attemptId, value.qualificationId].every(id => UUID.test(id))
     || ![value.projectRevision, value.repositoryBindingRevision].every(revision => DECIMAL.test(revision))
-    || ![value.taskRevisionDigest, value.approvalDigest, value.workflowPlanDigest, value.qualificationDigest, value.profileDigest].every(item => DIGEST.test(item))
+    || ![value.repositoryIdentityDigest, value.taskRevisionDigest, value.approvalDigest, value.workflowPlanDigest, value.qualificationDigest, value.profileDigest].every(item => DIGEST.test(item))
     || !object.test(value.baseCommit) || !object.test(value.baseTree) || !SYMBOLIC.test(value.targetId)
     || value.profileId !== 'kogg-writable-agent-v1' || !['sha1', 'sha256'].includes(value.gitObjectFormat)) throw new AllocationRegistryError('ALLOCATION_PROTOCOL_INVALID');
 }
