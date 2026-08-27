@@ -29,6 +29,7 @@ __pycache__/
 apps/*/plugins/
 plugins/
 apps/*/resources/generated/
+packages/kogg-execution/native/bin/
 marketplace/artifacts/
 marketplace/data/
 
