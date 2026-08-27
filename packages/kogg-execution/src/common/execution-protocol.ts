@@ -43,7 +43,8 @@ export interface ExecutionAllocationSummaryV1 {
   readonly safeCode: ExecutionLifecycleCode;
 }
 export interface RecordPhysicalAllocationV1 {
-  readonly requestId: string; readonly worktreeId: string; readonly expectedRevision: string; readonly bindingDigest: string;
+  readonly requestId: string; readonly intentId: string; readonly fencingToken: string;
+  readonly worktreeId: string; readonly expectedRevision: string; readonly bindingDigest: string;
   readonly allocationName: string; readonly allocationNonceDigest: string; readonly filesystemDevice: string;
   readonly filesystemInode: string; readonly ownerUid: string; readonly mode: '0700'; readonly mountId: string;
   readonly quotaProjectId: string; readonly quotaBytes: string; readonly quotaInodes: string;

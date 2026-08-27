@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { mkdtemp, rm } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
@@ -37,9 +37,9 @@ test('publishes restart-safe execution owner facts into the operations projectio
   const first = allocationRegistry(); await first.onStart(); first.setOwnerSink(projection);
   try {
     let allocation = await first.reserve(allocationRequest());
-    allocation = await first.recordPhysicalAllocation(physicalAllocationProof(allocation, allocationRequest(), '10000000-0000-4000-8000-000000000019'));
+    allocation = await first.recordPhysicalAllocation(await physicalAllocationProof(first, allocation, '10000000-0000-4000-8000-000000000019'));
     allocation = await first.advance({ requestId: '10000000-0000-4000-8000-00000000001a', worktreeId: allocation.worktreeId, expectedRevision: allocation.revision, bindingDigest: allocation.bindingDigest, nextState: 'seeding', safeCode: 'ALLOCATION_OK' });
-    assert.deepEqual(projection.timeline(allocation.runId).map(event => event.eventKind), ['execution.admitted', 'execution.started', 'execution.started']);
+    assert.deepEqual(projection.timeline(allocation.runId).map(event => event.eventKind), ['execution.admitted', 'execution.admitted', 'execution.started', 'execution.started']);
     assert.equal(projection.diagnostics().ownerCount, 1); assert.equal(projection.diagnostics().faultCount, 0);
     first.onStop(); const recovered = allocationRegistry(); await recovered.onStart(); recovered.setOwnerSink(projection);
     assert.equal(projection.timeline(allocation.runId).at(-1)?.eventKind, 'execution.quarantined');
@@ -124,13 +124,35 @@ test('persists only legal binding-and-revision-fenced state transitions with exa
   try {
     const allocation = await registry.reserve(allocationRequest()); const request = { requestId: '10000000-0000-4000-8000-00000000000c', worktreeId: allocation.worktreeId, expectedRevision: '1', bindingDigest: allocation.bindingDigest, nextState: 'allocated' as const, safeCode: 'ALLOCATION_OK' as const };
     await assert.rejects(() => registry.advance(request), (error: unknown) => error instanceof AllocationRegistryError && error.code === 'ALLOCATION_STATE_INVALID');
-    const proof = physicalAllocationProof(allocation, allocationRequest(), '10000000-0000-4000-8000-000000000019');
+    const proof = await physicalAllocationProof(registry, allocation, '10000000-0000-4000-8000-000000000019');
     const advanced = await registry.recordPhysicalAllocation(proof); assert.equal(advanced.state, 'allocated'); assert.equal(advanced.revision, '2'); assert.deepEqual(await registry.recordPhysicalAllocation(proof), advanced);
     await assert.rejects(() => registry.recordPhysicalAllocation({ ...proof, quotaProjectId: '8' }), (error: unknown) => error instanceof AllocationRegistryError && error.code === 'ALLOCATION_REQUEST_REPLAY_MISMATCH');
     await assert.rejects(() => registry.advance({ ...request, requestId: '10000000-0000-4000-8000-00000000000d', expectedRevision: '2', nextState: 'sealed' }), (error: unknown) => error instanceof AllocationRegistryError && error.code === 'ALLOCATION_STATE_INVALID');
     await assert.rejects(() => registry.advance({ ...request, requestId: '10000000-0000-4000-8000-00000000000e', expectedRevision: '1', nextState: 'seeding' }), (error: unknown) => error instanceof AllocationRegistryError && error.code === 'ALLOCATION_REVISION_CONFLICT');
     await assert.rejects(() => registry.advance({ ...request, requestId: '10000000-0000-4000-8000-00000000000f', expectedRevision: '2', bindingDigest: `sha256:${'b'.repeat(64)}`, nextState: 'seeding' }), (error: unknown) => error instanceof AllocationRegistryError && error.code === 'ALLOCATION_BINDING_MISMATCH');
   } finally { registry.onStop(); await rm(root, { recursive: true, force: true }); }
+});
+
+test('fences physical allocation behind one durable pre-effect intent and quarantines ambiguous restart', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'kogg-allocation-intent-')); process.env.KOGG_STATE_DIR = root;
+  const first = allocationRegistry(); await first.onStart(); const allocation = await first.reserve(allocationRequest());
+  const prepare = { requestId: '19000000-0000-4000-8000-000000000001', worktreeId: allocation.worktreeId, expectedRevision: allocation.revision, bindingDigest: allocation.bindingDigest, helperDigest: `sha256:${'8'.repeat(64)}`, mountQuotaDigest: `sha256:${'9'.repeat(64)}` };
+  const intent = await first.preparePhysicalAllocation(prepare);
+  assert.deepEqual(await first.preparePhysicalAllocation(prepare), intent); assert.match(intent.allocationNonce, /^[0-9a-f]{64}$/u);
+  assert.match(intent.fencingToken, /^[0-9a-f]{64}$/u); assert.equal(first.diagnostics().pendingAllocationIntentCount, 1);
+  await assert.rejects(() => first.preparePhysicalAllocation({ ...prepare, helperDigest: `sha256:${'7'.repeat(64)}` }),
+    (error: unknown) => error instanceof AllocationRegistryError && error.code === 'ALLOCATION_REQUEST_REPLAY_MISMATCH');
+  await assert.rejects(() => first.recordPhysicalAllocation({
+    requestId: '19000000-0000-4000-8000-000000000002', intentId: '19000000-0000-4000-8000-000000000003', fencingToken: intent.fencingToken,
+    worktreeId: allocation.worktreeId, expectedRevision: allocation.revision, bindingDigest: allocation.bindingDigest, allocationName: allocation.allocationName,
+    allocationNonceDigest: allocation.allocationNonceDigest, filesystemDevice: '2049', filesystemInode: '4001', ownerUid: '1000', mode: '0700', mountId: '55',
+    quotaProjectId: '7', quotaBytes: intent.quotaBytes, quotaInodes: intent.quotaInodes, helperDigest: intent.helperDigest, mountQuotaDigest: intent.mountQuotaDigest
+  }), (error: unknown) => error instanceof AllocationRegistryError && error.code === 'ALLOCATION_INTEGRITY_FAILED');
+  first.onStop(); const recovered = allocationRegistry(); await recovered.onStart();
+  try {
+    const diagnostics = recovered.diagnostics(); assert.equal(diagnostics.admission, 'blocked'); assert.equal(diagnostics.quarantinedCount, 1);
+    assert.equal(diagnostics.pendingAllocationIntentCount, 1);
+  } finally { recovered.onStop(); await rm(root, { recursive: true, force: true }); }
 });
 
 test('records one sealed candidate only after the legal stopping state and replays the exact request', async () => {
@@ -175,7 +197,7 @@ test('fences cleanup behind a durable exact-identity intent and absence proof', 
   const root = await mkdtemp(path.join(os.tmpdir(), 'kogg-allocation-cleanup-')); process.env.KOGG_STATE_DIR = root; const registry = allocationRegistry(); await registry.onStart();
   try {
     const request = allocationRequest(); let allocation = await registry.reserve(request);
-    allocation = await registry.recordPhysicalAllocation(physicalAllocationProof(allocation, request, '36000000-0000-4000-8000-000000000001'));
+    allocation = await registry.recordPhysicalAllocation(await physicalAllocationProof(registry, allocation, '36000000-0000-4000-8000-000000000001'));
     await assert.rejects(() => registry.advance({ requestId: '36000000-0000-4000-8000-000000000002', worktreeId: allocation.worktreeId, expectedRevision: allocation.revision, bindingDigest: allocation.bindingDigest, nextState: 'cleaning', safeCode: 'ALLOCATION_OK' }),
       (error: unknown) => error instanceof AllocationRegistryError && error.code === 'ALLOCATION_STATE_INVALID');
     const prepare = { requestId: '36000000-0000-4000-8000-000000000003', worktreeId: allocation.worktreeId, expectedRevision: allocation.revision, bindingDigest: allocation.bindingDigest };
@@ -195,7 +217,7 @@ test('fences cleanup behind a durable exact-identity intent and absence proof', 
 test('quarantines cleanup identity mismatch and blocks admission', async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), 'kogg-allocation-cleanup-mismatch-')); process.env.KOGG_STATE_DIR = root; const registry = allocationRegistry(); await registry.onStart();
   try {
-    let allocation = await registry.reserve(allocationRequest()); allocation = await registry.recordPhysicalAllocation(physicalAllocationProof(allocation, allocationRequest(), '37000000-0000-4000-8000-000000000001'));
+    let allocation = await registry.reserve(allocationRequest()); allocation = await registry.recordPhysicalAllocation(await physicalAllocationProof(registry, allocation, '37000000-0000-4000-8000-000000000001'));
     const intent = await registry.preparePhysicalCleanup({ requestId: '37000000-0000-4000-8000-000000000002', worktreeId: allocation.worktreeId, expectedRevision: allocation.revision, bindingDigest: allocation.bindingDigest });
     const failure = { requestId: '37000000-0000-4000-8000-000000000003', intentId: intent.intentId, worktreeId: allocation.worktreeId, expectedRevision: intent.expectedRevision, bindingDigest: allocation.bindingDigest, fencingToken: intent.fencingToken, expectedIdentityDigest: intent.expectedIdentityDigest, observedIdentityDigest: `sha256:${'0'.repeat(64)}`, safeCode: 'CLEANUP_IDENTITY_MISMATCH' as const };
     const quarantined = await registry.failPhysicalCleanup(failure); assert.equal(quarantined.state, 'quarantined'); assert.equal(quarantined.cleanupState, 'failed'); assert.equal(quarantined.safeCode, 'CLEANUP_IDENTITY_MISMATCH');
@@ -205,7 +227,7 @@ test('quarantines cleanup identity mismatch and blocks admission', async () => {
 
 test('startup quarantines an ambiguous cleanup intent without replaying deletion', async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), 'kogg-allocation-cleanup-recovery-')); process.env.KOGG_STATE_DIR = root; const first = allocationRegistry(); await first.onStart();
-  let allocation = await first.reserve(allocationRequest()); allocation = await first.recordPhysicalAllocation(physicalAllocationProof(allocation, allocationRequest(), '38000000-0000-4000-8000-000000000001'));
+  let allocation = await first.reserve(allocationRequest()); allocation = await first.recordPhysicalAllocation(await physicalAllocationProof(first, allocation, '38000000-0000-4000-8000-000000000001'));
   await first.preparePhysicalCleanup({ requestId: '38000000-0000-4000-8000-000000000002', worktreeId: allocation.worktreeId, expectedRevision: allocation.revision, bindingDigest: allocation.bindingDigest }); first.onStop();
   const recovered = allocationRegistry(); await recovered.onStart();
   try { const diagnostics = recovered.diagnostics(); assert.equal(diagnostics.admission, 'blocked'); assert.equal(diagnostics.quarantinedCount, 1); assert.equal(diagnostics.pendingCleanupIntentCount, 1); }
@@ -214,7 +236,7 @@ test('startup quarantines an ambiguous cleanup intent without replaying deletion
 
 test('refuses startup when a persisted physical identity component is altered', async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), 'kogg-allocation-identity-integrity-')); process.env.KOGG_STATE_DIR = root; const first = allocationRegistry(); await first.onStart();
-  let allocation = await first.reserve(allocationRequest()); allocation = await first.recordPhysicalAllocation(physicalAllocationProof(allocation, allocationRequest(), '39000000-0000-4000-8000-000000000001')); first.onStop();
+  let allocation = await first.reserve(allocationRequest()); allocation = await first.recordPhysicalAllocation(await physicalAllocationProof(first, allocation, '39000000-0000-4000-8000-000000000001')); first.onStop();
   try {
     const database = new DatabaseSync(path.join(root, 'execution', 'registry.sqlite3')); database.prepare('UPDATE allocations SET filesystem_inode=? WHERE worktree_id=?').run('4002', allocation.worktreeId); database.close();
     await assert.rejects(allocationRegistry().onStart(), /physical identity integrity/u);
@@ -275,17 +297,19 @@ async function advanceToStopping(registry: ExecutionAllocationRegistry) {
 }
 async function advanceRequestToStopping(registry: ExecutionAllocationRegistry, request: ReserveExecutionAllocationV1, requestNamespace = '20000000') {
   let allocation = await registry.reserve(request);
-  allocation = await registry.recordPhysicalAllocation(physicalAllocationProof(allocation, request, `${requestNamespace}-0000-4000-8000-0000000000fe`));
+  allocation = await registry.recordPhysicalAllocation(await physicalAllocationProof(registry, allocation, `${requestNamespace}-0000-4000-8000-0000000000fe`));
   const states = ['seeding', 'verified', 'ready', 'leased', 'executing', 'stopping'] as const;
   for (let index = 0; index < states.length; index++) allocation = await registry.advance({ requestId: `${requestNamespace}-0000-4000-8000-00000000000${index}`, worktreeId: allocation.worktreeId, expectedRevision: allocation.revision, bindingDigest: allocation.bindingDigest, nextState: states[index]!, safeCode: 'ALLOCATION_OK' });
   return allocation;
 }
-function physicalAllocationProof(allocation: ExecutionAllocationSummaryV1, request: ReserveExecutionAllocationV1, requestId: string): RecordPhysicalAllocationV1 {
+async function physicalAllocationProof(registry: ExecutionAllocationRegistry, allocation: ExecutionAllocationSummaryV1, requestId: string): Promise<RecordPhysicalAllocationV1> {
+  const helperDigest = `sha256:${'8'.repeat(64)}`; const mountQuotaDigest = `sha256:${'9'.repeat(64)}`;
+  const intent = await registry.preparePhysicalAllocation({ requestId: randomUUID(), worktreeId: allocation.worktreeId, expectedRevision: allocation.revision, bindingDigest: allocation.bindingDigest, helperDigest, mountQuotaDigest });
   return {
-    requestId, worktreeId: allocation.worktreeId, expectedRevision: allocation.revision, bindingDigest: allocation.bindingDigest,
-    allocationName: allocation.allocationName, allocationNonceDigest: allocation.allocationNonceDigest,
+    requestId, intentId: intent.intentId, fencingToken: intent.fencingToken, worktreeId: allocation.worktreeId, expectedRevision: allocation.revision, bindingDigest: allocation.bindingDigest,
+    allocationName: intent.allocationName, allocationNonceDigest: allocation.allocationNonceDigest,
     filesystemDevice: '2049', filesystemInode: '4001', ownerUid: '1000', mode: '0700', mountId: '55', quotaProjectId: '7',
-    quotaBytes: request.quotaBytes, quotaInodes: request.quotaInodes, helperDigest: `sha256:${'8'.repeat(64)}`, mountQuotaDigest: `sha256:${'9'.repeat(64)}`
+    quotaBytes: intent.quotaBytes, quotaInodes: intent.quotaInodes, helperDigest, mountQuotaDigest
   };
 }
 function candidateFor(allocation: Awaited<ReturnType<typeof advanceToStopping>>, candidateId: string) {
