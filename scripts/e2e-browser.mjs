@@ -118,6 +118,17 @@ try {
         process.exit(0);
     }
 
+    if (process.env.KOGG_E2E_WORKFLOW_ONLY === '1') {
+        await exerciseProjects(page);
+        await exerciseWorkflowEditor(page);
+        process.stdout.write('Kogg browser workflow-editor E2E passed.\n');
+        await browser.close(); browser = undefined;
+        await stop(backend); backend = undefined;
+        await stop(registry); registry = undefined;
+        await rm(temporary, { recursive: true, force: true });
+        process.exit(0);
+    }
+
     if (process.env.KOGG_E2E_VERDICT_MERGE_ONLY === '1') {
         await exerciseVerdictMerge(page);
         process.stdout.write('Kogg browser verdict-merge visible-refusal E2E passed.\n');
@@ -843,6 +854,32 @@ async function ensureOperationsWidget(page) {
     await widget.getByText(/Admission:\s+(?:enabled|recovering|blocked)/u).waitFor({ timeout: 15_000 });
     await widget.getByRole('status').filter({ hasText: /Stream: current/u }).waitFor({ timeout: 15_000 });
     return widget;
+}
+
+async function exerciseWorkflowEditor(page) {
+    const widgets = page.locator('.kogg-workflow-editor-widget:visible');
+    if (!await widgets.count()) {
+        await openCommand(page, 'View: Toggle Kogg Workflow Editor');
+        await widgets.first().waitFor({ state: 'visible', timeout: 30_000 });
+    }
+    let widget = widgets.first();
+    await widget.getByText('Structured workflow outline ready.').waitFor({ timeout: 15_000 });
+    assert.equal(await widget.locator('[data-workflow-node]').count(), 2);
+    await widget.getByLabel('Node kind').selectOption('check.deterministic');
+    await widget.getByRole('button', { name: 'Add node' }).click();
+    await widget.getByRole('button', { name: 'Move check.deterministic up' }).click();
+    await widget.getByRole('button', { name: 'Validate workflow' }).click();
+    await widget.getByText(/Workflow valid: 3 nodes and 2 edges/u).waitFor({ timeout: 10_000 });
+    await widget.getByRole('button', { name: 'Save immutable version' }).click();
+    await widget.getByText('Workflow version 1 saved immutably.').waitFor({ timeout: 10_000 });
+    await widget.getByRole('button', { name: 'Compile current version' }).click();
+    await widget.getByText(/Compiled plan [0-9a-f]{8} with 9 mandatory anchors/u).waitFor({ timeout: 10_000 });
+    await page.reload({ waitUntil: 'domcontentloaded' });
+    await page.locator('body.kogg-application').waitFor({ timeout: 20_000 });
+    widget = page.locator('.kogg-workflow-editor-widget:visible').filter({ hasText: 'Workflow version 1 is current.' }).first();
+    await widget.waitFor({ state: 'visible', timeout: 15_000 });
+    assert.match(logs.join('\n'), /\[kogg:workflow:editor\] ui\.operation\.completed/u);
+    assert.doesNotMatch(await widget.innerText(), /configurationDigest|requestedEffects|graphDigest|catalogDigest/u);
 }
 
 async function exerciseVerdictMerge(page) {
