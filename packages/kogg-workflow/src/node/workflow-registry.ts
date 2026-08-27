@@ -4,7 +4,7 @@ import path from 'node:path';
 import { DatabaseSync, type SQLOutputValue } from 'node:sqlite';
 import { BackendApplicationContribution } from '@theia/core/lib/node';
 import { inject, injectable, unmanaged } from '@theia/core/shared/inversify';
-import type { KoggWorkflowService, WorkflowMutationResult, WorkflowNodeConfigurationV1, WorkflowSafeCode, WorkflowTemplateVersionProjection, WorkflowValidationProjection } from '../common/workflow-protocol';
+import type { EditableWorkflowGraphV1, KoggWorkflowService, WorkflowMutationResult, WorkflowNodeConfigurationV1, WorkflowRunProjection, WorkflowSafeCode, WorkflowTemplateVersionProjection, WorkflowValidationProjection } from '../common/workflow-protocol';
 import { canonicalJson, WorkflowValidationError, workflowDigest } from '../common/workflow-canonical';
 import { WorkflowCompiler } from './workflow-compiler';
 import { workflowLog } from './workflow-logger';
@@ -150,9 +150,14 @@ export class WorkflowRegistry implements KoggWorkflowService, BackendApplication
         if (!resolved.allowed) return refuseAuthority();
       }
       unavailableExecutorCount = graph.nodes.filter(node => this.compiler.catalogEntry(node.kind).executor.status === 'unavailable').length;
-      const result = this.transaction(input.requestId, requestDigest, () => ({ kind: 'refused', code: unavailableExecutorCount > 0 ? 'WORKFLOW_EXECUTOR_INCOMPATIBLE' : 'WORKFLOW_AUTHORITY_EXPANSION' } as const));
-      workflowLog('run.admission.refused', { requestId: input.requestId, planId: input.planId, safeCode: result.code, unavailableExecutorCount });
-      return result;
+      if (unavailableExecutorCount > 0) {
+        const result = this.transaction(input.requestId, requestDigest, () => ({ kind: 'refused', code: 'WORKFLOW_EXECUTOR_INCOMPATIBLE' } as const));
+        workflowLog('run.admission.refused', { requestId: input.requestId, planId: input.planId, safeCode: result.code, unavailableExecutorCount }); return result;
+      }
+      const admitted = this.transaction(input.requestId, requestDigest, () => this.createControlRun(input.planId, text(storedPlan, 'plan_digest'), graph));
+      if (admitted.kind !== 'completed' || !admitted.run || admitted.run.state !== 'admitted') return admitted;
+      workflowLog('run.admitted', { requestId: input.requestId, planId: input.planId, runId: admitted.run.runId, nodeCount: graph.nodes.length });
+      const completed = this.executeControlRun(admitted.run.runId, input.planId, graph); this.db().prepare('UPDATE idempotency SET result_json=? WHERE request_id=?').run(JSON.stringify(completed), input.requestId); this.publishOwnerEvents(); return completed;
     } catch (error) {
       // observability-exempt: run.admission.refused is the sanitized terminal event and excludes graph, configuration, and executor details.
       const code = codeOf(error); workflowLog('run.admission.refused', { requestId: safeId(input.requestId), planId: safeId(input.planId), safeCode: code, unavailableExecutorCount }); return { kind: 'refused', code };
@@ -196,6 +201,34 @@ export class WorkflowRegistry implements KoggWorkflowService, BackendApplication
     try { const prior = db.prepare('SELECT request_digest,result_json FROM idempotency WHERE request_id=?').get(requestId) as Row | undefined; if (prior) { if (text(prior, 'request_digest') !== requestDigest) throw new WorkflowValidationError('WORKFLOW_VERSION_CONFLICT'); db.exec('ROLLBACK'); return JSON.parse(text(prior, 'result_json')) as WorkflowMutationResult; } const result = action(); db.prepare('INSERT INTO idempotency(request_id,request_digest,result_json) VALUES(?,?,?)').run(requestId, requestDigest, JSON.stringify(result)); db.exec('COMMIT'); return result; }
     catch (error) { try { db.exec('ROLLBACK'); } catch { /* observability-exempt: the original sanitized operation refusal remains authoritative. */ } throw error; }
   }
+  private createControlRun(planId: string, planDigest: string, graph: EditableWorkflowGraphV1): WorkflowMutationResult {
+    const runId = randomUUID(); const now = new Date().toISOString();
+    this.db().prepare("INSERT INTO workflow_runs(run_id,plan_id,plan_digest,state,revision,owner_epoch_id,safe_code,created_at,updated_at) VALUES(?,?,?,'admitted',1,?,'WORKFLOW_OK',?,?)").run(runId, planId, planDigest, this.schedulerEpochId, now, now);
+    const insert = this.db().prepare("INSERT INTO workflow_node_attempts(run_id,node_id,attempt,state,fencing_token,safe_code,updated_at) VALUES(?,?,1,'pending',?,'WORKFLOW_OK',?)"); for (const node of graph.nodes) insert.run(runId, node.nodeId, this.schedulerFencingToken, now);
+    this.schedulerEvent(runId, 'run.admitted', 'WORKFLOW_OK', now); return { kind: 'completed', code: 'WORKFLOW_OK', run: { runId, planId, state: 'admitted', safeCode: 'WORKFLOW_OK', completedNodeCount: 0, failedNodeCount: 0 } };
+  }
+  private executeControlRun(runId: string, planId: string, graph: EditableWorkflowGraphV1): WorkflowMutationResult {
+    const outputs = new Map<string, string>(); const pending = new Map(graph.nodes.map(node => [node.nodeId, node])); let completedNodeCount = 0;
+    while (pending.size) {
+      const node = [...pending.values()].find(candidate => ready(candidate.nodeId, graph, outputs));
+      if (!node) return this.finishControlRun(runId, planId, 'failed', 'WORKFLOW_CONDITION_INVALID', completedNodeCount, pending.size);
+      const predecessorOutcomes = graph.edges.filter(edge => edge.targetNodeId === node.nodeId).map(edge => outputs.get(edge.sourceNodeId)).filter((value): value is 'success' | 'failure' => value === 'success' || value === 'failure');
+      const now = new Date().toISOString(); const outboxId = randomUUID(); const requestDigest = workflowDigest('run-snapshot', { schemaVersion: '1', runId, nodeId: node.nodeId, attempt: 1, configurationDigest: node.configurationDigest });
+      this.schedulerTransaction(() => { this.db().prepare("UPDATE workflow_runs SET state='running',revision=revision+1,updated_at=? WHERE run_id=? AND state IN ('admitted','running')").run(now, runId); this.db().prepare("UPDATE workflow_node_attempts SET state='running',updated_at=? WHERE run_id=? AND node_id=? AND attempt=1 AND state='pending'").run(now, runId, node.nodeId); this.db().prepare("INSERT INTO workflow_outbox(outbox_id,run_id,node_id,operation_kind,request_digest,fencing_token,phase,safe_code,created_at,updated_at) VALUES(?,?,?,?,?,?,'claimed','WORKFLOW_OK',?,?)").run(outboxId, runId, node.nodeId, node.kind, requestDigest, this.schedulerFencingToken, now, now); });
+      const result = this.compiler.executeControl({ runId, node, attempt: 1, predecessorOutcomes }); const finishedAt = new Date().toISOString();
+      this.schedulerTransaction(() => { this.db().prepare("UPDATE workflow_outbox SET phase='completed',safe_code=?,updated_at=? WHERE outbox_id=? AND phase='claimed'").run(result.code, finishedAt, outboxId); this.db().prepare("UPDATE workflow_node_attempts SET state=?,safe_code=?,updated_at=? WHERE run_id=? AND node_id=? AND attempt=1 AND state='running'").run(result.kind === 'completed' ? 'succeeded' : 'failed', result.code, finishedAt, runId, node.nodeId); });
+      if (result.kind !== 'completed' || !result.output) return this.finishControlRun(runId, planId, 'failed', result.code, completedNodeCount, 1);
+      outputs.set(node.nodeId, result.output); pending.delete(node.nodeId); completedNodeCount++;
+    }
+    return this.finishControlRun(runId, planId, 'completed', 'WORKFLOW_OK', completedNodeCount, 0);
+  }
+  private finishControlRun(runId: string, planId: string, state: 'completed' | 'failed', safeCode: WorkflowSafeCode, completedNodeCount: number, failedNodeCount: number): WorkflowMutationResult {
+    const now = new Date().toISOString(); this.schedulerTransaction(() => { if (state === 'failed') this.db().prepare("UPDATE workflow_node_attempts SET state='cancelled',safe_code=?,updated_at=? WHERE run_id=? AND state='pending'").run(safeCode, now, runId); this.db().prepare('UPDATE workflow_runs SET state=?,revision=revision+1,safe_code=?,updated_at=? WHERE run_id=?').run(state, safeCode, now, runId); this.schedulerEvent(runId, state === 'completed' ? 'run.completed' : 'run.failed', safeCode, now); });
+    const run: WorkflowRunProjection = { runId, planId, state, safeCode, completedNodeCount, failedNodeCount };
+    if (state === 'completed') { workflowLog('run.completed', { planId, runId, completedNodeCount, safeCode: 'WORKFLOW_OK', processCount: 0, residualProcessCount: 0 }); return { kind: 'completed', code: 'WORKFLOW_OK', run }; }
+    workflowLog('run.failed', { planId, runId, completedNodeCount, failedNodeCount, safeCode, processCount: 0, residualProcessCount: 0 }); return { kind: 'failed', code: safeCode, run };
+  }
+  private schedulerTransaction(action: () => void): void { const db = this.db(); db.exec('BEGIN IMMEDIATE'); try { action(); db.exec('COMMIT'); } catch (error) { try { db.exec('ROLLBACK'); } catch { /* observability-exempt: the originating scheduler failure remains authoritative. */ } throw error; } }
   private migrate(): void { this.db().exec(`CREATE TABLE IF NOT EXISTS template_versions(version_id TEXT PRIMARY KEY,template_id TEXT NOT NULL,version_number INTEGER NOT NULL CHECK(version_number>0),graph_digest TEXT NOT NULL,catalog_digest TEXT NOT NULL,graph_json TEXT NOT NULL,created_at TEXT NOT NULL,UNIQUE(template_id,version_number));
     CREATE TABLE IF NOT EXISTS compiled_plans(plan_id TEXT PRIMARY KEY,version_id TEXT NOT NULL UNIQUE REFERENCES template_versions(version_id),plan_digest TEXT NOT NULL UNIQUE,graph_digest TEXT NOT NULL,catalog_digest TEXT NOT NULL,trust_spine_digest TEXT NOT NULL,editable_node_count INTEGER NOT NULL,injected_anchor_count INTEGER NOT NULL);
     CREATE TABLE IF NOT EXISTS idempotency(request_id TEXT PRIMARY KEY,request_digest TEXT NOT NULL,result_json TEXT NOT NULL);
@@ -263,13 +296,15 @@ function agentBinding(configuration: WorkflowNodeConfigurationV1 | undefined): A
   if (!configuration?.roleRevisionId || !configuration.providerId || !configuration.modelId || !configuration.adapterKey || !configuration.adapterVersion || !configuration.deadlinePolicyId) return undefined;
   return { roleRevisionId: configuration.roleRevisionId, providerId: configuration.providerId, modelId: configuration.modelId, adapterKey: configuration.adapterKey, adapterVersion: configuration.adapterVersion, deadlinePolicyId: configuration.deadlinePolicyId };
 }
+function ready(nodeId: string, graph: EditableWorkflowGraphV1, outputs: ReadonlyMap<string, string>): boolean { const incoming = graph.edges.filter(edge => edge.targetNodeId === nodeId); return incoming.length === 0 || incoming.every(edge => outputs.has(edge.sourceNodeId) && (edge.sourcePort === 'finally' || outputs.get(edge.sourceNodeId) === edge.sourcePort)); }
 function codeOf(error: unknown): WorkflowSafeCode { return error instanceof WorkflowValidationError ? error.code : 'WORKFLOW_INTERNAL'; }
 function stateRoot(): string { return path.resolve(process.env.KOGG_STATE_DIR ?? path.join(process.cwd(), '.kogg', 'state')); }
 
 function sourcePreviousDigest(database: DatabaseSync, sequence: number): string { const row = database.prepare('SELECT event_digest FROM workflow_scheduler_events WHERE sequence<? ORDER BY sequence DESC LIMIT 1').get(sequence) as Row | undefined; return row ? text(row, 'event_digest') : '0'.repeat(64); }
 function schedulerEventDigest(row: Row): string { return workflowDigest('scheduler-event', { eventId: text(row, 'event_id'), runId: text(row, 'run_id'), eventName: text(row, 'event_name'), safeCode: text(row, 'safe_code'), previousEventDigest: text(row, 'previous_event_digest'), createdAt: text(row, 'created_at') }); }
 function mapOwnerEvent(row: Row, ownerInstanceId: string, epochId: string, projectId: string, previousEventDigest: string): OwnerEventV1 {
-  const safePayload: SafeOwnerPayloadV1 = { lifecycle: 'failed', terminalClass: 'failed', safeCode: text(row, 'safe_code'), freshness: 'current' };
-  const unsigned: Omit<OwnerEventV1, 'eventDigest'> = { ownerKind: 'workflow', ownerInstanceId, ownerSchemaVersion: 1, epochId, sequence: String(number(row, 'sequence')), eventId: text(row, 'event_id'), eventKind: 'run.failed', factId: text(row, 'run_id'), factDigest: text(row, 'event_digest'), previousEventDigest, causalParents: [], correlations: { projectId, runId: text(row, 'run_id') }, observedAt: text(row, 'created_at'), safePayload };
+  const eventName = text(row, 'event_name'); const eventKind = eventName === 'run.admitted' ? 'run.started' : eventName === 'run.completed' ? 'run.completed' : 'run.failed';
+  const lifecycle = eventKind === 'run.started' ? 'active' : eventKind === 'run.completed' ? 'completed' : 'failed'; const safePayload: SafeOwnerPayloadV1 = { lifecycle, ...(eventKind === 'run.started' ? {} : { terminalClass: lifecycle }), safeCode: text(row, 'safe_code'), freshness: 'current' };
+  const unsigned: Omit<OwnerEventV1, 'eventDigest'> = { ownerKind: 'workflow', ownerInstanceId, ownerSchemaVersion: 1, epochId, sequence: String(number(row, 'sequence')), eventId: text(row, 'event_id'), eventKind, factId: text(row, 'run_id'), factDigest: text(row, 'event_digest'), previousEventDigest, causalParents: [], correlations: { projectId, runId: text(row, 'run_id') }, observedAt: text(row, 'created_at'), safePayload };
   return { ...unsigned, eventDigest: OperationsReadModel.digest(unsigned) };
 }
