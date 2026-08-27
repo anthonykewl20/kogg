@@ -14,7 +14,7 @@ import { LocalCredentialLeaseAuthority } from './credential-lease-authority';
 
 // diagnostic-coverage: agents.adapters, agents.attempts, agents.processes, agents.recovery, agents.logging, agents.source-maps
 
-const ADMISSION: TaskAdmissionSnapshot = { taskAdmissionId: '10000000-0000-4000-8000-000000000001', taskId: '10000000-0000-4000-8000-000000000002', specificationId: '10000000-0000-4000-8000-000000000003', approvalId: '10000000-0000-4000-8000-000000000004', projectId: '10000000-0000-4000-8000-000000000005', repositoryId: '10000000-0000-4000-8000-000000000006', bindingRevision: '1', registryRevision: '1', taskRevision: '1', runId: '10000000-0000-4000-8000-000000000007' };
+const ADMISSION: TaskAdmissionSnapshot = { taskAdmissionId: '10000000-0000-4000-8000-000000000001', taskId: '10000000-0000-4000-8000-000000000002', specificationId: '10000000-0000-4000-8000-000000000003', approvalId: '10000000-0000-4000-8000-000000000004', projectId: '10000000-0000-4000-8000-000000000005', repositoryId: '10000000-0000-4000-8000-000000000006', bindingRevision: '1', registryRevision: '1', taskRevision: '1', runId: '10000000-0000-4000-8000-000000000007', authorizedAt: '2026-08-27T00:00:00.000Z', expiresAt: '2099-08-27T00:00:00.000Z' };
 
 test('runs a real supervised fixture host through completion and proves cleanup', async () => {
   const directory = await mkdtemp(path.join(os.tmpdir(), 'kogg-agents-')); const prior = process.env.KOGG_STATE_DIR; process.env.KOGG_STATE_DIR = directory;

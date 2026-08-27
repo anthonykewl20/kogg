@@ -5,7 +5,20 @@ import { DatabaseSync, type SQLOutputValue } from 'node:sqlite';
 import { BackendApplicationContribution } from '@theia/core/lib/node';
 import { inject, injectable } from '@theia/core/shared/inversify';
 import { ProjectBindingAuthority, type ProjectBindingAuthority as BindingAuthority, type ProjectBindingSnapshot } from '@kogg/projects/lib/common/projects-protocol';
-import type { ApprovalProjection, KoggTasksService, MutationPrecondition, ReviewProjection, TaskAdmissionAuthority, TaskAdmissionSnapshot, TaskMutationResult, TaskProjection, TaskSafeCode, TaskSummary } from '../common/tasks-protocol';
+import {
+  TaskAdmissionAuthority,
+  TaskKernelBindingAuthority,
+  type ApprovalProjection,
+  type KoggTasksService,
+  type MutationPrecondition,
+  type ReviewProjection,
+  type TaskAdmissionSnapshot,
+  type TaskKernelAuthoritySnapshot,
+  type TaskMutationResult,
+  type TaskProjection,
+  type TaskSafeCode,
+  type TaskSummary
+} from '../common/tasks-protocol';
 import { canonicalRequestDigest, canonicalSpecification, SpecificationValidationError } from '../common/canonical-specification';
 import type { OperationsOwnerSink, OwnerEventV1, SafeOwnerPayloadV1 } from '@kogg/operations/lib/common/operations-read-model-protocol';
 import { OperationsReadModel } from '@kogg/operations/lib/node/operations-read-model';
@@ -18,7 +31,7 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{1
 const DECIMAL = /^(?:0|[1-9][0-9]*)$/u;
 
 @injectable()
-export class TaskRegistry implements KoggTasksService, TaskAdmissionAuthority, BackendApplicationContribution {
+export class TaskRegistry implements KoggTasksService, TaskAdmissionAuthority, TaskKernelBindingAuthority, BackendApplicationContribution {
   private database: DatabaseSync | undefined;
   private readonly challenges = new Map<string, Challenge>();
   private readonly databasePath = path.join(stateRoot(), 'tasks', 'registry.sqlite3');
@@ -191,18 +204,33 @@ export class TaskRegistry implements KoggTasksService, TaskAdmissionAuthority, B
     const result = await this.mutate('admission', input, await this.binding(input.taskId), (db, task, current, revision) => {
       const approval = optional(task, 'current_approval_id');
       if (!approval || str(current, 'lifecycle') !== 'frozen') throw new Refusal('ADMISSION_NOT_AUTHORIZED');
-      const next = num(task, 'task_revision') + 1; db.prepare('UPDATE tasks SET task_revision=? WHERE task_id=?').run(next, input.taskId);
-      this.event(db, input.taskId, next, revision, 'admission.authorized', approval, input.runId);
-      admission = { taskId: input.taskId, specificationId: str(current, 'specification_id'), approvalId: approval,
+      const next = num(task, 'task_revision') + 1; const taskAdmissionId = randomUUID(); const authorizedAt = new Date().toISOString();
+      db.prepare('UPDATE tasks SET task_revision=? WHERE task_id=?').run(next, input.taskId);
+      this.event(db, input.taskId, next, revision, 'admission.authorized', taskAdmissionId, input.runId);
+      const admission: TaskAdmissionSnapshot = { taskAdmissionId, taskId: input.taskId, specificationId: str(current, 'specification_id'), approvalId: approval,
         projectId: str(task, 'project_id'), repositoryId: str(task, 'repository_id'), bindingRevision: dec(task, 'binding_revision'),
-        registryRevision: String(revision), taskRevision: String(next), runId: input.runId };
-      db.prepare('INSERT INTO task_admissions VALUES(?,?,?,?,?,?,?,?,?,?,?)').run(taskAdmissionId, input.taskId, str(current, 'specification_id'), approval, str(task, 'project_id'), str(task, 'repository_id'), num(task, 'binding_revision'), revision, next, input.runId, new Date().toISOString());
+        registryRevision: String(revision), taskRevision: String(next), runId: input.runId, authorizedAt,
+        expiresAt: new Date(Date.parse(authorizedAt) + 15 * 60_000).toISOString() };
+      db.prepare(`INSERT INTO admissions(run_id,task_id,task_revision,specification_id,approval_id,project_id,repository_id,binding_revision,
+        registry_revision,authorized_at,expires_at,admission_digest) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`).run(
+        admission.runId, admission.taskId, next, admission.specificationId, admission.approvalId, admission.projectId,
+        admission.repositoryId, Number(admission.bindingRevision), revision, admission.authorizedAt, admission.expiresAt,
+        canonicalRequestDigest(admission));
+      db.prepare('INSERT INTO task_admissions VALUES(?,?,?,?,?,?,?,?,?,?,?)').run(taskAdmissionId, admission.taskId,
+        admission.specificationId, admission.approvalId, admission.projectId, admission.repositoryId,
+        Number(admission.bindingRevision), revision, next, admission.runId, authorizedAt);
     });
-    const row = result.kind === 'completed' ? this.db().prepare('SELECT * FROM admissions WHERE run_id = ?').get(input.runId) as Row | undefined : undefined;
+    const row = result.kind === 'completed' ? this.admissionRowByRun(input.runId) : undefined;
     return { ...result, admission: row ? this.admission(row) : undefined };
   }
 
-  async resolveAdmission(admission: TaskAdmissionSnapshot): Promise<TaskKernelAuthoritySnapshot> {
+  async resolveAdmission(admission: TaskAdmissionSnapshot): Promise<TaskKernelAuthoritySnapshot>;
+  async resolveAdmission(taskAdmissionId: string): Promise<TaskAdmissionSnapshot | undefined>;
+  async resolveAdmission(input: TaskAdmissionSnapshot | string): Promise<TaskKernelAuthoritySnapshot | TaskAdmissionSnapshot | undefined> {
+    return typeof input === 'string' ? this.resolveAgentAdmission(input) : this.resolveKernelAdmission(input);
+  }
+
+  private async resolveKernelAdmission(admission: TaskAdmissionSnapshot): Promise<TaskKernelAuthoritySnapshot> {
     console.debug('[kogg:tasks:registry] kernel-binding.validation.started', { taskId: safe(admission.taskId), runId: safe(admission.runId) });
     try {
       uuid(admission.taskId); uuid(admission.runId); uuid(admission.specificationId); uuid(admission.approvalId);
@@ -232,17 +260,18 @@ export class TaskRegistry implements KoggTasksService, TaskAdmissionAuthority, B
     }
   }
 
-  async resolveAdmission(taskAdmissionId: string): Promise<TaskAdmissionSnapshot | undefined> {
-    uuid(taskAdmissionId); const row = this.db().prepare('SELECT * FROM task_admissions WHERE task_admission_id=?').get(taskAdmissionId) as Row | undefined; if (!row) return undefined;
+  private async resolveAgentAdmission(taskAdmissionId: string): Promise<TaskAdmissionSnapshot | undefined> {
+    uuid(taskAdmissionId); const row = this.admissionRowById(taskAdmissionId); if (!row) return undefined;
     const task = this.task(str(row, 'task_id')); const binding = await this.projects.resolveBinding(str(row, 'project_id'), str(row, 'repository_id'));
     if (str(task, 'lifecycle') !== 'active' || optional(task, 'current_approval_id') !== str(row, 'approval_id') || str(task, 'current_specification_id') !== str(row, 'specification_id') || !matches(task, binding)) return undefined;
-    return { taskAdmissionId, taskId: str(row, 'task_id'), specificationId: str(row, 'specification_id'), approvalId: str(row, 'approval_id'), projectId: str(row, 'project_id'), repositoryId: str(row, 'repository_id'), bindingRevision: dec(row, 'binding_revision'), registryRevision: dec(row, 'registry_revision'), taskRevision: dec(row, 'task_revision'), runId: str(row, 'run_id') };
+    const admission = this.admission(row);
+    return Date.parse(admission.expiresAt) > Date.now() ? admission : undefined;
   }
 
   async diagnostics(): Promise<{ integrity: boolean; foreignKeys: boolean; immutableTriggers: boolean; revisionMismatchCount: number; bindingMismatchCount: number; approvalMismatchCount: number; taskCount: number; openTransactionCount: number }> {
     const db = this.db(); const integrity = str(db.prepare('PRAGMA quick_check').get() as Row, 'quick_check') === 'ok';
     const foreignKeys = db.prepare('PRAGMA foreign_key_check').all().length === 0;
-    const immutableTriggers = num(db.prepare("SELECT count(*) AS count FROM sqlite_master WHERE type='trigger' AND name LIKE 'tasks_immutable_%'").get() as Row, 'count') === 8;
+    const immutableTriggers = num(db.prepare("SELECT count(*) AS count FROM sqlite_master WHERE type='trigger' AND name LIKE 'tasks_immutable_%'").get() as Row, 'count') === 10;
     let revisionMismatchCount = 0; let bindingMismatchCount = 0;
     for (const spec of db.prepare('SELECT * FROM specifications ORDER BY task_id,sequence').all() as Row[]) {
       try { const task = this.task(str(spec, 'task_id')); const canonical = canonicalSpecification({ content: bytes(spec, 'content').toString('utf8'), taskId: str(spec, 'task_id'), projectId: str(task, 'project_id'), repositoryId: str(task, 'repository_id'), bindingRevision: dec(task, 'binding_revision') }); if (canonical.digest !== str(spec, 'specification_digest')) revisionMismatchCount++; }
@@ -304,6 +333,9 @@ export class TaskRegistry implements KoggTasksService, TaskAdmissionAuthority, B
       CREATE TABLE IF NOT EXISTS tasks(task_id TEXT PRIMARY KEY,project_id TEXT NOT NULL,repository_id TEXT NOT NULL,binding_revision INTEGER NOT NULL,task_revision INTEGER NOT NULL,lifecycle TEXT NOT NULL CHECK(lifecycle IN ('active','archived')),current_specification_id TEXT NOT NULL,current_approval_id TEXT,created_at TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS specifications(specification_id TEXT PRIMARY KEY,task_id TEXT NOT NULL REFERENCES tasks(task_id),sequence INTEGER NOT NULL,parent_specification_id TEXT,lifecycle TEXT NOT NULL CHECK(lifecycle IN ('draft','frozen')),encoding_version TEXT NOT NULL,content BLOB NOT NULL,byte_length INTEGER NOT NULL,specification_digest TEXT NOT NULL,created_at TEXT NOT NULL,UNIQUE(task_id,sequence));
       CREATE TABLE IF NOT EXISTS approvals(approval_id TEXT PRIMARY KEY,task_id TEXT NOT NULL REFERENCES tasks(task_id),specification_id TEXT NOT NULL REFERENCES specifications(specification_id),approval_digest TEXT NOT NULL UNIQUE,created_at TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS admissions(run_id TEXT PRIMARY KEY,task_id TEXT NOT NULL REFERENCES tasks(task_id),task_revision INTEGER NOT NULL,
+        specification_id TEXT NOT NULL REFERENCES specifications(specification_id),approval_id TEXT NOT NULL REFERENCES approvals(approval_id),project_id TEXT NOT NULL,
+        repository_id TEXT NOT NULL,binding_revision INTEGER NOT NULL,registry_revision INTEGER NOT NULL,authorized_at TEXT NOT NULL,expires_at TEXT NOT NULL,admission_digest TEXT NOT NULL UNIQUE);
       CREATE TABLE IF NOT EXISTS task_events(event_sequence INTEGER PRIMARY KEY AUTOINCREMENT,event_id TEXT NOT NULL UNIQUE,task_id TEXT NOT NULL REFERENCES tasks(task_id),task_revision INTEGER NOT NULL,registry_revision INTEGER NOT NULL UNIQUE,event_type TEXT NOT NULL,subject_id TEXT NOT NULL,run_id TEXT,observed_at TEXT NOT NULL,previous_event_digest TEXT NOT NULL,event_digest TEXT NOT NULL UNIQUE);
       CREATE TABLE IF NOT EXISTS idempotency(request_id TEXT PRIMARY KEY,request_digest TEXT NOT NULL,operation_type TEXT NOT NULL,result_projection TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS task_admissions(task_admission_id TEXT PRIMARY KEY,task_id TEXT NOT NULL REFERENCES tasks(task_id),specification_id TEXT NOT NULL REFERENCES specifications(specification_id),approval_id TEXT NOT NULL REFERENCES approvals(approval_id),project_id TEXT NOT NULL,repository_id TEXT NOT NULL,binding_revision INTEGER NOT NULL,registry_revision INTEGER NOT NULL,task_revision INTEGER NOT NULL,run_id TEXT NOT NULL,created_at TEXT NOT NULL);
@@ -314,7 +346,9 @@ export class TaskRegistry implements KoggTasksService, TaskAdmissionAuthority, B
       CREATE TRIGGER IF NOT EXISTS tasks_immutable_admissions_update BEFORE UPDATE ON admissions BEGIN SELECT RAISE(ABORT,'immutable admission'); END;
       CREATE TRIGGER IF NOT EXISTS tasks_immutable_admissions_delete BEFORE DELETE ON admissions BEGIN SELECT RAISE(ABORT,'immutable admission'); END;
       CREATE TRIGGER IF NOT EXISTS tasks_immutable_events_update BEFORE UPDATE ON task_events BEGIN SELECT RAISE(ABORT,'immutable event'); END;
-      CREATE TRIGGER IF NOT EXISTS tasks_immutable_events_delete BEFORE DELETE ON task_events BEGIN SELECT RAISE(ABORT,'immutable event'); END;`);
+      CREATE TRIGGER IF NOT EXISTS tasks_immutable_events_delete BEFORE DELETE ON task_events BEGIN SELECT RAISE(ABORT,'immutable event'); END;
+      CREATE TRIGGER IF NOT EXISTS tasks_immutable_task_admissions_update BEFORE UPDATE ON task_admissions BEGIN SELECT RAISE(ABORT,'immutable task admission'); END;
+      CREATE TRIGGER IF NOT EXISTS tasks_immutable_task_admissions_delete BEFORE DELETE ON task_admissions BEGIN SELECT RAISE(ABORT,'immutable task admission'); END;`);
     ensureTaskOwnerColumns(db);
     if (!db.prepare('SELECT 1 FROM registry_meta WHERE singleton=1').get()) db.prepare('INSERT INTO registry_meta VALUES(1,1,0,?,?,?)').run(randomUUID(), randomUUID(), randomUUID());
     if (num(db.prepare('SELECT schema_version FROM registry_meta WHERE singleton=1').get() as Row, 'schema_version') !== 1) throw new Failure('SCHEMA_UNSUPPORTED');
@@ -333,9 +367,13 @@ export class TaskRegistry implements KoggTasksService, TaskAdmissionAuthority, B
       });
       if (canonical.digest !== str(spec, 'specification_digest') || canonical.bytes.length !== num(spec, 'byte_length')) throw new Failure('INTEGRITY_FAILED');
     }
-    for (const row of db.prepare('SELECT * FROM admissions ORDER BY run_id').all() as Row[]) {
+    for (const row of db.prepare(`SELECT a.*,t.task_admission_id FROM admissions a
+      JOIN task_admissions t ON t.run_id=a.run_id ORDER BY a.run_id`).all() as Row[]) {
       if (!equal(canonicalRequestDigest(this.admission(row)), str(row, 'admission_digest'))) throw new Failure('INTEGRITY_FAILED');
     }
+    const admissionMismatchCount = num(db.prepare(`SELECT count(*) AS count FROM admissions a
+      LEFT JOIN task_admissions t ON t.run_id=a.run_id WHERE t.task_admission_id IS NULL`).get() as Row, 'count');
+    if (admissionMismatchCount) throw new Failure('INTEGRITY_FAILED');
     const approvalMismatchCount = num(db.prepare(`SELECT count(*) AS count FROM tasks t LEFT JOIN approvals a ON a.approval_id=t.current_approval_id
       WHERE t.current_approval_id IS NOT NULL AND (a.approval_id IS NULL OR a.specification_id!=t.current_specification_id)`).get() as Row, 'count');
     if (approvalMismatchCount) throw new Failure('INTEGRITY_FAILED');
@@ -383,11 +421,19 @@ export class TaskRegistry implements KoggTasksService, TaskAdmissionAuthority, B
   private spec(id: string, db = this.db()): Row { const row = db.prepare('SELECT * FROM specifications WHERE specification_id=?').get(id) as Row | undefined; if (!row) throw new Failure('INTEGRITY_FAILED'); return row; }
   private admission(row: Row): TaskAdmissionSnapshot {
     return {
-      taskId: str(row, 'task_id'), taskRevision: dec(row, 'task_revision'), specificationId: str(row, 'specification_id'),
+      taskAdmissionId: str(row, 'task_admission_id'), taskId: str(row, 'task_id'), taskRevision: dec(row, 'task_revision'), specificationId: str(row, 'specification_id'),
       approvalId: str(row, 'approval_id'), projectId: str(row, 'project_id'), repositoryId: str(row, 'repository_id'),
       bindingRevision: dec(row, 'binding_revision'), registryRevision: dec(row, 'registry_revision'), runId: str(row, 'run_id'),
       authorizedAt: str(row, 'authorized_at'), expiresAt: str(row, 'expires_at')
     };
+  }
+  private admissionRowByRun(runId: string): Row | undefined {
+    return this.db().prepare(`SELECT a.*,t.task_admission_id FROM admissions a
+      JOIN task_admissions t ON t.run_id=a.run_id WHERE a.run_id=?`).get(runId) as Row | undefined;
+  }
+  private admissionRowById(taskAdmissionId: string): Row | undefined {
+    return this.db().prepare(`SELECT a.*,t.task_admission_id FROM task_admissions t
+      JOIN admissions a ON a.run_id=t.run_id WHERE t.task_admission_id=?`).get(taskAdmissionId) as Row | undefined;
   }
   private async binding(taskId: string): Promise<ProjectBindingSnapshot | undefined> {
     try { uuid(taskId); const task = this.task(taskId); return this.projects.resolveBinding(str(task, 'project_id'), str(task, 'repository_id')); }

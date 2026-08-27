@@ -5,7 +5,7 @@ import { canonicalKernelJson, KERNEL_OPERATIONS } from './kernel-evidence-protoc
 test('canonical kernel JSON fixes key order, integer encoding, and Unicode bytes', () => {
   assert.equal(canonicalKernelJson({ z: 0, a: ['café', true, null], m: -12 }), '{"a":["café",true,null],"m":-12,"z":0}');
   assert.deepEqual(Object.keys(KERNEL_OPERATIONS), [
-    'kernel.handshake', 'kernel.health', 'task.bind', 'producer.dispatch', 'suite.freeze', 'suite.execute',
+    'kernel.handshake', 'kernel.health', 'execution.qualify', 'task.bind', 'producer.dispatch', 'suite.freeze', 'suite.execute',
     'evidence.admit', 'gate.evaluate', 'verdict.read', 'operation.reconcile', 'operation.cancel'
   ]);
 });

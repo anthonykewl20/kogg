@@ -51,6 +51,7 @@ test('persists the governed draft, freeze, review, approval, revocation, conflic
     assert.equal(authoritySnapshot.taskRevision, Number(admitted.projection!.taskRevision));
     assert.equal(authoritySnapshot.approvalDigest.startsWith('sha256:'), true);
     assert.equal(authoritySnapshot.runId, runId);
+    assert.deepEqual(await registry.resolveAdmission(admitted.admission!.taskAdmissionId), admitted.admission);
     await assert.rejects(registry.resolveAdmission({ ...admitted.admission!, taskRevision: '1' }), /ADMISSION_NOT_AUTHORIZED/u);
     const revoked = await registry.revoke(expectation(admitted.projection!, taskId));
     assert.equal(revoked.projection?.currentApproval, undefined);

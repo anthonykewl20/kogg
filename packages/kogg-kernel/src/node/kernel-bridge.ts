@@ -13,8 +13,8 @@ import {
   KERNEL_SCHEMA_SET_DIGEST,
   KernelBridge,
   KernelCapabilities,
-  KernelEvaluationRequest,
-  KernelExecutionQualification,
+  type KernelExecutionQualification,
+  type KernelJson,
   KernelHealth,
   type KernelOperationV2,
   type KernelResultV2,
@@ -178,8 +178,9 @@ export class KernelBridgeImpl implements KernelBridge {
     return this.request<KernelExecutionQualification>('execution.qualify', { targetId });
   }
 
-  verifyJournal(): Promise<{ readonly valid: boolean; readonly reason?: string }> {
-    return this.request('journal.verify', {});
+  dispatchProducer(binding: ProducerBindingV1): Promise<KernelResultV2<ProducerBindingProjectionV1>> {
+    const bindingDigest = domainDigest('producer', binding as unknown as KernelJson);
+    return this.requestResult<ProducerBindingProjectionV1>('producer.dispatch', { binding: binding as unknown as KernelJson, bindingDigest });
   }
 
   freezeSuite(suite: FrozenSuiteV1): Promise<KernelResultV2<FrozenSuiteProjectionV1>> {

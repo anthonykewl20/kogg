@@ -56,7 +56,8 @@ test('closed execution logging rejects undeclared fields without echoing values'
 });
 
 function bridge(qualify: () => Promise<KernelExecutionQualification>): KernelBridge {
-  return { capabilities: async () => ({ protocol: 'kogg-ranex-stdio', protocolVersion: 1, ranexCommit: KOGG_RANEX_COMMIT, ranexTree: '0'.repeat(64), schemaFingerprints: {}, commands: ['execution.qualify'], qualifiedProviders: [], confinement: 'unavailable', degradationReasons: ['test'] }), qualifyExecution: async () => qualify() } as unknown as KernelBridge;
+  const digest = `sha256:${'0'.repeat(64)}` as const;
+  return { capabilities: async () => ({ protocol: 'kogg.ranex/v2', protocolVersion: 2, ranexCommit: KOGG_RANEX_COMMIT, ranexTree: '581ce66c54116d4be48b96c3a0359fbdd9d3077f', adapterArtifactDigest: digest, schemaSetDigest: digest, operations: [{ operation: 'execution.qualify', version: 1, requestSchemaDigest: digest, resultSchemaDigest: digest }], maxFrameBytes: 1024 * 1024, maxPendingRequests: 64, maxPendingResponseBytes: 4 * 1024 * 1024, confinement: 'unavailable', degradationCodes: ['KERNEL_HOST_UNQUALIFIED'] }), qualifyExecution: async () => qualify() } as unknown as KernelBridge;
 }
 function qualification(): KernelExecutionQualification {
   const checkedAt = new Date(Date.now() - 1_000).toISOString(); const expiresAt = new Date(Date.now() + 4 * 60_000).toISOString(); const digest = `sha256:${'a'.repeat(64)}`;

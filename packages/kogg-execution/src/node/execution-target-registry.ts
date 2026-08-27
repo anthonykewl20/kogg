@@ -45,7 +45,7 @@ export class ExecutionTargetRegistry implements BackendApplicationContribution {
     if (this.runtime.platform !== 'linux' || this.runtime.arch !== 'x64') return this.invalidate('QUALIFICATION_PLATFORM_UNSUPPORTED');
     try {
       const capabilities = await this.kernel.capabilities();
-      if (capabilities.ranexCommit !== KOGG_RANEX_COMMIT || !capabilities.commands.includes('execution.qualify')) return this.invalidate('QUALIFICATION_PROFILE_UNAVAILABLE');
+      if (capabilities.ranexCommit !== KOGG_RANEX_COMMIT || !capabilities.operations.some(operation => operation.operation === 'execution.qualify' && operation.version === 1)) return this.invalidate('QUALIFICATION_PROFILE_UNAVAILABLE');
       const result = await this.kernel.qualifyExecution(this.targetId);
       const code = validate(result, this.targetId, Date.now());
       if (code) return this.invalidate(code);

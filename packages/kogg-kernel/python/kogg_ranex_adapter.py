@@ -9,30 +9,86 @@ import platform
 import re
 import struct
 import sys
-import uuid
+import unicodedata
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
 from ranex.governed_execution.adapters.persistence.sqlite.journal import Journal
-from ranex.governed_execution.api import Evidence
 
-PROTOCOL = "kogg-ranex-stdio"
-PROTOCOL_VERSION = 1
-COMMANDS = [
-    "gate.evaluate",
-    "journal.verify",
-    "run",
-    "suite.freeze",
-    "deps.fetch",
-    "deps.approve",
-    "keygen",
-    "task.dispatch",
-    "task.judge",
-    "task.merge",
-    "task.delegate",
-    "task.fanout",
-    "execution.qualify",
-]
+# diagnostic-coverage: kernel.protocol, kernel.bridge
+
+PROTOCOL = "kogg.ranex/v2"
+PROTOCOL_VERSION = 2
+SCHEMA_SET_DIGEST = "sha256:b44b4f9fc8c16386e1c5b4f22dcdf6f910b951dce48799689e623f14ef5497f3"
+MAX_FRAME_BYTES = 1024 * 1024
+MAX_DEPTH = 32
+MAX_MEMBERS = 4096
+MAX_PENDING_REQUESTS = 64
+MAX_PENDING_RESPONSE_BYTES = 4 * 1024 * 1024
+DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
+UUID = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$")
+IMPLEMENTED_OPERATIONS = {"kernel.handshake": 2, "kernel.health": 1, "execution.qualify": 1, "task.bind": 1, "producer.dispatch": 1, "suite.freeze": 1}
+SYMBOLIC = re.compile(r"^[a-z0-9][a-z0-9._:-]{0,127}$")
+CHECK_KINDS = {"build", "unit", "integration", "visible-e2e", "observability", "diagnostics", "source-maps", "process-cleanup", "ranex-evidence"}
+
+
+class ProtocolRefusal(Exception):
+    def __init__(self, safe_code: str) -> None:
+        super().__init__(safe_code)
+        self.safe_code = safe_code
+
+
+def _canonical(value: Any) -> bytes:
+    members = 0
+
+    def validate(candidate: Any, depth: int) -> None:
+        nonlocal members
+        if depth > MAX_DEPTH:
+            raise ProtocolRefusal("KERNEL_PROTOCOL_OVERFLOW")
+        if candidate is None or isinstance(candidate, bool):
+            return
+        if isinstance(candidate, int):
+            if candidate < -(2**63) or candidate > 2**63 - 1:
+                raise ProtocolRefusal("KERNEL_PROTOCOL_INVALID")
+            return
+        if isinstance(candidate, float):
+            raise ProtocolRefusal("KERNEL_PROTOCOL_INVALID")
+        if isinstance(candidate, str):
+            if unicodedata.normalize("NFC", candidate) != candidate or any(0xD800 <= ord(character) <= 0xDFFF for character in candidate):
+                raise ProtocolRefusal("KERNEL_PROTOCOL_INVALID")
+            return
+        if isinstance(candidate, list):
+            members += len(candidate)
+            if members > MAX_MEMBERS:
+                raise ProtocolRefusal("KERNEL_PROTOCOL_OVERFLOW")
+            for item in candidate:
+                validate(item, depth + 1)
+            return
+        if isinstance(candidate, dict):
+            members += len(candidate)
+            if members > MAX_MEMBERS or any(not isinstance(key, str) for key in candidate):
+                raise ProtocolRefusal("KERNEL_PROTOCOL_OVERFLOW")
+            for key, item in candidate.items():
+                validate(key, depth + 1)
+                validate(item, depth + 1)
+            return
+        raise ProtocolRefusal("KERNEL_PROTOCOL_INVALID")
+
+    validate(value, 0)
+    return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+
+
+def _digest(value: Any) -> str:
+    return "sha256:" + hashlib.sha256(_canonical(value)).hexdigest()
+
+
+def _domain_digest(domain: str, value: Any) -> str:
+    return "sha256:" + hashlib.sha256(f"kogg:{domain}:v1\n".encode("utf-8") + _canonical(value)).hexdigest()
+
+
+def _schema_digest(operation: str, direction: str) -> str:
+    return _digest({"direction": direction, "operation": operation, "protocol": PROTOCOL})
 
 
 def _provenance() -> dict[str, Any]:
@@ -350,17 +406,28 @@ def _freeze_suite(request: dict[str, Any], body: dict[str, Any]) -> tuple[dict[s
 
 def _capabilities() -> dict[str, Any]:
     provenance = _provenance()
+    qualified = platform.system() == "Linux"
+    journal = _journal_state()
+    degradation_codes: list[str] = []
+    if not qualified:
+        degradation_codes.append("KERNEL_HOST_UNQUALIFIED")
+    if journal == "missing":
+        degradation_codes.append("KERNEL_JOURNAL_MISSING")
     return {
         "protocol": PROTOCOL,
         "protocolVersion": PROTOCOL_VERSION,
         "ranexCommit": provenance["commit"],
         "ranexTree": provenance["tree"],
-        "schemaFingerprints": _schema_fingerprints(),
-        "commands": COMMANDS,
-        "qualifiedProviders": [],
-        "confinement": "unavailable",
-        "degradationReasons": [
-            "the pinned Ranex revision has no qualified writable-agent profile"
+        "adapterArtifactDigest": _adapter_digest(),
+        "schemaSetDigest": SCHEMA_SET_DIGEST,
+        "operations": [
+            {
+                "operation": operation,
+                "version": version,
+                "requestSchemaDigest": _schema_digest(operation, "request"),
+                "resultSchemaDigest": _schema_digest(operation, "result"),
+            }
+            for operation, version in IMPLEMENTED_OPERATIONS.items()
         ],
         "maxFrameBytes": MAX_FRAME_BYTES,
         "maxPendingRequests": MAX_PENDING_REQUESTS,
@@ -419,6 +486,24 @@ def _dispatch(request: dict[str, Any]) -> tuple[dict[str, Any], dict[str, str] |
         journal = _journal_state()
         status = "ready" if capabilities["confinement"] == "qualified" and journal == "valid" else "degraded"
         return {"status": status, "journal": journal, "capabilities": capabilities}, None
+    if operation == "execution.qualify":
+        target_id = body.get("targetId")
+        if set(body) != {"targetId"} or not isinstance(target_id, str) or not SYMBOLIC.fullmatch(target_id):
+            raise ProtocolRefusal("KERNEL_PROTOCOL_INVALID")
+        # The pinned Ranex revision has no qualified writable-agent profile. This exact
+        # closed refusal prevents host platform alone from becoming execution authority.
+        return {
+            "schemaVersion": 1, "qualificationId": request["operationId"], "targetId": target_id,
+            "architecture": "amd64", "profileId": "kogg-writable-agent-v1",
+            "profileDigest": "sha256:" + "0" * 64, "bootIdDigest": "sha256:" + "0" * 64,
+            "kernelRelease": platform.release()[:128], "landlockAbi": "0",
+            "cgroupProfileDigest": "sha256:" + "0" * 64, "mountQuotaDigest": "sha256:" + "0" * 64,
+            "launcherDigest": "sha256:" + "0" * 64, "bubblewrapDigest": "sha256:" + "0" * 64,
+            "seccompDigest": "sha256:" + "0" * 64, "brokerDigest": "sha256:" + "0" * 64,
+            "ranexCommit": _provenance()["commit"], "checkedAt": "1970-01-01T00:00:00.000Z",
+            "expiresAt": "1970-01-01T00:00:00.000Z", "status": "refused",
+            "refusalCodes": ["QUALIFICATION_PROFILE_UNAVAILABLE"],
+        }, None
     if operation == "task.bind":
         return _bind_task(request, body)
     if operation == "producer.dispatch":
@@ -442,95 +527,23 @@ def _result(request: dict[str, Any], status: str, safe_code: str, projection: An
     }
 
 
-def _list_verdicts() -> list[dict[str, Any]]:
-    journal_path = _journal_path()
-    if not journal_path.is_file():
-        return []
-    journal = Journal(journal_path)
-    if not journal.verify():
-        raise ValueError("Ranex journal hash chain is invalid")
-    return journal.entries()
+def _read_exact(stream: Any, size: int) -> bytes | None:
+    chunks = bytearray()
+    while len(chunks) < size:
+        chunk = stream.read(size - len(chunks))
+        if not chunk:
+            return None if not chunks else bytes(chunks)
+        chunks.extend(chunk)
+    return bytes(chunks)
 
 
-def _evaluate(params: dict[str, Any]) -> dict[str, Any]:
-    evidence = tuple(
-        Evidence(
-            claim_id=item["claim_id"],
-            subject_digest=item["subject_digest"],
-            producer_id=item["producer_id"],
-            command=item["command"],
-            command_digest=item["command_digest"],
-            executable_path=item["executable_path"],
-            exit_code=item["exit_code"],
-            suite_results=item.get("suite_results"),
-        )
-        for item in params["evidence"]
-    )
-    suite_manifest = params.get("suiteManifest")
-    evaluator = build_gate_evaluator(
-        params["gateCatalog"].encode("utf-8"),
-        journal_path=_journal_path(),
-        suite_manifest=(
-            json.dumps(suite_manifest, sort_keys=True, separators=(",", ":")).encode("utf-8")
-            if suite_manifest is not None
-            else None
-        ),
-    )
-    result = evaluator.evaluate(
-        params["gateId"],
-        evidence,
-        subject_digest=params["subjectDigest"],
-        approver_id=params["approverId"],
-    )
-    return result.as_record()
-
-
-def _execution_qualification(params: dict[str, Any]) -> dict[str, Any]:
-    target_id = params.get("targetId")
-    if not isinstance(target_id, str) or not target_id or len(target_id.encode("utf-8")) > 128:
-        raise ValueError("target identity is invalid")
-    # The pinned Ranex revision has no writable-agent profile implementation. Returning a
-    # closed refusal prevents Linux alone from being misrepresented as qualification.
-    return {
-        "schemaVersion": 1,
-        "qualificationId": str(uuid.uuid4()),
-        "targetId": target_id,
-        "architecture": "amd64",
-        "profileId": "kogg-writable-agent-v1",
-        "profileDigest": "sha256:" + "0" * 64,
-        "bootIdDigest": "sha256:" + "0" * 64,
-        "kernelRelease": platform.release()[:128],
-        "landlockAbi": "0",
-        "cgroupProfileDigest": "sha256:" + "0" * 64,
-        "mountQuotaDigest": "sha256:" + "0" * 64,
-        "launcherDigest": "sha256:" + "0" * 64,
-        "bubblewrapDigest": "sha256:" + "0" * 64,
-        "seccompDigest": "sha256:" + "0" * 64,
-        "brokerDigest": "sha256:" + "0" * 64,
-        "ranexCommit": _provenance()["commit"],
-        "checkedAt": "1970-01-01T00:00:00.000Z",
-        "expiresAt": "1970-01-01T00:00:00.000Z",
-        "status": "refused",
-        "refusalCodes": ["QUALIFICATION_PROFILE_UNAVAILABLE"],
-    }
-
-
-def _dispatch(method: str, params: dict[str, Any]) -> Any:
-    if method == "handshake":
-        return _handshake(params)
-    if method == "health":
-        return _health()
-    if method == "journal.verify":
-        return _verify_journal()
-    if method == "verdict.list":
-        return _list_verdicts()
-    if method == "evaluate":
-        return _evaluate(params)
-    if method == "execution.qualify":
-        return _execution_qualification(params)
-    if method == "shutdown":
-        return {"stopping": True}
-    raise ValueError("unsupported kernel method")
+def _closed_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    result: dict[str, Any] = {}
+    for key, value in pairs:
+        if key in result:
+            raise ProtocolRefusal("KERNEL_PROTOCOL_INVALID")
+        result[key] = value
+    return result
 
 
 def main() -> int:
