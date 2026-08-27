@@ -5,7 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 import { DatabaseSync } from 'node:sqlite';
-import type { OwnerEventV1, OwnerKind, SafeCorrelationsV1, SafeOwnerPayloadV1 } from '../common/operations-read-model-protocol';
+import { OWNER_KINDS, type OwnerEventV1, type OwnerKind, type SafeCorrelationsV1, type SafeOwnerPayloadV1 } from '../common/operations-read-model-protocol';
 import { OperationsReadModel, ProjectionFault } from './operations-read-model';
 import { OperationsSupportExporter } from './operations-support-export';
 import { OperationsActionRouter } from './operations-action-router';
@@ -56,6 +56,26 @@ test('projects correlated diagnostic lifecycle as a governed run', async () => {
     assert.equal(fixture.model.snapshot().runs[0]?.lifecycle, 'failed');
     assert.deepEqual(fixture.model.timeline(runId).map(entry => entry.eventKind), ['diagnostic.started', 'diagnostic.failed']);
   } finally { await fixture.close(); }
+});
+
+test('treats a verified empty owner store as available without inventing an event cursor', async () => {
+  const fixture = await createFixture();
+  try {
+    for (const owner of OWNER_KINDS) fixture.model.registerOwner(owner);
+    assert.equal(fixture.model.diagnostics().ownerCount, OWNER_KINDS.length);
+    assert.equal(fixture.model.diagnostics().acceptedEventCount, 0);
+    assert.equal(fixture.model.snapshot().lifecycle, 'current');
+  } finally { await fixture.close(); }
+});
+
+test('requires every configured owner to reverify after projection restart', async () => {
+  const temporary = await mkdtemp(path.join(os.tmpdir(), 'kogg-operations-owner-reverify-test-')); const databasePath = path.join(temporary, 'projection.sqlite3');
+  const first = new OperationsReadModel(databasePath); const second = new OperationsReadModel(databasePath);
+  try {
+    first.start(); first.registerOwner('task'); assert.equal(first.snapshot().lifecycle, 'current'); first.stop();
+    second.start(); assert.equal(second.diagnostics().ownerCount, 0); assert.equal(second.snapshot().lifecycle, 'degraded');
+    second.registerOwner('task'); assert.equal(second.diagnostics().ownerCount, 1); assert.equal(second.snapshot().lifecycle, 'current');
+  } finally { first.stop(); second.stop(); await rm(temporary, { recursive: true, force: true }); }
 });
 
 test('fails metric projection closed and diagnoses undeclared high-cardinality labels', async () => {

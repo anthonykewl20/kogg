@@ -25,7 +25,7 @@ const CLOSED_PAYLOAD_KEYS = new Set(['lifecycle', 'safeCode', 'processKind', 'pr
 const CLOSED_STRING_VALUES: Readonly<Record<string, ReadonlySet<string>>> = {
   lifecycle: new Set(['draft', 'frozen', 'active', 'archived', 'queued', 'waiting', 'retrying', 'blocked', 'failed', 'stalled', 'cancelling', 'cleaning', 'cancelled', 'timed-out', 'recovered', 'completed', 'unknown', 'requested', 'started', 'refused', 'admitted', 'quarantined', 'available', 'unavailable']),
   processKind: new Set(['git', 'ranex-kernel', 'provider-cli', 'governed-command', 'check', 'build', 'test', 'debug-adapter', 'delegated-theia', 'unknown']),
-  processState: new Set(['reserved', 'spawning', 'started', 'ready', 'exited', 'cancelling', 'cleaning', 'cleaned', 'spawn-failed', 'timed-out', 'residual', 'lost', 'quarantined', 'inventory-unknown']),
+  processState: new Set(['reserved', 'spawning', 'started', 'ready', 'activity', 'exited', 'cancelling', 'cleaning', 'cleaned', 'spawn-failed', 'timed-out', 'residual', 'lost', 'quarantined', 'inventory-unknown']),
   cleanupState: new Set(['required', 'cleaning', 'cleaned', 'failed', 'unknown']),
   terminalClass: new Set(['none', 'completed', 'failed', 'cancelled', 'refused', 'recovered', 'committed', 'quarantined', 'unknown']),
   abnormalClass: new Set(['none', 'stalled', 'identity-mismatch', 'unregistered-child', 'timeout', 'exit-without-cleanup', 'escalated', 'residual', 'owner-lost', 'recovery-active', 'quarantined', 'inventory-unknown']),
@@ -95,6 +95,9 @@ export class OperationsReadModel implements BackendApplicationContribution {
       this.database.exec('PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000;');
       if (process.platform !== 'win32') chmodSync(this.databasePath, 0o600);
       this.migrate();
+      const configured = this.db().prepare('SELECT owner_kind FROM configured_owners').all() as Row[];
+      this.db().exec("UPDATE configured_owners SET status='unavailable'");
+      for (const owner of configured) console.warn('[kogg:operations:owners] unavailable', { ownerKind: String(owner.owner_kind), ownerSchemaVersion: 1, safeCode: 'OWNER_REVERIFY_REQUIRED' });
       this.setLifecycle('verifying');
       console.info('[kogg:operations:projection] verify.started', { schemaVersion: 1 });
       this.assertIntegrity();
@@ -164,7 +167,7 @@ export class OperationsReadModel implements BackendApplicationContribution {
       db.prepare(`INSERT INTO owner_cursors(owner_kind,owner_instance_id,epoch_id,sequence,event_digest,schema_version,status)
         VALUES(?,?,?,?,?,1,'available') ON CONFLICT(owner_instance_id) DO UPDATE SET sequence=excluded.sequence,event_digest=excluded.event_digest,status='available'`)
         .run(validated.ownerKind, validated.ownerInstanceId, validated.epochId, validated.sequence, validated.eventDigest);
-      db.prepare("UPDATE configured_owners SET status='available' WHERE owner_kind=?").run(validated.ownerKind);
+      db.prepare(`INSERT INTO configured_owners(owner_kind,schema_version,status) VALUES(?,1,'available') ON CONFLICT(owner_kind) DO UPDATE SET schema_version=1,status='available'`).run(validated.ownerKind);
       this.projectEvent(db, validated);
       this.projectMetrics(db, validated);
       this.appendChange(db, 'owner-event', validated.correlations.runId, protectedEvent(validated.eventKind));
@@ -186,11 +189,9 @@ export class OperationsReadModel implements BackendApplicationContribution {
 
   registerOwner(ownerKind: OwnerKind): void {
     this.start(); console.info('[kogg:operations:owners] owner.verify.started', { ownerKind, ownerSchemaVersion: 1 });
-    const known = this.db().prepare('SELECT 1 FROM owner_cursors WHERE owner_kind=? LIMIT 1').get(ownerKind);
-    this.db().prepare(`INSERT INTO configured_owners(owner_kind,schema_version,status) VALUES(?,1,?) ON CONFLICT(owner_kind) DO UPDATE SET schema_version=1,status=excluded.status`).run(ownerKind, known ? 'available' : 'unavailable');
+    this.db().prepare(`INSERT INTO configured_owners(owner_kind,schema_version,status) VALUES(?,1,'available') ON CONFLICT(owner_kind) DO UPDATE SET schema_version=1,status='available'`).run(ownerKind);
     this.reevaluateLifecycle();
-    if (known) console.info('[kogg:operations:owners] available', { ownerKind, ownerSchemaVersion: 1 });
-    else console.warn('[kogg:operations:owners] unavailable', { ownerKind, ownerSchemaVersion: 1, safeCode: 'OWNER_NOT_YET_OBSERVED' });
+    console.info('[kogg:operations:owners] available', { ownerKind, ownerSchemaVersion: 1 });
   }
 
   subscribe(resumeCursor?: string): OperationsStreamSubscriptionV1 {
@@ -565,7 +566,7 @@ export class OperationsReadModel implements BackendApplicationContribution {
   }
   private dropClient(client: KoggOperationsReadModelClient, error: unknown): void { if (!this.clients.delete(client)) return; console.warn('[kogg:operations:stream] client.failed', { clientCount: this.clients.size, safeCode: 'STREAM_DELIVERY_FAILED', errorType: errorType(error) }); }
   private meta(): Row { return this.db().prepare('SELECT * FROM projection_meta WHERE singleton=1').get() as Row; }
-  private ownerCount(): number { return this.count('SELECT count(DISTINCT owner_kind) AS count FROM owner_cursors'); }
+  private ownerCount(): number { return this.count("SELECT count(*) AS count FROM configured_owners WHERE status='available'"); }
   private faultCount(): number { return this.count('SELECT count(*) AS count FROM projection_faults'); }
   private count(sql: string): number { return Number((this.db().prepare(sql).get() as Row).count); }
   private countRows(db: DatabaseSync, sql: string, ...values: readonly (string | number)[]): number { return Number((db.prepare(sql).get(...values) as Row).count); }
