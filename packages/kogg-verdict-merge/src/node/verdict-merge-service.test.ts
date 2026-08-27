@@ -9,6 +9,7 @@ import { verdictMergeDigest } from '../common/verdict-merge-canonical';
 import { VerdictMergeDiagnosticContributor, VERDICT_MERGE_CHECKS } from './verdict-merge-diagnostic-contributor';
 import { VerdictMergeService } from './verdict-merge-service';
 import { VerdictProjectionAuthority, type UnsealedVerdictExplanationV1 } from './verdict-projection-authority';
+import { OperationsReadModel } from '@kogg/operations/lib/node/operations-read-model';
 
 // diagnostic-coverage: verdict.provenance, verdict.bindings, verdict.currentness, verdict.explanation, merge.authorization, merge.preflight, merge.processes, merge.atomicity, merge.recovery, merge.source-maps
 test('refuses and durably replays a valid exact query when the Ranex projection owner is unavailable', async () => {
@@ -17,6 +18,20 @@ test('refuses and durably replays a valid exact query when the Ranex projection 
 test('stores one immutable closed explanation, replays it exactly, and verifies it across restart', async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), 'kogg-verdict-store-')); const database = path.join(root, 'registry.sqlite3');
   try { const service = new VerdictMergeService(new PassingAuthority(), database); await service.onStart(); const first = await service.explain(query()); assert.equal(first.kind, 'completed'); if (first.kind !== 'completed') throw new Error('Expected completed explanation'); assert.equal(first.safeCode, 'VERDICT_OK'); assert.equal(first.replay, false); assert.match(first.explanation.explanationDigest, /^[0-9a-f]{64}$/u); const replay = await service.explain(query()); assert.equal(replay.kind, 'completed'); if (replay.kind === 'completed') assert.equal(replay.replay, true); const candidates = await service.mergeCandidates(); assert.equal(candidates.length, 1); assert.equal(candidates[0]?.destinationRef, 'refs/heads/main'); assert.equal(candidates[0]?.ranexDecision, 'pass'); assert.equal(service.diagnostics().explanationCount, 1); service.onStop(); const restarted = new VerdictMergeService(new VerdictProjectionAuthority(), database); await restarted.onStart(); assert.equal(restarted.diagnostics().integrity, true); assert.equal(restarted.diagnostics().explanationCount, 1); restarted.onStop(); }
+  finally { await rm(root, { recursive: true, force: true }); }
+});
+test('publishes an honest unknown verdict through a stable owner and replays it exactly across restart', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'kogg-verdict-owner-')); const database = path.join(root, 'registry.sqlite3'); const projection = new OperationsReadModel(path.join(root, 'operations.sqlite3'));
+  try {
+    projection.start(); projection.registerOwner('verdict'); const service = new VerdictMergeService(new VerdictProjectionAuthority(), database); service.setOwnerSink(projection); await service.onStart();
+    assert.deepEqual(await service.explain(query()), { kind: 'refused', safeCode: 'VERDICT_UNKNOWN' }); assert.equal(projection.diagnostics().acceptedEventCount, 1); assert.equal(projection.diagnostics().ownerCount, 1);
+    const source = new DatabaseSync(database); const identityBefore = source.prepare('SELECT owner_id,owner_epoch_id FROM verdict_owner_meta').get(); const event = source.prepare('SELECT event_kind,safe_code,task_id,project_id FROM verdict_owner_events').get() as Record<string, unknown>; assert.deepEqual({ ...event }, { event_kind: 'verdict.unknown', safe_code: 'VERDICT_UNKNOWN', task_id: query().taskId, project_id: query().projectId }); assert.equal(JSON.stringify(event).includes(query().destinationRef), false); assert.equal(JSON.stringify(event).includes(query().subjectOid), false); source.close(); service.onStop();
+    const restarted = new VerdictMergeService(new VerdictProjectionAuthority(), database); restarted.setOwnerSink(projection); await restarted.onStart(); assert.equal(projection.diagnostics().acceptedEventCount, 1); const reopened = new DatabaseSync(database); assert.deepEqual(reopened.prepare('SELECT owner_id,owner_epoch_id FROM verdict_owner_meta').get(), identityBefore); reopened.close(); restarted.onStop(); projection.stop();
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+test('refuses startup after an immutable verdict owner source fact is altered', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'kogg-verdict-owner-corrupt-')); const database = path.join(root, 'registry.sqlite3');
+  try { const service = new VerdictMergeService(new VerdictProjectionAuthority(), database); await service.onStart(); await service.explain(query()); service.onStop(); const corrupt = new DatabaseSync(database); corrupt.exec('DROP TRIGGER verdict_owner_events_update'); corrupt.prepare("UPDATE verdict_owner_events SET safe_code='VERDICT_OK'").run(); corrupt.close(); await assert.rejects(new VerdictMergeService(new VerdictProjectionAuthority(), database).onStart(), /STORE_INTEGRITY_FAILED/u); }
   finally { await rm(root, { recursive: true, force: true }); }
 });
 test('refuses startup after immutable explanation corruption', async () => {
