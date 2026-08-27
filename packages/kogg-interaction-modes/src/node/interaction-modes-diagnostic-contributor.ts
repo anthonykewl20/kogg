@@ -16,7 +16,7 @@ export class InteractionModesDiagnosticContributor implements KoggDiagnosticCont
   constructor(@inject(InteractionModeRegistry) private readonly registry: InteractionModeRegistry) {}
   async diagnose(): Promise<readonly KoggDiagnosticCheck[]> {
     try {
-      const value = this.registry.diagnostics(); const healthy = value.integrity && value.eventChain && value.loggingViolationCount === 0;
+      const value = this.registry.diagnostics(); const healthy = value.integrity && value.eventChain && value.modeStateConsistent && value.immutableRequestLedgers && value.loggingViolationCount === 0;
       return [
         check('interaction-modes.registry', healthy, healthy ? 'The durable mode registry and event chain are valid.' : 'The durable mode registry requires recovery.'),
         check('interaction-modes.authority', healthy && value.degradedCount === 0, value.degradedCount ? 'One or more task mode bindings are degraded.' : 'Stored task mode bindings are internally consistent.'),
