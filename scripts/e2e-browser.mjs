@@ -967,7 +967,7 @@ async function exerciseOperationsStream(page) {
     const advancedSecond = await waitForStreamAdvance(second, initialSequence);
     const diagnosticMessage = page.getByText(/Diagnostics: (?:FAIL|WARN|PASS)/u).filter({ visible: true }).first();
     await diagnosticMessage.waitFor({ timeout: 15_000 });
-    assert.doesNotMatch(await diagnosticMessage.innerText(), /operations\.stream/u);
+    assert.doesNotMatch(await diagnosticMessage.innerText(), /operations\.(?:stream|actions|source-maps)/u);
     await clearNotifications(page);
 
     await secondPage.reload({ waitUntil: 'domcontentloaded' });
