@@ -475,6 +475,7 @@ async function exerciseProjects(page) {
     await page.locator('body.kogg-application').waitFor({ timeout: 20_000 });
     await trustWorkspace(page);
     projects = await ensureProjectsWidget(page);
+    projects = await retryProjectSwitchAfterRestoreRace(page, projects, 'Beta');
     await waitForProjectText(projects, /Beta[\s\S]*Active/u);
     await page.reload({ waitUntil: 'domcontentloaded' });
     await page.locator('body.kogg-application').waitFor({ timeout: 20_000 });
@@ -486,6 +487,7 @@ async function exerciseProjects(page) {
     await page.locator('body.kogg-application').waitFor({ timeout: 20_000 });
     await trustWorkspace(page);
     projects = await ensureProjectsWidget(page);
+    projects = await retryProjectSwitchAfterRestoreRace(page, projects, 'Alpha');
     await waitForProjectText(projects, /Alpha[\s\S]*Active/u);
 
     // Windows does not permit a watched workspace directory to be renamed.
@@ -617,6 +619,14 @@ async function exerciseTasks(page) {
     await tasks.locator('.kogg-review').getByText(canary).waitFor();
     await tasks.getByRole('button', { name: 'Approve this exact revision' }).click();
     await tasks.getByRole('button', { name: /Revoke approval/u }).waitFor();
+    await tasks.getByLabel('Existing run ID').fill('44444444-4444-4444-8444-444444444444');
+    await tasks.getByRole('button', { name: 'Authorize exact task admission' }).click();
+    const admission = tasks.locator('[data-admission-id]');
+    await admission.waitFor();
+    const admissionId = (await admission.innerText()).match(/[0-9a-f-]{36}/u)?.[0];
+    assert.ok(admissionId);
+    await exerciseAgents(page, admissionId);
+    tasks = await ensureTasksWidget(page);
     await tasks.getByRole('button', { name: /Revoke approval/u }).click();
     // Wait for the backend-confirmed revocation projection before issuing the
     // successor mutation. On slower Windows runners the previous test raced the
@@ -632,6 +642,8 @@ async function exerciseTasks(page) {
     tasks = await ensureTasksWidget(page);
     await tasks.getByText(/active · draft/iu).waitFor();
     assert.match(await tasks.locator('[data-specification]').inputValue(), /Winner edit/u);
+    const agents = await ensureAgentsWidget(page);
+    await agents.getByText(/cleaned · AGENT_OK/u).first().waitFor();
     await openCommand(page, 'Kogg: Run Diagnostics');
     await page.getByText(/Diagnostics: FAIL.*passed/iu).first().waitFor({ timeout: 15_000 });
     const supportDirectory = path.join(state, 'support');
@@ -639,10 +651,15 @@ async function exerciseTasks(page) {
     await openCommand(page, 'Kogg: Export Diagnostic Support Bundle');
     const supportFiles = (await waitForSupportBundle(supportDirectory, supportCount + 1)).sort();
     const supportReport = JSON.parse(await readFile(path.join(supportDirectory, supportFiles.at(-1)), 'utf8'));
-    for (const id of ['tasks.registry', 'tasks.revisions', 'tasks.bindings', 'tasks.approvals']) {
-        assert.equal(supportReport.checks.find(check => check.id === id)?.status, 'pass', id);
+    for (const id of ['tasks.registry', 'tasks.revisions', 'tasks.bindings', 'tasks.approvals', 'agents.adapters', 'agents.attempts', 'agents.processes', 'agents.recovery', 'agents.logging', 'agents.source-maps']) {
+        assert.equal(supportReport.checks.find(check => check.id === id)?.status, 'pass');
     }
-    for (const id of ['workflow.schema', 'workflow.graph', 'workflow.anchors', 'workflow.processes', 'workflow.cleanup', 'workflow.recovery', 'workflow.source-maps']) {
+    for (const id of ['claude.artifact', 'claude.legal', 'claude.settings', 'claude.protocol', 'claude.credentials']) {
+        const check = supportReport.checks.find(candidate => candidate.id === id);
+        assert.equal(check?.status, 'fail');
+        assert.equal(check?.details?.safeCode, 'CLAUDE_LEGAL_APPROVAL_REQUIRED');
+    }
+    for (const id of ['claude.processes', 'claude.cleanup', 'claude.recovery', 'claude.source-maps']) {
         assert.equal(supportReport.checks.find(check => check.id === id)?.status, 'pass');
     }
     for (const id of ['workflow.catalog', 'workflow.authority', 'workflow.scheduler', 'workflow.accessibility']) {
@@ -650,6 +667,115 @@ async function exerciseTasks(page) {
     }
     await page.keyboard.press('Escape');
     assert.equal(logs.join('\n').includes(canary), false);
+}
+
+async function exerciseAgents(page, admissionId) {
+    const agents = await ensureAgentsWidget(page);
+    await agents.locator('[data-adapter-row="codex-app-server@1.0.0"]').filter({ hasText: /disabled · codex\.app-server-v2 1\.0\.0/iu }).waitFor();
+    await agents.locator('[data-adapter-row="claude-agent-sdk@1.0.0"]').filter({ hasText: /disabled · claude\.agent-sdk 1\.0\.0/iu }).waitFor();
+    await agents.getByRole('button', { name: 'Save immutable revision' }).click();
+    await agents.locator('section').filter({ hasText: 'Role Revisions' }).locator('li').filter({ hasText: /implementer · [0-9a-f-]{36}/u }).waitFor();
+    const implementerRoleId = await roleOptionValue(agents, 'implementer');
+    await agents.getByLabel('Task admission ID').fill(admissionId);
+    await agents.getByRole('button', { name: 'Confirm and start exact attempt' }).click();
+    await agents.getByText(/cleaned · AGENT_OK.*resources 0/iu).waitFor({ timeout: 15_000 });
+    await agents.getByLabel('Task admission ID').fill(admissionId);
+    await agents.getByLabel('Exact adapter and version').fill('missing.adapter@1.0.0');
+    await agents.getByRole('button', { name: 'Confirm and start exact attempt' }).click();
+    await agents.getByText(/cleaned · ADAPTER_UNAVAILABLE.*resources 0/iu).waitFor({ timeout: 10_000 });
+
+    await agents.getByLabel('Role key', { exact: true }).fill('codex-refusal');
+    await agents.getByLabel('Display name').fill('Codex refusal probe');
+    await agents.getByLabel('Provider IDs').fill('openai');
+    await agents.getByLabel('Model IDs').fill('gpt-5');
+    await agents.getByRole('button', { name: 'Save immutable revision' }).click();
+    await agents.locator('section').filter({ hasText: 'Role Revisions' }).locator('li').filter({ hasText: /codex-refusal · [0-9a-f-]{36}/u }).waitFor();
+    const codexRoleId = await roleOptionValue(agents, 'codex-refusal');
+    await agents.getByLabel('Task admission ID').fill(admissionId);
+    await agents.getByLabel('Role revision').selectOption(codexRoleId);
+    await agents.getByLabel('Exact adapter and version').fill('codex-app-server@1.0.0');
+    await agents.getByLabel('Provider', { exact: true }).fill('openai');
+    await agents.getByLabel('Model', { exact: true }).fill('gpt-5');
+    await agents.getByRole('button', { name: 'Confirm and start exact attempt' }).click();
+    await agents.getByText(/cleaned · ADAPTER_DISABLED.*codex-app-server@1\.0\.0.*openai\/gpt-5.*resources 0/iu).waitFor({ timeout: 10_000 });
+    await agents.getByText('The exact adapter is registered but disabled; no process or provider request was started.').waitFor();
+
+    await agents.getByLabel('Role key', { exact: true }).fill('claude-refusal');
+    await agents.getByLabel('Display name').fill('Claude refusal probe');
+    await agents.getByLabel('Provider IDs').fill('anthropic');
+    await agents.getByLabel('Model IDs').fill('claude-sonnet-4-5');
+    await agents.getByRole('button', { name: 'Save immutable revision' }).click();
+    await agents.locator('section').filter({ hasText: 'Role Revisions' }).locator('li').filter({ hasText: /claude-refusal · [0-9a-f-]{36}/u }).waitFor();
+    const claudeRoleId = await roleOptionValue(agents, 'claude-refusal');
+    await agents.getByLabel('Task admission ID').fill(admissionId);
+    await agents.getByLabel('Role revision').selectOption(claudeRoleId);
+    await agents.getByLabel('Exact adapter and version').fill('claude-agent-sdk@1.0.0');
+    await agents.getByLabel('Provider', { exact: true }).fill('anthropic');
+    await agents.getByLabel('Model', { exact: true }).fill('claude-sonnet-4-5');
+    await agents.getByRole('button', { name: 'Confirm and start exact attempt' }).click();
+    await agents.getByText(/cleaned · ADAPTER_DISABLED.*claude-agent-sdk@1\.0\.0.*anthropic\/claude-sonnet-4-5.*resources 0/iu).waitFor({ timeout: 10_000 });
+
+    await agents.getByLabel('Role key', { exact: true }).fill('coordinator');
+    await agents.getByLabel('Display name').fill('Coordinator');
+    await agents.getByLabel('Model IDs').fill('fixture.hang,fixture.echo');
+    await agents.getByLabel('Child creation').selectOption('true');
+    await agents.getByLabel('Permitted child role keys').fill('implementer');
+    await agents.getByLabel('Maximum child depth').fill('2');
+    await agents.getByLabel('Maximum direct children').fill('2');
+    await agents.getByRole('button', { name: 'Save immutable revision' }).click();
+    await agents.locator('section').filter({ hasText: 'Role Revisions' }).locator('li').filter({ hasText: /coordinator · [0-9a-f-]{36}/u }).waitFor();
+    const coordinatorRoleId = await roleOptionValue(agents, 'coordinator');
+    await agents.getByLabel('Task admission ID').fill(admissionId);
+    await agents.getByLabel('Role revision').selectOption(coordinatorRoleId);
+    await agents.getByLabel('Model', { exact: true }).fill('fixture.hang');
+    await agents.getByRole('button', { name: 'Confirm and start exact attempt' }).click();
+    const parent = agents.locator('[data-attempt]').filter({ hasText: /ready.*fixture\.hang.*children 0.*resources 1/iu }).first();
+    await parent.waitFor({ timeout: 15_000 }); const parentAttemptId = await parent.getAttribute('data-attempt'); assert.ok(parentAttemptId);
+
+    await agents.getByLabel('Role key', { exact: true }).fill('implementer');
+    await agents.getByLabel('Display name').fill('Expanded implementer');
+    await agents.getByLabel('Tool policies').fill('read-only,write');
+    await agents.getByRole('button', { name: 'Save immutable revision' }).click();
+    await agents.locator('section').filter({ hasText: 'Role Revisions' }).locator('li').filter({ hasText: /implementer · [0-9a-f-]{36}/u }).nth(1).waitFor();
+    await agents.getByLabel('Task admission ID').fill(admissionId);
+    const expandedRoleId = await roleOptionValue(agents, 'implementer', new Set([implementerRoleId]));
+    await agents.getByLabel('Role revision').selectOption(expandedRoleId);
+    await agents.getByLabel('Parent attempt').selectOption(parentAttemptId);
+    await agents.getByLabel('Model', { exact: true }).fill('fixture.echo');
+    await agents.getByRole('button', { name: 'Confirm and start exact attempt' }).click();
+    await agents.locator('[data-attempt]').filter({ hasText: /cleaned · CHILD_AUTHORITY_EXPANSION.*resources 0/iu }).waitFor({ timeout: 10_000 });
+    await agents.locator(`[data-attempt="${parentAttemptId}"]`).filter({ hasText: /children 0.*resources 1/iu }).waitFor();
+
+    await agents.getByLabel('Task admission ID').fill(admissionId);
+    await agents.getByLabel('Role revision').selectOption(implementerRoleId);
+    await agents.getByLabel('Parent attempt').selectOption(parentAttemptId);
+    await agents.getByLabel('Model', { exact: true }).fill('fixture.echo');
+    await agents.getByRole('button', { name: 'Confirm and start exact attempt' }).click();
+    await agents.locator('[data-attempt]').filter({ hasText: new RegExp(`cleaned · AGENT_OK.*parent ${parentAttemptId.slice(0, 8)}.*resources 0`, 'iu') }).waitFor({ timeout: 15_000 });
+    const currentParent = agents.locator(`[data-attempt="${parentAttemptId}"]`); await currentParent.filter({ hasText: /children 1.*resources 1/iu }).waitFor(); await currentParent.getByRole('button', { name: 'Cancel' }).click();
+    await agents.locator(`[data-attempt="${parentAttemptId}"]`).filter({ hasText: /cleaned · CANCELLED.*children 1.*resources 0/iu }).waitFor({ timeout: 15_000 });
+}
+
+async function roleOptionValue(agents, roleKey, excluded = new Set()) {
+    const options = agents.getByLabel('Role revision').locator('option');
+    const count = await options.count();
+    for (let index = 0; index < count; index++) {
+        const option = options.nth(index); if ((await option.textContent())?.startsWith(`${roleKey} ·`)) { const value = await option.getAttribute('value'); if (value && !excluded.has(value)) return value; }
+    }
+    throw new Error(`Role option ${roleKey} is missing`);
+}
+
+async function ensureAgentsWidget(page) {
+    const widgets = page.locator('.kogg-agents-widget:visible');
+    if (!await widgets.count()) {
+        await openCommand(page, 'View: Toggle Kogg Agents');
+        await widgets.first().waitFor({ state: 'visible', timeout: 30_000 });
+    }
+    const widget = widgets.first();
+    const deadline = Date.now() + 10_000;
+    while (/Loading agent registry/iu.test(await widget.textContent().catch(() => 'Loading agent registry')) && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 50));
+    assert.doesNotMatch(await widget.textContent(), /Loading agent registry/iu);
+    return widget;
 }
 
 async function ensureTasksWidget(page) {
@@ -697,6 +823,20 @@ async function renderedWidget(widgets) {
         const area = rectangle.width * rectangle.height;
         return area > best.area ? { area, index } : best;
     }, { area: -1, index: 0 }));
+}
+
+async function retryProjectSwitchAfterRestoreRace(page, projects, projectName) {
+    const row = projects.locator('[data-project-row]').filter({ hasText: projectName });
+    if (/Active/u.test(await row.innerText())) return projects;
+    const button = row.getByRole('button', { name: 'Switch' });
+    if (await button.isEnabled().catch(() => false)) {
+        await button.click();
+        await page.locator('body.kogg-application').waitFor({ timeout: 20_000 });
+        const trust = page.getByRole('button', { name: 'Yes, I trust the authors' });
+        if (await trust.isVisible().catch(() => false)) await trustWorkspace(page);
+        return ensureProjectsWidget(page);
+    }
+    return projects;
 }
 
 async function createProjectThroughPicker(page, projects, name, repository) {

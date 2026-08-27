@@ -333,5 +333,11 @@ function operationRegistry(): OperationRegistryApi {
     id: randomUUID(), cancellable: true, start() {}, active() {}, waiting() {}, activity() {}, refuse() {}, complete() {}, fail() {}, timeout() {},
     async cancel() {}, async cleanup(run) { await run?.(); }, registerProcess() { return processLease; }
   };
-  return { async startOperation() { return lease; }, async snapshot() { throw new Error('unused'); }, async cancel() { throw new Error('unused'); }, diagnostics() { throw new Error('unused'); } };
+  return {
+    async startOperation() { return lease; },
+    async snapshot() { throw new Error('unused'); },
+    async cancel() { throw new Error('unused'); },
+    async recoveryResult() { return { status: 'missing' }; },
+    diagnostics() { throw new Error('unused'); }
+  };
 }

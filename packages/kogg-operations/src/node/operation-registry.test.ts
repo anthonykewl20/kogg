@@ -30,6 +30,7 @@ test('persists a real registered process lifecycle with safe cleanup and diagnos
     await operation.cleanup(); operation.complete();
     const snapshot = await registry.snapshot();
     assert.equal(snapshot.active.length, 0); assert.equal(snapshot.recent[0]?.state, 'completed'); assert.equal(snapshot.recent[0]?.cleanup, 'cleaned');
+    assert.equal((await registry.recoveryResult(operation.id)).status, 'cleaned'); assert.equal((await registry.recoveryResult(randomUUID())).status, 'missing');
     assert.deepEqual(registry.diagnostics(), {
       integrity: true, foreignKeys: true, permissions: true, recoveryComplete: true, activeCount: 0,
       stalledCount: 0, residualCount: 0, cleanupFailureCount: 0, admission: 'enabled'
@@ -78,6 +79,7 @@ test('reconciles a real matching child after an interrupted backend with an empt
       assert.equal(snapshot.admission, 'enabled'); assert.equal(snapshot.active.length, 0);
       const recoveredOperation = snapshot.recent.find(item => item.id === operation.id);
       assert.equal(recoveredOperation?.state, 'recovered'); assert.equal(recoveredOperation?.cleanup, 'cleaned');
+      assert.equal((await recovered.recoveryResult(operation.id)).status, 'cleaned');
       assert.equal(recovered.diagnostics().residualCount, 0);
     } finally { await recovered.onStop(); }
     await new Promise<void>(resolve => {
@@ -108,6 +110,7 @@ test('fails closed without signalling a live process whose durable identity does
       await recovered.onStart();
       assert.equal((await recovered.snapshot()).admission, 'blocked');
       assert.equal(recovered.diagnostics().residualCount, 1);
+      assert.equal((await recovered.recoveryResult(operation.id)).status, 'unverified');
       assert.doesNotThrow(() => process.kill(liveChild.pid!, 0));
     } finally { await recovered.onStop(); }
   } finally {
