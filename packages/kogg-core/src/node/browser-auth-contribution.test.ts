@@ -3,7 +3,7 @@ import { createServer } from 'node:http';
 import net from 'node:net';
 import test from 'node:test';
 import express from '@theia/core/shared/express';
-import { BrowserAuthContribution } from './browser-auth-contribution';
+import { BrowserAuthContribution, BrowserMutationAuthorizationError } from './browser-auth-contribution';
 
 test('browser authentication protects HTTP and WebSocket access with hardened cookies', async context => {
   const previous = {
@@ -25,6 +25,10 @@ test('browser authentication protects HTTP and WebSocket access with hardened co
   const contribution = new BrowserAuthContribution();
   contribution.configure(app);
   app.get('/protected', (_request, response) => response.status(200).send('ok'));
+  app.post('/mutation', (request, response) => {
+    try { response.status(200).json(contribution.verifyMutation(request)); }
+    catch (error) { response.status(error instanceof BrowserMutationAuthorizationError && error.code === 'authentication_required' ? 401 : 403).json({ error: error instanceof BrowserMutationAuthorizationError ? error.code : 'unknown' }); }
+  });
   const server = createServer(app);
   contribution.onStart(server);
   await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
@@ -58,6 +62,14 @@ test('browser authentication protects HTTP and WebSocket access with hardened co
   assert(cookie);
   assert.equal((await fetch(`${base}/protected`, { headers: { cookie } })).status, 200);
   assert.equal((await fetch(`${base}/protected`, { headers: { authorization: 'Bearer unit-test-token' } })).status, 200);
+  const csrfResponse = await fetch(`${base}/kogg/auth/csrf`, { headers: { cookie } }); assert.equal(csrfResponse.status, 200);
+  const csrf = String((await csrfResponse.json() as { csrfToken?: string }).csrfToken ?? ''); assert(csrf);
+  const mutation = await fetch(`${base}/mutation`, { method: 'POST', headers: { cookie, origin: base, 'x-kogg-csrf': csrf } });
+  assert.equal(mutation.status, 200); const actor = await mutation.json() as Record<string, unknown>;
+  assert.deepEqual({ role: actor.role, originVerified: actor.originVerified, csrfVerified: actor.csrfVerified }, { role: 'owner', originVerified: true, csrfVerified: true });
+  assert.equal((await fetch(`${base}/mutation`, { method: 'POST', headers: { cookie, origin: 'https://attacker.invalid', 'x-kogg-csrf': csrf } })).status, 403);
+  assert.equal((await fetch(`${base}/mutation`, { method: 'POST', headers: { cookie, origin: base, 'x-kogg-csrf': 'wrong' } })).status, 403);
+  assert.equal((await fetch(`${base}/mutation`, { method: 'POST', headers: { authorization: 'Bearer unit-test-token', origin: base, 'x-kogg-csrf': csrf } })).status, 401);
 
   await assertUpgradeIsRejected(address.port);
 

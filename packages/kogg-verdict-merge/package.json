@@ -1,7 +1,7 @@
 {
   "name": "@kogg/verdict-merge", "version": "0.1.0", "private": true,
   "main": "lib/node/backend-module.js", "types": "lib/node/backend-module.d.ts", "files": ["lib", "src"],
-  "dependencies": { "@kogg/contracts": "0.1.0", "@theia/core": "1.74.1" },
+  "dependencies": { "@kogg/contracts": "0.1.0", "@kogg/core": "0.1.0", "@theia/core": "1.74.1" },
   "devDependencies": { "@types/node": "22.15.3", "rimraf": "6.0.1", "typescript": "5.9.3" },
   "scripts": { "prepare": "yarn clean && yarn build", "clean": "rimraf lib tsconfig.tsbuildinfo", "build": "tsc -b", "typecheck": "tsc --noEmit", "test": "node --test lib/node/*.test.js" },
   "theiaExtensions": [{ "backend": "lib/node/backend-module" }]
