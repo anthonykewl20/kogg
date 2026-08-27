@@ -26,6 +26,9 @@ import {
   type KernelResultV2,
   type ProducerBindingProjectionV1,
   type ProducerBindingV1,
+  type OperationCancelProjectionV1,
+  type OperationReconcileExpectationV1,
+  type OperationReconcileProjectionV1,
   type RepositoryStateV1,
   type TaskBindingProjectionV1,
   type TaskExecutionBindingV1,
@@ -168,7 +171,7 @@ export class KernelBridgeImpl implements KernelBridge {
   }
 
   execute<TProjection extends KernelJson>(operation: KernelOperationV2, body: KernelJson): Promise<KernelResultV2<TProjection>> {
-    if (operation === 'task.bind' || operation === 'producer.dispatch' || operation === 'suite.freeze' || operation === 'suite.execute' || operation === 'evidence.admit' || operation === 'gate.evaluate' || operation === 'verdict.read') {
+    if (operation === 'task.bind' || operation === 'producer.dispatch' || operation === 'suite.freeze' || operation === 'suite.execute' || operation === 'evidence.admit' || operation === 'gate.evaluate' || operation === 'verdict.read' || operation === 'operation.reconcile' || operation === 'operation.cancel') {
       console.warn('[kogg:kernel:bridge] request.refused', { operation, safeCode: 'KERNEL_AUTHORITY_INVALID' });
       return Promise.resolve({
         protocol: KOGG_RANEX_PROTOCOL, requestId: randomUUID(), operationId: randomUUID(), status: 'refused',
@@ -242,6 +245,34 @@ export class KernelBridgeImpl implements KernelBridge {
     return this.requestResult<VerdictReadProjectionV1>('verdict.read', {
       currentSubject: currentSubject as unknown as KernelJson, expectation: expectation as unknown as KernelJson, expectationDigest
     });
+  }
+
+  reconcileOperation(expectation: OperationReconcileExpectationV1): Promise<KernelResultV2<OperationReconcileProjectionV1>> {
+    console.info('[kogg:kernel:recovery] recovery.started', { targetOperation: expectation.targetOperation });
+    const expectationDigest = domainDigest('operation-reconcile', expectation as unknown as KernelJson);
+    return this.requestResult<OperationReconcileProjectionV1>('operation.reconcile', { expectation: expectation as unknown as KernelJson, expectationDigest }).then(result => {
+      console.info('[kogg:kernel:recovery] recovery.reconciled', { targetOperation: expectation.targetOperation, safeCode: result.safeCode, outcome: result.projection?.outcome });
+      return result;
+    }, error => {
+      console.warn('[kogg:kernel:recovery] recovery.failed', { targetOperation: expectation.targetOperation, errorType: error instanceof Error ? error.name : 'UnknownError' });
+      throw error;
+    });
+  }
+
+  async cancelOperation(cancellationRequestId: string, targetOperationId: string): Promise<KernelResultV2<OperationCancelProjectionV1>> {
+    console.info('[kogg:kernel:cleanup] operation.cancel.started', { cancellationRequestId, targetOperationId });
+    if (targetOperationId === this.operation?.id) return refusedCancellation(cancellationRequestId, targetOperationId);
+    try {
+      await this.operations.cancel({ requestId: cancellationRequestId, operationId: targetOperationId });
+      const recovery = await this.operations.recoveryResult(targetOperationId);
+      if (recovery.status !== 'cleaned') return refusedCancellation(cancellationRequestId, targetOperationId);
+      const result = await this.requestResult<OperationCancelProjectionV1>('operation.cancel', { cancellationRequestId, cleanupStatus: 'cleaned', targetOperationId });
+      console.info('[kogg:kernel:cleanup] operation.cancel.completed', { cancellationRequestId, targetOperationId, safeCode: result.safeCode });
+      return result;
+    } catch (error) {
+      console.warn('[kogg:kernel:cleanup] operation.cancel.failed', { cancellationRequestId, targetOperationId, safeCode: 'KERNEL_CLEANUP_FAILED', errorType: error instanceof Error ? error.name : 'UnknownError' });
+      return refusedCancellation(cancellationRequestId, targetOperationId);
+    }
   }
 
   async verifyJournal(): Promise<{ readonly valid: boolean; readonly reason?: string }> {
@@ -461,6 +492,17 @@ function validOperationProjection(operation: KernelOperationV2, value: unknown):
       && (projection.currentDecision === null || ['pass', 'fail', 'blocked'].includes(String(projection.currentDecision)))
       && (projection.currentness === 'current') === (projection.currentDecision === projection.historicalDecision);
   }
+  if (operation === 'operation.reconcile') {
+    return Object.keys(projection).sort().join(',') === 'outcome,targetFactDigest'
+      && ['acknowledged', 'absent'].includes(String(projection.outcome))
+      && (projection.targetFactDigest === null || validDigest(projection.targetFactDigest))
+      && (projection.outcome === 'acknowledged') === validDigest(projection.targetFactDigest);
+  }
+  if (operation === 'operation.cancel') {
+    return Object.keys(projection).sort().join(',') === 'cancellationRequestId,outcome,targetOperationId'
+      && validUuid(projection.cancellationRequestId) && validUuid(projection.targetOperationId)
+      && projection.outcome === 'cancelled-clean';
+  }
   return true;
 }
 function validUuid(value: unknown): boolean { return typeof value === 'string' && /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u.test(value); }
@@ -469,6 +511,13 @@ function refusedCheckExecution(): KernelResultV2<CheckExecutionProjectionV1> {
   return {
     protocol: KOGG_RANEX_PROTOCOL, requestId: randomUUID(), operationId: randomUUID(), status: 'refused',
     safeCode: 'KERNEL_AUTHORITY_INVALID', resultDigest: null, journal: null, projection: null
+  };
+}
+function refusedCancellation(cancellationRequestId: string, targetOperationId: string): KernelResultV2<OperationCancelProjectionV1> {
+  console.warn('[kogg:kernel:cleanup] operation.cancel.failed', { cancellationRequestId, targetOperationId, safeCode: 'KERNEL_CLEANUP_FAILED' });
+  return {
+    protocol: KOGG_RANEX_PROTOCOL, requestId: randomUUID(), operationId: randomUUID(), status: 'refused',
+    safeCode: 'KERNEL_CLEANUP_FAILED', resultDigest: null, journal: null, projection: null
   };
 }
 
