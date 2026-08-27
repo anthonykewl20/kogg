@@ -75,6 +75,16 @@ try {
     await page.waitForTimeout(2_000);
     assert.match(await page.title(), /^workspace(?: - Kogg)?$/u);
 
+    if (process.env.KOGG_E2E_EXECUTION_ONLY === '1') {
+        await exerciseExecution(page);
+        process.stdout.write('Kogg browser execution-refusal E2E passed.\n');
+        await browser.close(); browser = undefined;
+        await stop(backend); backend = undefined;
+        await stop(registry); registry = undefined;
+        await rm(temporary, { recursive: true, force: true });
+        process.exit(0);
+    }
+
     if (process.env.KOGG_E2E_PROJECTS_ONLY === '1') {
         await exerciseProjects(page);
         process.stdout.write('Kogg browser Projects-only E2E passed.\n');
@@ -226,6 +236,7 @@ try {
     if (process.platform !== 'win32') await exerciseNodeDebug(page, 'Kogg E2E Debug', 'KOGG_E2E_READY');
 
     await exerciseProjects(page);
+    await exerciseExecution(page);
     await exerciseTasks(page);
     await exerciseOperations(page);
 
@@ -683,6 +694,34 @@ async function exerciseOperations(page) {
         assert.match(visibleOperations, new RegExp(kind, 'u'));
     }
     assert.doesNotMatch(visibleOperations, /pid|argv|environment|prompt|source code/iu);
+}
+
+async function exerciseExecution(page) {
+    const widgets = page.locator('.kogg-execution-widget');
+    if (!await widgets.count()) {
+        await openCommand(page, 'View: Toggle Kogg Execution');
+        await widgets.first().waitFor({ state: 'attached', timeout: 10_000 });
+    }
+    const active = await renderedWidget(widgets);
+    const execution = widgets.nth(active.index);
+    const start = execution.getByRole('button', { name: 'Start run' });
+    await start.waitFor({ state: 'visible', timeout: 15_000 });
+    const qualification = execution.getByRole('status'); let code; const deadline = Date.now() + 15_000;
+    while (/Loading execution state/iu.test(await qualification.innerText()) && Date.now() < deadline) await page.waitForTimeout(50);
+    while (Date.now() < deadline) {
+        const titleCode = /QUALIFICATION_[A-Z_]+/u.exec(await start.getAttribute('title') ?? '')?.[0];
+        const statusCode = /QUALIFICATION_[A-Z_]+/u.exec(await qualification.innerText())?.[0];
+        if (titleCode && titleCode === statusCode) { code = titleCode; break; }
+        await page.waitForTimeout(50);
+    }
+    assert(code);
+    assert.equal(await start.evaluate(button => button.disabled), true);
+    assert.equal(await start.getAttribute('title'), `Run start unavailable: ${code}.`);
+    await qualification.getByText(code).waitFor({ timeout: 10_000 });
+    await execution.getByRole('button', { name: 'Refresh' }).click();
+    await execution.getByText(`Run start unavailable: ${code}.`).waitFor({ timeout: 10_000 });
+    assert.match(logs.join('\n'), /\[kogg:execution:widget\] runs\.load\.completed/u);
+    assert.doesNotMatch(await execution.innerText(), /worktreeId|bindingDigest|nonce|refs\/kogg|command|prompt|source code/iu);
 }
 
 async function renderedWidget(widgets) {
