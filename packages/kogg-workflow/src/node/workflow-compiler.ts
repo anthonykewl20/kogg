@@ -47,7 +47,9 @@ export class WorkflowCompiler {
     if (nodes.size !== graph.nodes.length) throw new WorkflowValidationError('WORKFLOW_GRAPH_INVALID');
     const edgeIds = new Set<string>(); const incoming = new Map<string, number>(); const outgoing = new Map<string, string[]>();
     for (const node of graph.nodes) {
-      const allowed = new Set<WorkflowAuthorityEffect>(this.catalog.entry(node.kind).grantCeiling); if (node.requestedEffects.some(effect => !allowed.has(effect))) throw new WorkflowValidationError('WORKFLOW_AUTHORITY_EXPANSION');
+      const entry = this.catalog.entry(node.kind); const allowed = new Set<WorkflowAuthorityEffect>(entry.grantCeiling); if (node.requestedEffects.some(effect => !allowed.has(effect))) throw new WorkflowValidationError('WORKFLOW_AUTHORITY_EXPANSION');
+      if (node.configuration && node.configuration.absoluteDeadlineMs > entry.absoluteDeadlineMs) throw new WorkflowValidationError('WORKFLOW_DEADLINE');
+      if (node.configuration?.target === 'project-read-only' && node.requestedEffects.includes('mutate-private-repository')) throw new WorkflowValidationError('WORKFLOW_TARGET_MISMATCH');
       if (node.retry.maxAttempts > 1 && node.retry.sideEffectPolicy === 'none' && node.requestedEffects.some(effect => effect !== 'read-repository')) throw new WorkflowValidationError('WORKFLOW_AUTHORITY_EXPANSION');
       incoming.set(node.nodeId, 0); outgoing.set(node.nodeId, []);
     }

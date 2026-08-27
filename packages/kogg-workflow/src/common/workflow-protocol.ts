@@ -27,11 +27,24 @@ export interface WorkflowRetryPolicyV1 {
   readonly backoffMs: 0 | 1000 | 5000 | 15000;
   readonly sideEffectPolicy: 'none' | 'idempotent-exact-key' | 'fresh-authority';
 }
+export interface WorkflowNodeConfigurationV1 {
+  readonly schemaVersion: '1';
+  readonly roleRevisionId?: string;
+  readonly providerId?: string;
+  readonly modelId?: string;
+  readonly adapterKey?: string;
+  readonly adapterVersion?: string;
+  readonly deadlinePolicyId?: string;
+  readonly absoluteDeadlineMs: number;
+  readonly target: 'project-read-only' | 'private-worktree';
+  readonly condition: 'always' | 'prior-success' | 'prior-failure';
+}
 export interface EditableWorkflowNodeV1 {
   readonly nodeId: string;
   readonly kind: EditableNodeKind;
   readonly kindVersion: '1';
   readonly configurationDigest: string;
+  readonly configuration?: WorkflowNodeConfigurationV1;
   readonly requestedEffects: readonly WorkflowAuthorityEffect[];
   readonly retry: WorkflowRetryPolicyV1;
 }
