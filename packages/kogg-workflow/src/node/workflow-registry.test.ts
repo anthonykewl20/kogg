@@ -12,7 +12,7 @@ import { WorkflowNodeCatalog } from './workflow-node-catalog';
 import { OperationsReadModel } from '@kogg/operations/lib/node/operations-read-model';
 import type { ModeOperationAuthorizer } from '@kogg/interaction-modes/lib/common/interaction-modes-protocol';
 
-// diagnostic-coverage: workflow.schema, workflow.catalog, workflow.graph, workflow.anchors, workflow.authority, workflow.scheduler, workflow.processes, workflow.cleanup, workflow.recovery, workflow.source-maps
+// diagnostic-coverage: workflow.schema, workflow.catalog, workflow.graph, workflow.anchors, workflow.authority, workflow.scheduler, workflow.processes, workflow.cleanup, workflow.recovery, workflow.accessibility, workflow.source-maps
 
 const PROJECT = '10000000-0000-4000-8000-000000000001'; const TEMPLATE = '10000000-0000-4000-8000-000000000002'; const TASK = '10000000-0000-4000-8000-000000000003';
 const MODE_AUTHORITY: ModeOperationAuthorizer = {
@@ -35,7 +35,7 @@ test('versions a validated graph immutably and compiles the policy-owned trust s
     await registry.onStop(); const restarted = new WorkflowRegistry(compiler, MODE_AUTHORITY, database); await restarted.onStart(); const versions = await restarted.listVersions(TEMPLATE); assert.equal(versions.length, 2); assert.equal(versions[0]?.graphDigest, firstDigest);
     assert.deepEqual(await restarted.listProjectVersions(PROJECT), versions); assert.deepEqual(await restarted.listProjectVersions('10000000-0000-4000-8000-000000000099'), []);
     const diagnostics = await restarted.diagnostics(); assert.equal(diagnostics.canonicalMismatchCount, 0); assert.equal(diagnostics.catalogMismatchCount, 0); assert.equal(diagnostics.catalogEntryCount, 14); assert.equal(diagnostics.unavailableExecutorCount, 14); assert.equal(diagnostics.planMismatchCount, 0); assert.equal(diagnostics.residualProcessCount, 0);
-    const checks = await new WorkflowDiagnosticContributor(restarted).diagnose(); const catalogCheck = checks.find(check => check.id === 'workflow.catalog'); assert.equal(catalogCheck?.status, 'fail'); assert.equal(catalogCheck?.details?.unavailableExecutorCount, 14); assert.equal(checks.find(check => check.id === 'workflow.scheduler')?.status, 'pass'); await restarted.onStop();
+    const checks = await new WorkflowDiagnosticContributor(restarted).diagnose(); const catalogCheck = checks.find(check => check.id === 'workflow.catalog'); assert.equal(catalogCheck?.status, 'fail'); assert.equal(catalogCheck?.details?.unavailableExecutorCount, 14); assert.equal(checks.find(check => check.id === 'workflow.scheduler')?.status, 'pass'); assert.deepEqual(checks.find(check => check.id === 'workflow.accessibility')?.details, { editorViews: 2, sharedSemanticGraph: true }); assert.equal(checks.find(check => check.id === 'workflow.accessibility')?.status, 'pass'); await restarted.onStop();
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 

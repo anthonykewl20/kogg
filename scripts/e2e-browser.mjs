@@ -710,9 +710,10 @@ async function exerciseTasks(page) {
     for (const id of ['claude.processes', 'claude.cleanup', 'claude.recovery', 'claude.source-maps']) {
         assert.equal(supportReport.checks.find(check => check.id === id)?.status, 'pass');
     }
-    for (const id of ['workflow.catalog', 'workflow.authority', 'workflow.scheduler', 'workflow.accessibility']) {
+    for (const id of ['workflow.catalog', 'workflow.authority', 'workflow.scheduler']) {
         assert.equal(supportReport.checks.find(check => check.id === id)?.status, 'fail', id);
     }
+    assert.equal(supportReport.checks.find(check => check.id === 'workflow.accessibility')?.status, 'pass');
     await page.keyboard.press('Escape');
     assert.equal(logs.join('\n').includes(canary), false);
 }
@@ -865,9 +866,14 @@ async function exerciseWorkflowEditor(page) {
     let widget = widgets.first();
     await widget.getByText('Structured workflow outline ready.').waitFor({ timeout: 15_000 });
     assert.equal(await widget.locator('[data-workflow-node]').count(), 2);
+    await widget.getByRole('button', { name: 'Show spatial canvas' }).click();
+    assert.equal(await widget.locator('[data-workflow-canvas-node]').count(), 2);
     await widget.getByLabel('Node kind').selectOption('check.deterministic');
     await widget.getByRole('button', { name: 'Add node' }).click();
-    await widget.getByRole('button', { name: 'Move check.deterministic up' }).click();
+    await widget.getByRole('button', { name: 'Move check.deterministic earlier on canvas' }).click();
+    await widget.getByRole('button', { name: 'Show structured outline' }).click();
+    assert.equal(await widget.locator('[data-workflow-node]').count(), 3);
+    assert.match(await widget.locator('[data-workflow-node]').nth(1).innerText(), /check\.deterministic/u);
     await widget.getByRole('button', { name: 'Validate workflow' }).click();
     await widget.getByText(/Workflow valid: 3 nodes and 2 edges/u).waitFor({ timeout: 10_000 });
     await widget.getByRole('button', { name: 'Save immutable version' }).click();

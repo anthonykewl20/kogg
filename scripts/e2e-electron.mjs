@@ -361,9 +361,14 @@ async function exerciseElectronWorkflowEditor(page, electronApplication) {
     }
     await widget.getByText('Structured workflow outline ready.').waitFor({ timeout: 15_000 });
     assert.equal(await widget.locator('[data-workflow-node]').count(), 2);
+    await widget.getByRole('button', { name: 'Show spatial canvas' }).click();
+    assert.equal(await widget.locator('[data-workflow-canvas-node]').count(), 2);
     await widget.getByLabel('Node kind').selectOption('check.deterministic');
     await widget.getByRole('button', { name: 'Add node' }).click();
-    await widget.getByRole('button', { name: 'Move check.deterministic up' }).click();
+    await widget.getByRole('button', { name: 'Move check.deterministic earlier on canvas' }).click();
+    await widget.getByRole('button', { name: 'Show structured outline' }).click();
+    assert.equal(await widget.locator('[data-workflow-node]').count(), 3);
+    assert.match(await widget.locator('[data-workflow-node]').nth(1).innerText(), /check\.deterministic/u);
     await widget.getByRole('button', { name: 'Validate workflow' }).click();
     await widget.getByText(/Workflow valid: 3 nodes and 2 edges/u).waitFor({ timeout: 10_000 });
     await widget.getByRole('button', { name: 'Save immutable version' }).click();
