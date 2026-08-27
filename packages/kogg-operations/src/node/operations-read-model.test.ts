@@ -45,6 +45,18 @@ test('accepts a chained owner stream idempotently and rebuilds an identical safe
   } finally { await fixture.close(); }
 });
 
+test('projects correlated diagnostic lifecycle as a governed run', async () => {
+  const fixture = await createFixture();
+  try {
+    const runId = randomUUID(); const owner = fixture.owner('diagnostic');
+    fixture.model.ingest(owner.event('diagnostic.started', { runId }, { resultClass: 'pending' }));
+    assert.equal(fixture.model.snapshot().runs[0]?.lifecycle, 'active');
+    fixture.model.ingest(owner.event('diagnostic.failed', { runId }, { resultClass: 'failed', safeCode: 'DIAGNOSTIC_FAILED' }));
+    assert.equal(fixture.model.snapshot().runs[0]?.lifecycle, 'failed');
+    assert.deepEqual(fixture.model.timeline(runId).map(entry => entry.eventKind), ['diagnostic.started', 'diagnostic.failed']);
+  } finally { await fixture.close(); }
+});
+
 test('fails metric projection closed and diagnoses undeclared high-cardinality labels', async () => {
   const fixture = await createFixture(); const originalError = console.error; const logs: string[] = []; console.error = (...values: unknown[]) => logs.push(JSON.stringify(values));
   try {

@@ -12,13 +12,14 @@ export async function runOperation<T>(
   kind: OperationKind,
   work: (activity: () => void) => Promise<T>,
   options: {
+    readonly operationId?: string;
     readonly correlations?: OperationCorrelations;
     readonly failureCode?: OperationSafeCode;
     readonly resultFailed?: (result: T) => boolean;
     readonly resultFailureType?: string;
   } = {}
 ): Promise<T> {
-  const operation = await registry.startOperation({ kind, correlations: options.correlations, cancellable: false });
+  const operation = await registry.startOperation({ id: options.operationId, kind, correlations: options.correlations, cancellable: false });
   operation.start();
   operation.active();
   try {

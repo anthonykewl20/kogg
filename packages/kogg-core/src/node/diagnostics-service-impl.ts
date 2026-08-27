@@ -29,11 +29,14 @@ export class KoggDiagnosticsServiceImpl implements KoggDiagnosticsService {
   ) {}
 
   async run(): Promise<KoggDiagnosticReport> {
-    return runOperation(this.operations, 'diagnostics', () => this.runChecks());
+    const reportId = randomUUID();
+    return runOperation(this.operations, 'diagnostics', () => this.runChecks(reportId), {
+      operationId: reportId,
+      correlations: { runId: reportId }
+    });
   }
 
-  private async runChecks(): Promise<KoggDiagnosticReport> {
-    const reportId = randomUUID();
+  private async runChecks(reportId: string): Promise<KoggDiagnosticReport> {
     const startedAt = new Date().toISOString();
     this.owner.started(reportId, startedAt);
     console.info('[kogg:core:diagnostics] run.started');

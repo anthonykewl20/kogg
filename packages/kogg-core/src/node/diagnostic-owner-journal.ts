@@ -84,7 +84,7 @@ export class DiagnosticOwnerJournal implements BackendApplicationContribution {
         ownerKind: 'diagnostic', ownerInstanceId: string(meta, 'owner_id'), ownerSchemaVersion: 1, epochId: string(meta, 'epoch_id'),
         sequence: String(number(row, 'event_sequence')), eventId: string(row, 'event_id'), eventKind: string(row, 'event_kind'),
         factId: string(row, 'report_id'), factDigest: string(row, 'fact_digest'), previousEventDigest: previous,
-        causalParents: [], correlations: {}, observedAt: string(row, 'observed_at'), safePayload: JSON.parse(string(row, 'safe_payload')) as SafeOwnerPayloadV1
+        causalParents: [], correlations: { runId: string(row, 'report_id') }, observedAt: string(row, 'observed_at'), safePayload: JSON.parse(string(row, 'safe_payload')) as SafeOwnerPayloadV1
       };
       const event = { ...unsigned, eventDigest: OperationsReadModel.digest(unsigned) };
       previous = event.eventDigest;
