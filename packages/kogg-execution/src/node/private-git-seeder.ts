@@ -16,8 +16,9 @@ export interface PrivateGitSeedRequest {
   readonly baseCommit: string; readonly baseTree: string; readonly objectFormat: 'sha1' | 'sha256';
 }
 export interface PrivateGitSeedResult { readonly baseCommit: string; readonly baseTree: string; readonly branchRefDigest: string; readonly alternateCount: 0; }
+export interface PrivateGitSeedAuthority { seed(request: PrivateGitSeedRequest): Promise<PrivateGitSeedResult>; }
 
-export class PrivateGitSeeder {
+export class PrivateGitSeeder implements PrivateGitSeedAuthority {
   constructor(private readonly operations: OperationRegistryApi, private readonly git: ControllerGitRunner) {}
 
   async seed(request: PrivateGitSeedRequest): Promise<PrivateGitSeedResult> {

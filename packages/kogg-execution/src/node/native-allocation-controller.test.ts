@@ -16,6 +16,12 @@ test('verifies, registers, and commits one native helper allocation', async () =
   try {
     const result = await fixture.controller.allocate(fixture.request);
     assert.equal(result.state, 'allocated'); assert.equal(result.revision, '2');
+    assert.deepEqual(fixture.controller.privateGitPaths(result), {
+      privateRoot: path.join(fixture.allocationRoot, result.allocationName, 'worktree'),
+      bundlePath: path.join(fixture.allocationRoot, result.allocationName, 'seed.bundle')
+    });
+    assert.throws(() => fixture.controller.privateGitPaths({ allocationName: '../escape' }),
+      (error: unknown) => error instanceof NativeAllocationError && error.code === 'ALLOCATION_INTEGRITY_FAILED');
     assert.equal(fixture.allocations.diagnostics().activeQuotaProjectLeaseCount, 1); assert.equal(fixture.allocations.diagnostics().quarantinedQuotaProjectLeaseCount, 0);
     const cleaned = await fixture.controller.cleanup({ requestId: '60000000-0000-4000-8000-000000000009', worktreeId: result.worktreeId, expectedRevision: result.revision, bindingDigest: result.bindingDigest });
     assert.equal(cleaned.state, 'cleaned'); assert.equal(cleaned.revision, '4'); assert.equal(fixture.allocations.diagnostics().activeQuotaProjectLeaseCount, 0);
@@ -68,7 +74,7 @@ async function setup(mode: 'success' | 'refusal' | 'cleanup-refusal') {
   await operations.onStart(); await allocations.onStart();
   const targets = { physicalAllocationAuthority: async () => ({ helperDigest, mountQuotaDigest: `sha256:${'2'.repeat(64)}` }) };
   const controller = new NativeAllocationController(allocations, targets, operations, { platform: 'linux', arch: 'x64', allocationRoot, binary, manifest, timeoutMs: 5_000 }); controller.onStart();
-  return { root, binary, allocations, operations, controller, request: allocationRequest(), async close() { controller.onStop(); allocations.onStop(); await operations.onStop(); await rm(root, { recursive: true, force: true }); } };
+  return { root, binary, allocationRoot, allocations, operations, controller, request: allocationRequest(), async close() { controller.onStop(); allocations.onStop(); await operations.onStop(); await rm(root, { recursive: true, force: true }); } };
 }
 
 async function fakeHelper(mode: 'success' | 'refusal' | 'cleanup-refusal'): Promise<string> {

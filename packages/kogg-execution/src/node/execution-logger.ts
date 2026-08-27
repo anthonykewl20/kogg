@@ -12,6 +12,14 @@ type Fields = {
   'target-binding.requested': { targetId: string };
   'target-binding.completed': { targetId: string; qualificationId: string };
   'target-binding.refused': { targetId: string; safeCode: ExecutionQualificationCode };
+  'workspace.prepare.requested': { eventVersion: 1; requestId: string; projectId: string; runId: string; attemptId: string };
+  'workspace.allocated': { eventVersion: 1; requestId: string; projectId: string; runId: string; attemptId: string; worktreeId: string };
+  'workspace.seeded': { eventVersion: 1; requestId: string; projectId: string; runId: string; attemptId: string; worktreeId: string };
+  'workspace.ready': { eventVersion: 1; requestId: string; projectId: string; runId: string; attemptId: string; worktreeId: string };
+  'workspace.prepare.refused': { eventVersion: 1; requestId: string; projectId: string; runId: string; attemptId: string; safeCode: string; errorType: string };
+  'workspace.cleanup.started': { eventVersion: 1; requestId: string; worktreeId: string };
+  'workspace.cleanup.completed': { eventVersion: 1; requestId: string; worktreeId: string };
+  'workspace.cleanup.failed': { eventVersion: 1; requestId: string; worktreeId: string; safeCode: string; errorType: string };
   'diagnostics.failed': { errorType: string };
   'seal.started': { eventVersion: 1; operationId: string; runId: string; attemptId: string; worktreeId: string };
   'seal.completed': { eventVersion: 1; operationId: string; runId: string; attemptId: string; worktreeId: string; candidateCommit: string; candidateTree: string };
@@ -39,6 +47,14 @@ const ALLOWED: { [K in keyof Fields]: readonly (keyof Fields[K])[] } = {
   'target-binding.requested': ['targetId'],
   'target-binding.completed': ['targetId', 'qualificationId'],
   'target-binding.refused': ['targetId', 'safeCode'],
+  'workspace.prepare.requested': ['eventVersion', 'requestId', 'projectId', 'runId', 'attemptId'],
+  'workspace.allocated': ['eventVersion', 'requestId', 'projectId', 'runId', 'attemptId', 'worktreeId'],
+  'workspace.seeded': ['eventVersion', 'requestId', 'projectId', 'runId', 'attemptId', 'worktreeId'],
+  'workspace.ready': ['eventVersion', 'requestId', 'projectId', 'runId', 'attemptId', 'worktreeId'],
+  'workspace.prepare.refused': ['eventVersion', 'requestId', 'projectId', 'runId', 'attemptId', 'safeCode', 'errorType'],
+  'workspace.cleanup.started': ['eventVersion', 'requestId', 'worktreeId'],
+  'workspace.cleanup.completed': ['eventVersion', 'requestId', 'worktreeId'],
+  'workspace.cleanup.failed': ['eventVersion', 'requestId', 'worktreeId', 'safeCode', 'errorType'],
   'diagnostics.failed': ['errorType'],
   'seal.started': ['eventVersion', 'operationId', 'runId', 'attemptId', 'worktreeId'],
   'seal.completed': ['eventVersion', 'operationId', 'runId', 'attemptId', 'worktreeId', 'candidateCommit', 'candidateTree'],
@@ -62,7 +78,9 @@ export function executionLog<K extends keyof Fields>(event: K, fields: Fields[K]
   if (Object.keys(values).sort().join(',') !== [...allowed].sort().join(',') || Object.entries(values).some(([key, value]) => !validLogValue(key, value))) {
     violations++; console.error('[kogg:execution:target] logging.schema.violation', { event }); return;
   }
-  if (event.startsWith('service.') && !event.endsWith('.failed') && !event.endsWith('.refused')) console.info('[kogg:execution:service]', event, fields);
+  if (event.startsWith('workspace.') && !event.endsWith('.failed') && !event.endsWith('.refused')) console.info('[kogg:execution:workspace]', event, fields);
+  else if (event.startsWith('workspace.')) console.error('[kogg:execution:workspace]', event, fields);
+  else if (event.startsWith('service.') && !event.endsWith('.failed') && !event.endsWith('.refused')) console.info('[kogg:execution:service]', event, fields);
   else if (event.startsWith('service.')) console.error('[kogg:execution:service]', event, fields);
   else if (event === 'import.started') console.info('[kogg:execution:candidate] import.started', fields);
   else if (event === 'import.completed') console.info('[kogg:execution:candidate] import.completed', fields);
@@ -86,7 +104,7 @@ export function executionLoggingDiagnostics(): { readonly schemaCount: number; r
 function validLogValue(key: string, value: unknown): boolean {
   if (key === 'eventVersion') return value === 1;
   if (typeof value !== 'string' || Buffer.byteLength(value) > 128) return false;
-  if (['operationId', 'requestId', 'runId', 'attemptId', 'worktreeId', 'qualificationId'].includes(key)) return /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u.test(value);
+  if (['operationId', 'requestId', 'projectId', 'runId', 'attemptId', 'worktreeId', 'qualificationId'].includes(key)) return /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u.test(value);
   if (key === 'candidateCommit' || key === 'candidateTree') return /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/u.test(value);
   if (key === 'safeCode') return /^[A-Z][A-Z0-9_]{1,63}$/u.test(value);
   if (key === 'errorType') return /^[A-Za-z][A-Za-z0-9]{0,63}$/u.test(value);
