@@ -192,9 +192,12 @@ export class MergeAuthorizationRegistry implements BackendApplicationContributio
     }
   }
 
-  diagnostics(): { readonly integrity: boolean; readonly challengeCount: number; readonly authorizationCount: number; readonly authorizationReady: boolean; readonly sourceMapsPresent: boolean } {
+  diagnostics(): { readonly integrity: boolean; readonly challengeCount: number; readonly authorizationCount: number; readonly authorizationReady: boolean; readonly preflightReady: boolean; readonly atomicityReady: boolean; readonly recoveryReady: boolean; readonly recoveryBacklogCount: number; readonly sourceMapsPresent: boolean } {
     this.assertIntegrity(); const challengeCount = this.count('challenges'); const authorizationCount = this.count('authorizations');
-    return { integrity: true, challengeCount, authorizationCount, authorizationReady: true, sourceMapsPresent: existsSync(`${__filename}.map`) && existsSync(path.join(__dirname, 'merge-authorization-authority.js.map')) };
+    const preflightReady = Boolean(this.db().prepare("SELECT 1 FROM merge_lifecycle_events WHERE state IN ('constructing','cas-ready','cas-started','post-verifying','committed','cleaning','completed') LIMIT 1").get());
+    const atomicityReady = Boolean(this.db().prepare("SELECT 1 FROM merge_intents WHERE (SELECT state FROM merge_lifecycle_events WHERE merge_lifecycle_events.merge_id=merge_intents.merge_id ORDER BY sequence DESC LIMIT 1)='completed' LIMIT 1").get());
+    const recoveryBacklogCount = this.recoveryCandidates().length;
+    return { integrity: true, challengeCount, authorizationCount, authorizationReady: true, preflightReady, atomicityReady, recoveryReady: recoveryBacklogCount === 0, recoveryBacklogCount, sourceMapsPresent: existsSync(`${__filename}.map`) && existsSync(path.join(__dirname, 'merge-authorization-authority.js.map')) };
   }
 
   pendingIntent(mergeId: string): PrivateMergeIntent | undefined {
