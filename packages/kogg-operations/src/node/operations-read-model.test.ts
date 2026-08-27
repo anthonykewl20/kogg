@@ -4,6 +4,7 @@ import { mkdtemp, readFile, readdir, rm, stat } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
+import { DatabaseSync } from 'node:sqlite';
 import type { OwnerEventV1, OwnerKind, SafeCorrelationsV1, SafeOwnerPayloadV1 } from '../common/operations-read-model-protocol';
 import { OperationsReadModel, ProjectionFault } from './operations-read-model';
 import { OperationsSupportExporter } from './operations-support-export';
@@ -41,7 +42,7 @@ test('accepts a chained owner stream idempotently and rebuilds an identical safe
     const after = fixture.model.snapshot();
     assert.deepEqual(after.runs, before.runs); assert.notEqual(after.projectionEpoch, before.projectionEpoch);
     const afterMetrics = fixture.model.metrics(); assert.notEqual(afterMetrics.projectionEpoch, beforeMetrics.projectionEpoch); assert.deepEqual(afterMetrics.values, beforeMetrics.values);
-    assert.deepEqual(fixture.model.diagnostics(), { integrity: true, foreignKeys: true, lifecycle: 'current', ownerCount: 3, acceptedEventCount: 7, faultCount: 0, causalGapCount: 0, processAbnormalCount: 0, metricViolationCount: 0, activeRetentionHoldCount: 0, retentionViolationCount: 0 });
+    assert.deepEqual(fixture.model.diagnostics(), { integrity: true, foreignKeys: true, lifecycle: 'current', ownerCount: 3, acceptedEventCount: 7, faultCount: 0, causalGapCount: 0, processAbnormalCount: 0, metricViolationCount: 0, retainedMetricEpochCount: 2, activeRetentionHoldCount: 0, retentionViolationCount: 0 });
   } finally { await fixture.close(); }
 });
 
@@ -67,6 +68,44 @@ test('fails metric projection closed and diagnoses undeclared high-cardinality l
     assert.throws(() => fixture.model.metrics(), (error: unknown) => error instanceof ProjectionFault && error.safeCode === 'METRIC_CONTRACT_INVALID');
     assert.match(logs.join('\n'), /METRIC_CONTRACT_INVALID/u); assert.doesNotMatch(logs.join('\n'), /run_id/u);
   } finally { console.error = originalError; await fixture.close(); }
+});
+
+test('retains historical metric epochs for 90 days and never exposes them as the current snapshot', async () => {
+  const fixture = await createFixture();
+  try {
+    fixture.model.ingest(fixture.owner('workflow').event('run.completed', { runId: randomUUID() }, { lifecycle: 'completed' }));
+    const prior = fixture.model.metrics(); fixture.model.rebuild(); const current = fixture.model.metrics();
+    assert.notEqual(current.projectionEpoch, prior.projectionEpoch); assert.deepEqual(current.values, prior.values);
+    assert.equal(fixture.model.diagnostics().retainedMetricEpochCount, 2);
+    const database = (fixture.model as unknown as { db(): { prepare(sql: string): { run(...values: unknown[]): unknown } } }).db();
+    database.prepare('UPDATE metric_values SET updated_at=? WHERE projection_epoch=?').run('2025-01-01T00:00:00.000Z', prior.projectionEpoch);
+    assert.equal(fixture.model.applyRetention(Date.parse('2025-05-01T00:00:00.000Z')), 0);
+    assert.equal(fixture.model.diagnostics().retainedMetricEpochCount, 1); assert.deepEqual(fixture.model.metrics(), current);
+  } finally { await fixture.close(); }
+});
+
+test('keeps expired metric epochs while any owner retention hold remains active', async () => {
+  const fixture = await createFixture(); const runId = randomUUID();
+  try {
+    fixture.model.ingest(fixture.owner('workflow').event('run.completed', { runId }, { lifecycle: 'completed' }));
+    const ranex = fixture.owner('ranex'); fixture.model.ingest(ranex.event('evidence.requested', { runId }, { resultClass: 'pending' }));
+    const priorEpoch = fixture.model.metrics().projectionEpoch; fixture.model.rebuild();
+    const database = (fixture.model as unknown as { db(): { prepare(sql: string): { run(...values: unknown[]): unknown } } }).db();
+    database.prepare('UPDATE metric_values SET updated_at=? WHERE projection_epoch=?').run('2025-01-01T00:00:00.000Z', priorEpoch);
+    fixture.model.applyRetention(Date.parse('2025-05-01T00:00:00.000Z')); assert.equal(fixture.model.diagnostics().retainedMetricEpochCount, 2);
+    fixture.model.ingest(ranex.event('evidence.retention-released', { runId }, { resultClass: 'not-applicable' }));
+    fixture.model.applyRetention(Date.parse('2025-05-01T00:00:00.000Z')); assert.equal(fixture.model.diagnostics().retainedMetricEpochCount, 1);
+  } finally { await fixture.close(); }
+});
+
+test('upgrades pre-retention metric rows without losing the historical epoch', async () => {
+  const temporary = await mkdtemp(path.join(os.tmpdir(), 'kogg-operations-metric-migration-test-')); const databasePath = path.join(temporary, 'projection.sqlite3');
+  const legacy = new DatabaseSync(databasePath);
+  legacy.exec(`CREATE TABLE metric_values(projection_epoch TEXT NOT NULL,metric_name TEXT NOT NULL,metric_kind TEXT NOT NULL,labels_json TEXT NOT NULL,bucket_upper_bound INTEGER NOT NULL,value INTEGER NOT NULL,PRIMARY KEY(projection_epoch,metric_name,labels_json,bucket_upper_bound)) STRICT;
+    INSERT INTO metric_values VALUES('legacy-epoch','kogg_operations_total','counter','{"operation_kind":"workflow-run","owner_kind":"workflow","terminal_class":"completed"}',-1,1);`); legacy.close();
+  const model = new OperationsReadModel(databasePath);
+  try { model.start(); assert.equal(model.diagnostics().retainedMetricEpochCount, 1); }
+  finally { model.stop(); await rm(temporary, { recursive: true, force: true }); }
 });
 
 test('expires only terminal zero-residual derived details while preserving accepted owner history', async () => {
