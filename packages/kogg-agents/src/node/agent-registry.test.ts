@@ -144,6 +144,7 @@ test('classifies adapter, provider, usage, model, and deadline failures with zer
     ['fixture.transport', 'TRANSPORT_LOST'],
     ['fixture.invalid', 'ADAPTER_OBSERVATION_INVALID'],
     ['fixture.model-mismatch', 'MODEL_MISMATCH'],
+    ['fixture.stdin-close', 'MODEL_MISMATCH'],
     ['fixture.handshake', 'HANDSHAKE_TIMEOUT'],
     ['fixture.idle', 'IDLE_TIMEOUT'],
     ['fixture.provider-request', 'PROVIDER_REQUEST_TIMEOUT'],

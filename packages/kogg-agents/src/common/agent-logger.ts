@@ -19,6 +19,7 @@ export interface AgentLogFields {
   'adapter.start.requested': { attemptId: string; resourceId: string; deadlineClass?: DeadlineClass; durationMs?: number };
   'adapter.ready': { attemptId: string; resourceId: string; deadlineClass?: DeadlineClass; durationMs?: number };
   'adapter.host.exited': { attemptId: string; resourceId: string; exitClass: 'zero' | 'nonzero' | 'signal' };
+  'adapter.stdin.failed': { attemptId: string; resourceId: string; errorType: string };
   'adapter.observation.refused': { attemptId: string; resourceId: string; safeCode: AgentSafeCode; errorType: string };
   'attempt.activity': { attemptId: string; activityKind: string; activityCount: number; durationMs?: number };
   'usage.observed': { attemptId: string; usageSource: UsageProjectionV1['source']; usageStatus: UsageProjectionV1['status']; fieldName?: string; safeCode?: AgentSafeCode };
@@ -63,6 +64,7 @@ const SCHEMAS: Record<AgentLogEvent, Schema> = {
   'adapter.start.requested': schema('adapter', 'debug', ['attemptId', 'resourceId'], ['deadlineClass', 'durationMs']),
   'adapter.ready': schema('adapter', 'info', ['attemptId', 'resourceId'], ['deadlineClass', 'durationMs']),
   'adapter.host.exited': schema('adapter', 'info', ['attemptId', 'resourceId', 'exitClass']),
+  'adapter.stdin.failed': schema('adapter', 'warn', ['attemptId', 'resourceId', 'errorType']),
   'adapter.observation.refused': schema('adapter', 'warn', ['attemptId', 'resourceId', 'safeCode', 'errorType']),
   'attempt.activity': schema('registry', 'debug', ['attemptId', 'activityKind', 'activityCount'], ['durationMs']),
   'usage.observed': schema('registry', 'debug', ['attemptId', 'usageSource', 'usageStatus'], ['fieldName', 'safeCode']),

@@ -8,7 +8,8 @@ const emit = (value: Record<string, unknown>): void => { if (!stopped) process.s
 const finish = (code = 0): void => { stopped = true; setTimeout(() => process.exit(code), 5).unref(); };
 createInterface({ input: process.stdin, crlfDelay: Infinity }).on('line', line => { try { const value = JSON.parse(line) as { kind?: string }; if (value.kind === 'cancel' && scenario !== 'fixture.cancel-grace') { emit(scenario === 'fixture.cancel-race' ? { kind: 'completed' } : { kind: 'failed', safeCode: 'CANCELLED' }); finish(); } } catch { // observability-exempt: Hostile input is rejected by exit class only; echoing or logging it would leak content.
     finish(2); } });
-if (scenario !== 'fixture.handshake') emit({ kind: 'ready', observedModelId: scenario === 'fixture.model-mismatch' ? 'fixture.other' : scenario });
+if (scenario !== 'fixture.handshake') emit({ kind: 'ready', observedModelId: ['fixture.model-mismatch', 'fixture.stdin-close'].includes(scenario) ? 'fixture.other' : scenario });
+if (scenario === 'fixture.stdin-close') process.stdin.destroy();
 if (scenario === 'fixture.handshake' || scenario === 'fixture.hang' || scenario === 'fixture.cancel-grace' || scenario === 'fixture.cancel-race') { /* Wait for supervised cancellation. */ }
 else if (scenario === 'fixture.provider-request') { emit({ kind: 'activity', activityKind: 'provider' }); emit({ kind: 'provider-request-started' }); }
 else if (scenario === 'fixture.idle') setTimeout(() => emit({ kind: 'activity', activityKind: 'provider' }), 25);

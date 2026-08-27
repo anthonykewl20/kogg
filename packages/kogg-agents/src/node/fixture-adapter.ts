@@ -31,6 +31,7 @@ class FixtureSession implements AgentAdapterSession {
     if (process.versions.electron) childEnvironment.ELECTRON_RUN_AS_NODE = '1';
     const child = spawn(process.execPath, [script, this.input.binding.modelId], { cwd: process.cwd(), env: childEnvironment, stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true, detached: process.platform !== 'win32' });
     this.child = child; if (!child.pid) { this.process.failed('PROCESS_SPAWN_FAILED', 'MissingPid'); throw new FixtureAdapterError('ADAPTER_HOST_EXITED'); }
+    child.stdin.on('error', error => agentLog('adapter.stdin.failed', { attemptId: this.input.binding.attemptId, resourceId: this.resourceId, errorType: error.name }));
     this.process.started(child.pid);
     this.settled = new Promise<void>((resolve, reject) => {
       const lines = createInterface({ input: child.stdout, crlfDelay: Infinity });
@@ -43,7 +44,7 @@ class FixtureSession implements AgentAdapterSession {
     });
     return this.settled;
   }
-  async cancel(reason: CancelAttemptRequestV1['reason']): Promise<void> { const child = this.child; if (!child || child.exitCode !== null || child.signalCode !== null) return; child.stdin.write(`${JSON.stringify({ kind: 'cancel', reason })}\n`); await Promise.race([this.settled?.catch(() => undefined) ?? Promise.resolve(), delay(1_000)]); if (child.exitCode === null && child.signalCode === null) child.kill('SIGTERM'); }
+  async cancel(reason: CancelAttemptRequestV1['reason']): Promise<void> { const child = this.child; if (!child || child.exitCode !== null || child.signalCode !== null) return; if (!child.stdin.destroyed && !child.stdin.writableEnded) { try { child.stdin.write(`${JSON.stringify({ kind: 'cancel', reason })}\n`); } catch (error) { /* observability-exempt: closed agentLog records the safe stream error type without exposing the cancellation frame. */ agentLog('adapter.stdin.failed', { attemptId: this.input.binding.attemptId, resourceId: this.resourceId, errorType: error instanceof Error ? error.name : 'UnknownError' }); } } await Promise.race([this.settled?.catch(() => undefined) ?? Promise.resolve(), delay(1_000)]); if (child.exitCode === null && child.signalCode === null) child.kill('SIGTERM'); }
   async cleanup(): Promise<{ readonly residualCount: number }> { if (this.input.binding.modelId === 'fixture.cleanup-hang') await delay(1_000); const child = this.child; if (child && child.exitCode === null && child.signalCode === null) { if (process.platform !== 'win32' && child.pid) { try { process.kill(-child.pid, 'SIGTERM'); } catch { // observability-exempt: ESRCH is an expected absence proof and the residual inventory below remains authoritative.
           /* already absent */ } } else child.kill('SIGTERM'); await waitForExit(child, 2_000); } const residualCount = child && child.exitCode === null && child.signalCode === null ? 1 : 0; if (!residualCount) this.process?.cleanup(); return { residualCount }; }
 }
