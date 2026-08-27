@@ -29,9 +29,14 @@ test('accepts a chained owner stream idempotently and rebuilds an identical safe
     const before = fixture.model.snapshot();
     assert.deepEqual(before.runs[0], { runId, taskId, lifecycle: 'completed', attemptCount: 1, retryCount: 0, liveProcessCount: 0, abnormalProcessCount: 0, checkSummary: 'unknown', evidenceSummary: 'unknown', verdictSummary: 'unknown', mergeSummary: 'unknown', freshness: 'current', degradedOwners: [] });
     assert.equal(fixture.model.timeline(runId).length, 7);
+    const beforeMetrics = fixture.model.metrics();
+    assert(beforeMetrics.values.some(metric => metric.name === 'kogg_operations_total' && metric.value === 1));
+    assert(beforeMetrics.values.some(metric => metric.name === 'kogg_runs_active' && metric.labels.lifecycle_class === 'completed' && metric.value === 1));
+    assert.doesNotMatch(JSON.stringify(beforeMetrics.values.map(metric => metric.labels)), new RegExp([runId, taskId, attemptId, processId].join('|'), 'u'));
     fixture.model.rebuild();
     const after = fixture.model.snapshot();
     assert.deepEqual(after.runs, before.runs); assert.notEqual(after.projectionEpoch, before.projectionEpoch);
+    const afterMetrics = fixture.model.metrics(); assert.notEqual(afterMetrics.projectionEpoch, beforeMetrics.projectionEpoch); assert.deepEqual(afterMetrics.values, beforeMetrics.values);
     assert.deepEqual(fixture.model.diagnostics(), { integrity: true, foreignKeys: true, lifecycle: 'current', ownerCount: 3, faultCount: 0, causalGapCount: 0, processAbnormalCount: 0, metricViolationCount: 0 });
   } finally { await fixture.close(); }
 });
@@ -48,6 +53,33 @@ test('persists chain conflicts as degraded faults without cursor advance', async
     assert.equal(fixture.model.ingest(gap), 'accepted');
     assert.equal(fixture.model.snapshot().runs[0]?.lifecycle, 'active');
   } finally { await fixture.close(); }
+});
+
+test('binds bounded pagination cursors to query and projection epoch', async () => {
+  const fixture = await createFixture();
+  try {
+    const owner = fixture.owner('workflow'); const ids = [randomUUID(), randomUUID(), randomUUID()].sort();
+    for (const runId of ids) fixture.model.ingest(owner.event('run.queued', { runId }, { lifecycle: 'queued' }));
+    const first = fixture.model.listRuns({ sort: 'run-id-asc', pageSize: 1 }); assert.deepEqual(first.items.map(item => item.runId), [ids[0]]); assert(first.nextCursor);
+    const second = fixture.model.listRuns({ sort: 'run-id-asc', pageSize: 1, pageCursor: first.nextCursor }); assert.deepEqual(second.items.map(item => item.runId), [ids[1]]);
+    assert.throws(() => fixture.model.listRuns({ lifecycle: 'queued', sort: 'run-id-asc', pageSize: 1, pageCursor: first.nextCursor }), /PROJECTION_CURSOR_RESYNC_REQUIRED/u);
+    fixture.model.rebuild();
+    assert.throws(() => fixture.model.listRuns({ sort: 'run-id-asc', pageSize: 1, pageCursor: first.nextCursor }), /PROJECTION_CURSOR_RESYNC_REQUIRED/u);
+    assert.throws(() => fixture.model.listRuns({ sort: 'run-id-asc', pageSize: 101 }), /PROJECTION_QUERY_INVALID/u);
+  } finally { await fixture.close(); }
+});
+
+test('resumes bounded projection changes and requires resync after rebuild', async () => {
+  const fixture = await createFixture(); const delivered: string[] = [];
+  fixture.model.setClient({ projectionChanged(change) { delivered.push(change.sequence); } });
+  try {
+    const initial = fixture.model.subscribe(); assert.equal(initial.state, 'current'); assert.deepEqual(initial.changes, []);
+    const owner = fixture.owner('workflow'); fixture.model.ingest(owner.event('run.queued', { runId: randomUUID() }, { lifecycle: 'queued' }));
+    assert.deepEqual(delivered, ['1']);
+    const resumed = fixture.model.subscribe(initial.cursor); assert.equal(resumed.state, 'current'); assert.equal(resumed.changes.length, 1); assert.equal(resumed.changes[0]?.protected, true);
+    fixture.model.rebuild();
+    const stale = fixture.model.subscribe(resumed.cursor); assert.equal(stale.state, 'resync-required'); assert.deepEqual(stale.changes, []);
+  } finally { fixture.model.setClient(undefined); await fixture.close(); }
 });
 
 test('refuses missing causal parents and content-shaped payload fields', async () => {

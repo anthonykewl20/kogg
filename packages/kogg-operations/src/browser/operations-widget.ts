@@ -3,21 +3,26 @@ import { BaseWidget } from '@theia/core/lib/browser/widgets/widget';
 import { inject, injectable, postConstruct } from '@theia/core/shared/inversify';
 import { KoggOperationsClientToken, KoggOperationsService, type OperationsSnapshot } from '../common/operations-protocol';
 import { OperationsClient } from './operations-client';
+import { KoggOperationsReadModelService, type KoggOperationsReadModelService as OperationsReadModelService, type OperationsProjectionSnapshotV1, type OperationsTimelineEntryV1 } from '../common/operations-read-model-protocol';
 
-// diagnostic-coverage: operations.processes, operations.cleanup, operations.admission
+// diagnostic-coverage: operations.projection, operations.owners, operations.timeline, operations.processes, operations.cleanup, operations.admission
 
 @injectable()
 export class OperationsWidget extends BaseWidget {
   static readonly ID = 'kogg-operations';
   static readonly LABEL = 'Kogg Operations';
   private snapshotValue: OperationsSnapshot = { schemaVersion: 1, revision: 1, admission: 'recovering', active: [], recent: [] };
+  private projection: OperationsProjectionSnapshotV1 | undefined;
+  private timeline: readonly OperationsTimelineEntryV1[] = [];
+  private selectedRunId: string | undefined;
   private cancellingOperation: string | undefined;
   constructor(
     @inject(KoggOperationsService) private readonly service: KoggOperationsService,
+    @inject(KoggOperationsReadModelService) private readonly readModel: OperationsReadModelService,
     @inject(KoggOperationsClientToken) client: OperationsClient,
     @inject(MessageService) private readonly messages: MessageService,
     @inject(CommandService) private readonly commands: CommandService
-  ) { super(); client.listen(snapshot => this.applySnapshot(snapshot)); }
+  ) { super(); client.listen(snapshot => this.applySnapshot(snapshot)); client.listenProjection(() => void this.refreshProjection()); }
   @postConstruct() protected init(): void {
     this.id = OperationsWidget.ID; this.title.label = OperationsWidget.LABEL;
     this.title.caption = 'Kogg operation lifecycle and process cleanup'; this.title.closable = true;
@@ -25,8 +30,13 @@ export class OperationsWidget extends BaseWidget {
   }
   applySnapshot(snapshot: OperationsSnapshot): void { this.snapshotValue = snapshot; this.render(); }
   private async refresh(): Promise<void> {
-    try { this.snapshotValue = await this.service.snapshot(); }
+    try { [this.snapshotValue, this.projection] = await Promise.all([this.service.snapshot(), this.readModel.projectionSnapshot()]); }
     catch (error) { console.error('[kogg:operations:widget] snapshot.failed', { errorType: errorName(error) }); void this.messages.error('Kogg operations could not be loaded.'); }
+    finally { this.render(); }
+  }
+  private async refreshProjection(): Promise<void> {
+    try { this.projection = await this.readModel.projectionSnapshot(); if (this.selectedRunId) this.timeline = (await this.readModel.timelinePage(this.selectedRunId, undefined, 200)).items; }
+    catch (error) { console.error('[kogg:operations:widget] projection.refresh.failed', { errorType: errorName(error) }); }
     finally { this.render(); }
   }
   private render(): void {
@@ -38,14 +48,27 @@ export class OperationsWidget extends BaseWidget {
       ${active && operation.canCancel ? `<button data-cancel="${operation.id}" ${this.cancellingOperation ? 'disabled' : ''}>${this.cancellingOperation === operation.id ? 'Cancelling…' : 'Cancel'}</button>` : ''}</article>`;
     };
     const needsDiagnostics = this.snapshotValue.admission !== 'enabled' || [...this.snapshotValue.active, ...this.snapshotValue.recent].some(operation => operation.blocksAdmission || operation.state === 'stalled' || operation.cleanup === 'failed');
+    const projectedRuns = this.projection?.runs ?? [];
+    const projectionRows = projectedRuns.map(run => `<tr data-projected-run="${escapeHtml(run.runId)}"><td><button data-select-run="${escapeHtml(run.runId)}">${escapeHtml(run.runId.slice(0, 8))}</button></td><td>${escapeHtml(run.lifecycle)}</td><td>${run.attemptCount}</td><td>${run.retryCount}</td><td>${run.liveProcessCount}</td><td>${run.abnormalProcessCount}</td><td>${escapeHtml(run.evidenceSummary)} / ${escapeHtml(run.verdictSummary)} / ${escapeHtml(run.mergeSummary)}</td></tr>`).join('');
+    const timelineRows = this.timeline.map(entry => `<tr><td>${escapeHtml(entry.displayTime)}</td><td>${escapeHtml(entry.ownerKind)}</td><td>${escapeHtml(entry.eventKind)}</td><td>${escapeHtml(entry.safeCode ?? 'none')}</td></tr>`).join('');
     this.node.innerHTML = `<div class="kogg-panel"><header><h2>Kogg Operations</h2><p>Safe lifecycle, recovery, and cleanup status for Kogg-owned work.</p></header>
       <p role="status"><strong>Admission:</strong> ${escapeHtml(this.snapshotValue.admission)}</p>
+      <p role="status"><strong>Projection:</strong> ${escapeHtml(this.projection?.lifecycle ?? 'loading')} · ${this.projection?.faultCount ?? 0} faults</p>
       <button data-refresh ${this.cancellingOperation ? 'disabled' : ''}>Refresh</button>${needsDiagnostics ? '<button data-diagnostics>Run Diagnostics</button>' : ''}
+      <section><h3>Governed runs</h3>${projectedRuns.length ? `<div tabindex="0" role="region" aria-label="Governed run projection"><table><thead><tr><th>Run</th><th>Lifecycle</th><th>Attempts</th><th>Retries</th><th>Live</th><th>Abnormal</th><th>Evidence / verdict / merge</th></tr></thead><tbody>${projectionRows}</tbody></table></div>` : `<p>${this.projection?.lifecycle === 'degraded' ? 'Run projection is degraded.' : 'No governed runs match the current projection.'}</p>`}</section>
+      ${this.selectedRunId ? `<section><h3>Timeline for run ${escapeHtml(this.selectedRunId.slice(0, 8))}</h3><div tabindex="0" role="region" aria-label="Correlated run timeline"><table><thead><tr><th>Observed</th><th>Owner</th><th>Event</th><th>Safe code</th></tr></thead><tbody>${timelineRows || '<tr><td colspan="4">No timeline entries.</td></tr>'}</tbody></table></div></section>` : ''}
       <section><h3>Active</h3><div class="kogg-package-list">${this.snapshotValue.active.length ? this.snapshotValue.active.map(operation => item(operation, true)).join('') : '<p>No active operations.</p>'}</div></section>
       <section><h3>Recent</h3><div class="kogg-package-list">${this.snapshotValue.recent.length ? this.snapshotValue.recent.map(operation => item(operation, false)).join('') : '<p>No recent operations.</p>'}</div></section></div>`;
     this.node.querySelector<HTMLElement>('[data-refresh]')?.addEventListener('click', () => void this.refresh());
     this.node.querySelector<HTMLElement>('[data-diagnostics]')?.addEventListener('click', () => void this.commands.executeCommand('kogg.diagnostics.run'));
+    this.node.querySelectorAll<HTMLElement>('[data-select-run]').forEach(button => button.addEventListener('click', () => void this.selectRun(button.dataset.selectRun!)));
     this.node.querySelectorAll<HTMLElement>('[data-cancel]').forEach(button => button.addEventListener('click', () => void this.cancel(button.dataset.cancel!)));
+  }
+  private async selectRun(runId: string): Promise<void> {
+    this.selectedRunId = runId; this.timeline = []; this.render();
+    try { this.timeline = (await this.readModel.timelinePage(runId, undefined, 200)).items; }
+    catch (error) { console.error('[kogg:operations:widget] timeline.failed', { runId, errorType: errorName(error) }); void this.messages.error('The safe operations timeline could not be loaded.'); }
+    finally { this.render(); }
   }
   private async cancel(operationId: string): Promise<void> {
     const choice = await this.messages.warn('Cancel this Kogg operation and clean up its owned resources?', 'Cancel operation', 'Keep running');

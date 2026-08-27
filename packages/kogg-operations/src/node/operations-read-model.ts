@@ -1,4 +1,4 @@
-import { createHash, randomUUID } from 'node:crypto';
+import { createHash, createHmac, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
 import { chmodSync, mkdirSync, statSync } from 'node:fs';
 import path from 'node:path';
 import { DatabaseSync, type SQLOutputValue } from 'node:sqlite';
@@ -6,8 +6,10 @@ import { BackendApplicationContribution } from '@theia/core/lib/node';
 import { injectable, unmanaged } from '@theia/core/shared/inversify';
 import {
   OWNER_EVENT_KINDS, OWNER_KINDS, type OperationsProjectionDiagnosticsV1,
-  type OperationsProjectionRunV1, type OperationsProjectionSnapshotV1,
-  type OperationsTimelineEntryV1, type OwnerEventV1, type OwnerKind, type ProjectionLifecycle,
+  type OperationsMetricsSnapshotV1, type OperationsMetricValueV1, type OperationsProjectionRunV1, type OperationsProjectionSnapshotV1, type OperationsRunPageV1, type OperationsRunQueryV1,
+  type OperationsTimelinePageV1,
+  type KoggOperationsReadModelClient, type KoggOperationsReadModelService, type OperationsProjectionChangeV1,
+  type OperationsStreamSubscriptionV1, type OperationsTimelineEntryV1, type OwnerEventV1, type OwnerKind, type ProjectionLifecycle,
   type RunLifecycle, type SafeOwnerPayloadV1
 } from '../common/operations-read-model-protocol';
 
@@ -19,20 +21,34 @@ const DIGEST = /^[a-f0-9]{64}$/u;
 const SAFE_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/u;
 const SEQUENCE = /^(0|[1-9][0-9]{0,19})$/u;
 const CLOSED_PAYLOAD_KEYS = new Set(['lifecycle', 'safeCode', 'processKind', 'processState', 'cleanupState', 'terminalClass', 'abnormalClass', 'resultClass', 'decisionClass', 'freshness', 'knownState', 'count', 'retryOrdinal', 'durationMs', 'value', 'unit']);
+const CLOSED_STRING_VALUES: Readonly<Record<string, ReadonlySet<string>>> = {
+  lifecycle: new Set(['draft', 'frozen', 'active', 'archived', 'queued', 'waiting', 'retrying', 'blocked', 'failed', 'cancelling', 'cleaning', 'cancelled', 'recovered', 'completed', 'unknown', 'requested', 'started', 'refused', 'admitted', 'quarantined', 'available', 'unavailable']),
+  processKind: new Set(['git', 'ranex-kernel', 'provider-cli', 'governed-command', 'check', 'build', 'test', 'debug-adapter', 'delegated-theia', 'unknown']),
+  processState: new Set(['reserved', 'spawning', 'started', 'ready', 'exited', 'cancelling', 'cleaning', 'cleaned', 'spawn-failed', 'timed-out', 'residual', 'lost', 'quarantined', 'inventory-unknown']),
+  cleanupState: new Set(['required', 'cleaning', 'cleaned', 'failed', 'unknown']),
+  terminalClass: new Set(['none', 'completed', 'failed', 'cancelled', 'refused', 'recovered', 'committed', 'quarantined', 'unknown']),
+  abnormalClass: new Set(['none', 'stalled', 'identity-mismatch', 'unregistered-child', 'timeout', 'exit-without-cleanup', 'escalated', 'residual', 'owner-lost', 'recovery-active', 'quarantined', 'inventory-unknown']),
+  resultClass: new Set(['unknown', 'pending', 'passed', 'failed', 'refused', 'cancelled', 'not-applicable']),
+  decisionClass: new Set(['unknown', 'pending', 'accepted', 'rejected', 'refused', 'committed', 'quarantined']),
+  freshness: new Set(['current', 'stale', 'unknown']), knownState: new Set(['known', 'partial', 'unknown']), unit: new Set(['tokens', 'milliseconds', 'bytes', 'items'])
+};
 const ABNORMAL_PROCESS_EVENTS = new Set(['process.spawn-failed', 'process.timed-out', 'process.residual', 'process.lost', 'process.quarantined', 'process.inventory-unknown']);
 const LIVE_PROCESS_EVENTS = new Set(['process.reserved', 'process.spawning', 'process.started', 'process.ready', 'process.activity', 'process.cancelling', 'process.cleaning']);
 const TERMINAL_RUN_EVENTS: Readonly<Record<string, RunLifecycle>> = {
   'run.failed': 'failed', 'run.cancelled': 'failed', 'run.recovered': 'recovered', 'run.completed': 'completed'
 };
+const RUN_LIFECYCLES = new Set<RunLifecycle>(['queued', 'active', 'waiting', 'retrying', 'blocked', 'failed', 'cancelling', 'cleaning', 'recovered', 'completed', 'unknown']);
+const HISTOGRAM_BUCKETS = [10, 50, 100, 250, 500, 1_000, 2_500, 5_000, 15_000, 60_000, 300_000] as const;
 
 export class ProjectionFault extends Error {
   constructor(readonly safeCode: string) { super(safeCode); this.name = 'ProjectionFault'; }
 }
 
 @injectable()
-export class OperationsReadModel implements BackendApplicationContribution {
+export class OperationsReadModel implements BackendApplicationContribution, KoggOperationsReadModelService {
   private database: DatabaseSync | undefined;
   private readonly databasePath: string;
+  private client: KoggOperationsReadModelClient | undefined;
 
   constructor(@unmanaged() databasePath = path.join(process.env.KOGG_STATE_DIR ?? path.join(process.cwd(), '.kogg-state'), 'operations', 'projection.sqlite3')) {
     this.databasePath = databasePath;
@@ -117,11 +133,45 @@ export class OperationsReadModel implements BackendApplicationContribution {
         VALUES(?,?,?,?,?,1,'available') ON CONFLICT(owner_instance_id) DO UPDATE SET sequence=excluded.sequence,event_digest=excluded.event_digest,status='available'`)
         .run(validated.ownerKind, validated.ownerInstanceId, validated.epochId, validated.sequence, validated.eventDigest);
       this.projectEvent(db, validated);
-      this.appendChange(db, 'owner-event', validated.correlations.runId);
+      this.projectMetrics(db, validated);
+      this.appendChange(db, 'owner-event', validated.correlations.runId, protectedEvent(validated.eventKind));
     });
     console.info('[kogg:operations:owners] cursor.advanced', { ownerKind: validated.ownerKind, ownerSequence: validated.sequence });
     console.debug('[kogg:operations:timeline] projection.updated', { ownerKind: validated.ownerKind, eventKind: validated.eventKind, runId: validated.correlations.runId });
+    this.notifyLatestChange();
     return 'accepted';
+  }
+
+  setClient(client?: KoggOperationsReadModelClient): void { this.client = client; }
+
+  subscribe(resumeCursor?: string): OperationsStreamSubscriptionV1 {
+    this.start(); const queryDigest = createHash('sha256').update('operations-stream-v1').digest('hex');
+    let after = '0';
+    if (resumeCursor) {
+      try { after = this.decodeCursor(resumeCursor, 'stream', queryDigest).lastKey; }
+      catch (error) {
+        if (error instanceof ProjectionFault && error.safeCode === 'PROJECTION_CURSOR_RESYNC_REQUIRED') {
+          console.warn('[kogg:operations:stream] resync-required', { safeCode: error.safeCode });
+          return { state: 'resync-required', cursor: this.encodeCursor('stream', queryDigest, String(this.meta().change_sequence), ''), changes: [] };
+        }
+        throw error;
+      }
+    }
+    const rows = this.db().prepare('SELECT sequence,change_kind,run_id,protected,approximate_bytes FROM projection_changes WHERE CAST(sequence AS INTEGER)>CAST(? AS INTEGER) ORDER BY CAST(sequence AS INTEGER) LIMIT 1001').all(after) as Row[];
+    let bytes = 0; const changes: OperationsProjectionChangeV1[] = [];
+    for (const row of rows) {
+      bytes += Number(row.approximate_bytes);
+      if (changes.length >= 1_000 || bytes > 1_048_576) {
+        console.warn('[kogg:operations:stream] backpressure', { bufferedCount: changes.length, bufferedBytes: Math.min(bytes, 1_048_577) });
+        console.warn('[kogg:operations:stream] resync-required', { safeCode: 'STREAM_BUFFER_EXCEEDED' });
+        return { state: 'resync-required', cursor: this.encodeCursor('stream', queryDigest, String(this.meta().change_sequence), ''), changes: [] };
+      }
+      changes.push(this.changeFromRow(row));
+    }
+    const sequence = changes.at(-1)?.sequence ?? after;
+    if (resumeCursor) console.info('[kogg:operations:stream] resumed', { changeCount: changes.length });
+    else console.info('[kogg:operations:stream] connected', { changeCount: changes.length });
+    return { state: 'current', cursor: this.encodeCursor('stream', queryDigest, sequence, ''), changes };
   }
 
   snapshot(): OperationsProjectionSnapshotV1 {
@@ -129,6 +179,8 @@ export class OperationsReadModel implements BackendApplicationContribution {
     const meta = this.meta();
     return { schemaVersion: 1, projectionEpoch: String(meta.projection_epoch), changeSequence: String(meta.change_sequence), lifecycle: String(meta.lifecycle) as ProjectionLifecycle, runs: this.runs(), faultCount: this.faultCount() };
   }
+  async projectionSnapshot(): Promise<OperationsProjectionSnapshotV1> { return this.snapshot(); }
+  async metricsSnapshot(): Promise<OperationsMetricsSnapshotV1> { return this.metrics(); }
 
   timeline(runId: string, limit = 200): readonly OperationsTimelineEntryV1[] {
     if (!SAFE_ID.test(runId) || !Number.isSafeInteger(limit) || limit < 1 || limit > 200) throw new ProjectionFault('PROJECTION_QUERY_INVALID');
@@ -139,13 +191,52 @@ export class OperationsReadModel implements BackendApplicationContribution {
     }));
   }
 
+  listRuns(query: OperationsRunQueryV1): OperationsRunPageV1 {
+    validateRunQuery(query); this.start();
+    const filter = { lifecycle: query.lifecycle ?? null, abnormalOnly: query.abnormalOnly ?? false, sort: query.sort };
+    const queryDigest = createHash('sha256').update(canonical(filter)).digest('hex');
+    const cursor = query.pageCursor ? this.decodeCursor(query.pageCursor, 'runs', queryDigest) : undefined;
+    const order = query.sort === 'lifecycle-asc' ? 'lifecycle,run_id' : 'run_id';
+    const conditions: string[] = []; const values: (string | number)[] = [];
+    if (query.lifecycle) { conditions.push('lifecycle=?'); values.push(query.lifecycle); }
+    if (query.abnormalOnly) conditions.push('abnormal_process_count>0');
+    if (cursor) {
+      if (query.sort === 'lifecycle-asc') { conditions.push('(lifecycle>? OR (lifecycle=? AND run_id>?))'); values.push(cursor.sortKey, cursor.sortKey, cursor.lastKey); }
+      else { conditions.push('run_id>?'); values.push(cursor.lastKey); }
+    }
+    const rows = this.db().prepare(`SELECT * FROM run_projection ${conditions.length ? `WHERE ${conditions.join(' AND ')}` : ''} ORDER BY ${order} LIMIT ?`).all(...values, query.pageSize + 1) as Row[];
+    const hasMore = rows.length > query.pageSize; const selected = hasMore ? rows.slice(0, query.pageSize) : rows;
+    const items = selected.map(row => this.runFromRow(row)); const last = selected.at(-1);
+    return { projectionEpoch: String(this.meta().projection_epoch), items, ...(hasMore && last ? { nextCursor: this.encodeCursor('runs', queryDigest, String(last.run_id), query.sort === 'lifecycle-asc' ? String(last.lifecycle) : '') } : {}) };
+  }
+
+  timelinePage(runId: string, pageCursor?: string, limit = 200): OperationsTimelinePageV1 {
+    if (!SAFE_ID.test(runId) || !Number.isSafeInteger(limit) || limit < 1 || limit > 200) throw new ProjectionFault('PROJECTION_QUERY_INVALID');
+    this.start(); const queryDigest = createHash('sha256').update(canonical({ runId })).digest('hex');
+    const cursor = pageCursor ? this.decodeCursor(pageCursor, 'timeline', queryDigest) : undefined;
+    const rows = this.db().prepare('SELECT timeline_sequence,entry_id,run_id,owner_kind,owner_sequence,event_kind,safe_code,attempt_id,process_id,display_time FROM timeline WHERE run_id=? AND timeline_sequence>? ORDER BY timeline_sequence LIMIT ?').all(runId, cursor ? Number(cursor.lastKey) : 0, limit + 1) as Row[];
+    const hasMore = rows.length > limit; const selected = hasMore ? rows.slice(0, limit) : rows; const items = selected.map(timelineFromRow); const last = selected.at(-1);
+    return { projectionEpoch: String(this.meta().projection_epoch), items, ...(hasMore && last ? { nextCursor: this.encodeCursor('timeline', queryDigest, String(last.timeline_sequence), '') } : {}) };
+  }
+
+  metrics(): OperationsMetricsSnapshotV1 {
+    this.start();
+    const projectionEpoch = String(this.meta().projection_epoch);
+    const values = (this.db().prepare('SELECT metric_name,metric_kind,labels_json,bucket_upper_bound,value FROM metric_values WHERE projection_epoch=? ORDER BY metric_name,labels_json,bucket_upper_bound').all(projectionEpoch) as Row[]).map(row => ({
+      name: String(row.metric_name) as OperationsMetricValueV1['name'], kind: String(row.metric_kind) as OperationsMetricValueV1['kind'], labels: JSON.parse(String(row.labels_json)) as Record<string, string>, ...(Number(row.bucket_upper_bound) < 0 ? {} : { bucketUpperBound: Number(row.bucket_upper_bound) }), value: Number(row.value)
+    }));
+    return { schemaVersion: 1, projectionEpoch, values };
+  }
+
   rebuild(): void {
     this.start();
     console.info('[kogg:operations:projection] rebuild.started', { ownerCount: this.ownerCount() });
     this.setLifecycle('rebuilding');
     this.rebuildDerived(true);
+    this.transaction(db => this.appendChange(db, 'rebuild', undefined, true));
     this.setLifecycle(this.faultCount() ? 'degraded' : 'current');
     console.info('[kogg:operations:projection] completed', { ownerCount: this.ownerCount(), faultCount: this.faultCount() });
+    this.notifyLatestChange();
   }
 
   diagnostics(): OperationsProjectionDiagnosticsV1 {
@@ -230,34 +321,85 @@ export class OperationsReadModel implements BackendApplicationContribution {
     db.prepare('UPDATE run_projection SET lifecycle=? WHERE run_id=?').run(effective, runId);
   }
 
+  private projectMetrics(db: DatabaseSync, event: OwnerEventV1): void {
+    const terminal = terminalClass(event.eventKind);
+    if (terminal && event.eventKind.startsWith('run.')) this.incrementMetric(db, 'kogg_operations_total', { owner_kind: event.ownerKind, operation_kind: 'workflow-run', terminal_class: terminal });
+    if (terminal && event.eventKind.startsWith('attempt.')) this.incrementMetric(db, 'kogg_attempts_total', { owner_kind: event.ownerKind, node_kind: 'agent', terminal_class: terminal });
+    if (event.eventKind === 'attempt.requested' && (event.safePayload.retryOrdinal ?? 0) > 0) this.incrementMetric(db, 'kogg_retries_total', { node_kind: 'agent', safe_code_class: safeCodeClass(event.safePayload.safeCode) });
+    if (event.eventKind.endsWith('.refused')) this.incrementMetric(db, 'kogg_refusals_total', { owner_kind: event.ownerKind, safe_code_class: safeCodeClass(event.safePayload.safeCode) });
+    if (event.eventKind.endsWith('.recovered')) this.incrementMetric(db, 'kogg_recoveries_total', { owner_kind: event.ownerKind, terminal_class: terminal ?? 'recovered' });
+    if (event.eventKind.endsWith('.quarantined')) this.incrementMetric(db, 'kogg_quarantines_total', { owner_kind: event.ownerKind, safe_code_class: safeCodeClass(event.safePayload.safeCode) });
+    if (event.safePayload.durationMs !== undefined) {
+      const metric = event.eventKind === 'process.cleaned' ? 'kogg_process_cleanup_ms' : event.eventKind === 'run.recovered' ? 'kogg_recovery_duration_ms' : event.eventKind.startsWith('run.') ? 'kogg_run_duration_ms' : undefined;
+      if (metric) this.observeHistogram(db, metric, metric === 'kogg_process_cleanup_ms' ? { process_kind: event.safePayload.processKind ?? 'unknown', terminal_class: terminal ?? 'completed' } : { owner_kind: event.ownerKind, terminal_class: terminal ?? 'completed' }, event.safePayload.durationMs);
+    }
+    this.refreshGauges(db);
+    console.debug('[kogg:operations:metrics] update.completed', { ownerKind: event.ownerKind, eventKind: event.eventKind });
+  }
+
+  private incrementMetric(db: DatabaseSync, name: string, labels: Record<string, string>): void { this.upsertMetric(db, name, 'counter', labels, null, 1); }
+  private observeHistogram(db: DatabaseSync, name: string, labels: Record<string, string>, value: number): void { for (const bucket of HISTOGRAM_BUCKETS) if (value <= bucket) this.upsertMetric(db, name, 'histogram', labels, bucket, 1); }
+  private upsertMetric(db: DatabaseSync, name: string, kind: string, labels: Record<string, string>, bucket: number | null, delta: number): void {
+    const epoch = String((db.prepare('SELECT projection_epoch FROM projection_meta WHERE singleton=1').get() as Row).projection_epoch); const encoded = canonical(labels);
+    db.prepare(`INSERT INTO metric_values(projection_epoch,metric_name,metric_kind,labels_json,bucket_upper_bound,value) VALUES(?,?,?,?,?,?)
+      ON CONFLICT(projection_epoch,metric_name,labels_json,bucket_upper_bound) DO UPDATE SET value=value+excluded.value`).run(epoch, name, kind, encoded, bucket ?? -1, delta);
+  }
+  private refreshGauges(db: DatabaseSync): void {
+    const epoch = String((db.prepare('SELECT projection_epoch FROM projection_meta WHERE singleton=1').get() as Row).projection_epoch);
+    db.prepare("DELETE FROM metric_values WHERE projection_epoch=? AND metric_kind='gauge'").run(epoch);
+    for (const row of db.prepare('SELECT lifecycle,count(*) AS count FROM run_projection GROUP BY lifecycle').all() as Row[]) this.upsertMetric(db, 'kogg_runs_active', 'gauge', { lifecycle_class: String(row.lifecycle) }, null, Number(row.count));
+    for (const row of db.prepare('SELECT process_kind,CASE WHEN abnormal=1 THEN state ELSE \'none\' END AS abnormal_class,count(*) AS count FROM process_projection WHERE live=1 OR abnormal=1 GROUP BY process_kind,abnormal_class').all() as Row[]) this.upsertMetric(db, 'kogg_processes_active', 'gauge', { process_kind: String(row.process_kind), abnormal_class: String(row.abnormal_class) }, null, Number(row.count));
+  }
+
   private rebuildDerived(changeEpoch: boolean): void {
     this.transaction(database => {
-      database.exec('DELETE FROM timeline; DELETE FROM process_projection; DELETE FROM run_projection; DELETE FROM projection_changes;');
-      for (const row of database.prepare('SELECT * FROM accepted_events ORDER BY rowid').all() as Row[]) this.projectEvent(database, rowToEvent(database, row));
-      database.prepare('UPDATE projection_meta SET projection_epoch=CASE WHEN ? THEN ? ELSE projection_epoch END,change_sequence=0 WHERE singleton=1').run(changeEpoch ? 1 : 0, randomUUID());
+      database.exec('DELETE FROM timeline; DELETE FROM process_projection; DELETE FROM run_projection; DELETE FROM projection_changes; DELETE FROM metric_values;');
+      if (changeEpoch) database.prepare('UPDATE projection_meta SET projection_epoch=?,change_sequence=0 WHERE singleton=1').run(randomUUID());
+      else database.prepare('UPDATE projection_meta SET change_sequence=0 WHERE singleton=1').run();
+      for (const row of database.prepare('SELECT * FROM accepted_events ORDER BY rowid').all() as Row[]) { const event = rowToEvent(database, row); this.projectEvent(database, event); this.projectMetrics(database, event); }
     });
   }
 
   private runs(): readonly OperationsProjectionRunV1[] {
-    return (this.db().prepare('SELECT * FROM run_projection ORDER BY run_id').all() as Row[]).map(row => ({
+    return (this.db().prepare('SELECT * FROM run_projection ORDER BY run_id').all() as Row[]).map(row => this.runFromRow(row));
+  }
+
+  private runFromRow(row: Row): OperationsProjectionRunV1 {
+    return {
       runId: String(row.run_id), ...(row.task_id ? { taskId: String(row.task_id) } : {}), ...(row.project_id ? { projectId: String(row.project_id) } : {}), lifecycle: String(row.lifecycle) as RunLifecycle,
       ...(row.lifecycle_code ? { lifecycleCode: String(row.lifecycle_code) } : {}), attemptCount: Number(row.attempt_count), retryCount: Number(row.retry_count), liveProcessCount: Number(row.live_process_count), abnormalProcessCount: Number(row.abnormal_process_count),
       checkSummary: String(row.check_summary), evidenceSummary: String(row.evidence_summary), verdictSummary: String(row.verdict_summary), mergeSummary: String(row.merge_summary), freshness: String(row.freshness) as 'current', degradedOwners: JSON.parse(String(row.degraded_owners_json)) as OwnerKind[]
-    }));
+    };
+  }
+
+  private encodeCursor(kind: 'runs' | 'timeline' | 'stream', queryDigest: string, lastKey: string, sortKey: string): string {
+    const payload = Buffer.from(canonical({ kind, projectionEpoch: String(this.meta().projection_epoch), queryDigest, lastKey, sortKey, expiresAt: Date.now() + 15 * 60_000 }), 'utf8').toString('base64url');
+    const signature = createHmac('sha256', String(this.meta().cursor_key)).update(payload).digest('base64url'); return `${payload}.${signature}`;
+  }
+  private decodeCursor(encoded: string, kind: 'runs' | 'timeline' | 'stream', queryDigest: string): { lastKey: string; sortKey: string } {
+    if (encoded.length > 2_048) throw new ProjectionFault('PROJECTION_CURSOR_INVALID');
+    const [payload, signature, extra] = encoded.split('.'); if (!payload || !signature || extra) throw new ProjectionFault('PROJECTION_CURSOR_INVALID');
+    const expected = createHmac('sha256', String(this.meta().cursor_key)).update(payload).digest(); let supplied: Buffer;
+    try { supplied = Buffer.from(signature, 'base64url'); } catch { throw new ProjectionFault('PROJECTION_CURSOR_INVALID'); }
+    if (supplied.length !== expected.length || !timingSafeEqual(supplied, expected)) throw new ProjectionFault('PROJECTION_CURSOR_INVALID');
+    let value: unknown; try { value = JSON.parse(Buffer.from(payload, 'base64url').toString('utf8')); } catch { throw new ProjectionFault('PROJECTION_CURSOR_INVALID'); }
+    if (!isCursor(value) || value.kind !== kind || value.queryDigest !== queryDigest || value.projectionEpoch !== String(this.meta().projection_epoch) || value.expiresAt < Date.now()) throw new ProjectionFault('PROJECTION_CURSOR_RESYNC_REQUIRED');
+    return { lastKey: value.lastKey, sortKey: value.sortKey };
   }
 
   private migrate(): void {
     this.db().exec(`
-      CREATE TABLE IF NOT EXISTS projection_meta(singleton INTEGER PRIMARY KEY CHECK(singleton=1),schema_version INTEGER NOT NULL CHECK(schema_version=1),projection_epoch TEXT NOT NULL,lifecycle TEXT NOT NULL CHECK(lifecycle IN ('stopped','verifying','replaying','current','degraded','rebuilding','failed')),change_sequence TEXT NOT NULL) STRICT;
+      CREATE TABLE IF NOT EXISTS projection_meta(singleton INTEGER PRIMARY KEY CHECK(singleton=1),schema_version INTEGER NOT NULL CHECK(schema_version=1),projection_epoch TEXT NOT NULL,cursor_key TEXT NOT NULL,lifecycle TEXT NOT NULL CHECK(lifecycle IN ('stopped','verifying','replaying','current','degraded','rebuilding','failed')),change_sequence TEXT NOT NULL) STRICT;
       CREATE TABLE IF NOT EXISTS owner_cursors(owner_kind TEXT NOT NULL,owner_instance_id TEXT PRIMARY KEY,epoch_id TEXT NOT NULL,sequence TEXT NOT NULL,event_digest TEXT NOT NULL,schema_version INTEGER NOT NULL,status TEXT NOT NULL) STRICT;
       CREATE TABLE IF NOT EXISTS accepted_events(owner_kind TEXT NOT NULL,owner_instance_id TEXT NOT NULL,owner_schema_version INTEGER NOT NULL,epoch_id TEXT NOT NULL,sequence TEXT NOT NULL,event_id TEXT NOT NULL UNIQUE,event_kind TEXT NOT NULL,fact_id TEXT NOT NULL,fact_digest TEXT NOT NULL,previous_event_digest TEXT NOT NULL,correlations_json TEXT NOT NULL,observed_at TEXT NOT NULL,safe_payload_json TEXT NOT NULL,event_digest TEXT NOT NULL UNIQUE,UNIQUE(owner_instance_id,epoch_id,sequence)) STRICT;
       CREATE TABLE IF NOT EXISTS causal_edges(event_digest TEXT NOT NULL REFERENCES accepted_events(event_digest),parent_digest TEXT NOT NULL REFERENCES accepted_events(event_digest),PRIMARY KEY(event_digest,parent_digest)) STRICT;
       CREATE TABLE IF NOT EXISTS run_projection(run_id TEXT PRIMARY KEY,task_id TEXT,project_id TEXT,lifecycle TEXT NOT NULL,owner_lifecycle TEXT NOT NULL,lifecycle_code TEXT,attempt_count INTEGER NOT NULL,retry_count INTEGER NOT NULL,live_process_count INTEGER NOT NULL,abnormal_process_count INTEGER NOT NULL,check_summary TEXT NOT NULL,evidence_summary TEXT NOT NULL,verdict_summary TEXT NOT NULL,merge_summary TEXT NOT NULL,freshness TEXT NOT NULL,degraded_owners_json TEXT NOT NULL) STRICT;
       CREATE TABLE IF NOT EXISTS process_projection(process_id TEXT PRIMARY KEY,run_id TEXT NOT NULL REFERENCES run_projection(run_id),operation_id TEXT,attempt_id TEXT,process_kind TEXT NOT NULL,state TEXT NOT NULL,cleanup_state TEXT NOT NULL,abnormal INTEGER NOT NULL CHECK(abnormal IN (0,1)),live INTEGER NOT NULL CHECK(live IN (0,1)),safe_code TEXT) STRICT;
       CREATE TABLE IF NOT EXISTS timeline(timeline_sequence INTEGER PRIMARY KEY AUTOINCREMENT,entry_id TEXT NOT NULL UNIQUE,run_id TEXT NOT NULL REFERENCES run_projection(run_id),owner_kind TEXT NOT NULL,owner_sequence TEXT NOT NULL,event_kind TEXT NOT NULL,safe_code TEXT,attempt_id TEXT,process_id TEXT,display_time TEXT NOT NULL,event_digest TEXT NOT NULL UNIQUE) STRICT;
-      CREATE TABLE IF NOT EXISTS projection_changes(sequence INTEGER PRIMARY KEY AUTOINCREMENT,change_kind TEXT NOT NULL,run_id TEXT) STRICT;
+      CREATE TABLE IF NOT EXISTS projection_changes(sequence TEXT PRIMARY KEY,change_kind TEXT NOT NULL,run_id TEXT,protected INTEGER NOT NULL CHECK(protected IN (0,1)),approximate_bytes INTEGER NOT NULL CHECK(approximate_bytes>0)) STRICT;
+      CREATE TABLE IF NOT EXISTS metric_values(projection_epoch TEXT NOT NULL,metric_name TEXT NOT NULL,metric_kind TEXT NOT NULL,labels_json TEXT NOT NULL,bucket_upper_bound INTEGER NOT NULL CHECK(bucket_upper_bound>=-1),value INTEGER NOT NULL CHECK(value>=0),PRIMARY KEY(projection_epoch,metric_name,labels_json,bucket_upper_bound)) STRICT;
       CREATE TABLE IF NOT EXISTS projection_faults(fault_sequence INTEGER PRIMARY KEY AUTOINCREMENT,fault_id TEXT NOT NULL UNIQUE,owner_kind TEXT NOT NULL,owner_instance_id TEXT NOT NULL,epoch_id TEXT NOT NULL,owner_sequence TEXT NOT NULL,safe_code TEXT NOT NULL,created_at TEXT NOT NULL) STRICT;
-      INSERT OR IGNORE INTO projection_meta(singleton,schema_version,projection_epoch,lifecycle,change_sequence) VALUES(1,1,'${randomUUID()}','stopped','0');
+      INSERT OR IGNORE INTO projection_meta(singleton,schema_version,projection_epoch,cursor_key,lifecycle,change_sequence) VALUES(1,1,'${randomUUID()}','${randomBytes(32).toString('hex')}','stopped','0');
     `);
     const meta = this.meta(); if (Number(meta.schema_version) !== 1) throw new ProjectionFault('PROJECTION_SCHEMA_INCOMPATIBLE');
   }
@@ -268,7 +410,13 @@ export class OperationsReadModel implements BackendApplicationContribution {
     if (!this.storagePermissionsValid()) throw new ProjectionFault('PROJECTION_PERMISSIONS_INVALID');
   }
   private setLifecycle(lifecycle: ProjectionLifecycle): void { this.db().prepare('UPDATE projection_meta SET lifecycle=? WHERE singleton=1').run(lifecycle); }
-  private appendChange(db: DatabaseSync, kind: string, runId?: string): void { db.prepare('INSERT INTO projection_changes(change_kind,run_id) VALUES(?,?)').run(kind, runId ?? null); db.prepare("UPDATE projection_meta SET change_sequence=CAST(CAST(change_sequence AS INTEGER)+1 AS TEXT) WHERE singleton=1").run(); }
+  private appendChange(db: DatabaseSync, kind: 'owner-event' | 'rebuild', runId: string | undefined, isProtected: boolean): void { const next = String(BigInt(String((db.prepare('SELECT change_sequence FROM projection_meta WHERE singleton=1').get() as Row).change_sequence)) + 1n); const size = 96 + (runId?.length ?? 0); db.prepare('INSERT INTO projection_changes(sequence,change_kind,run_id,protected,approximate_bytes) VALUES(?,?,?,?,?)').run(next, kind, runId ?? null, isProtected ? 1 : 0, size); db.prepare('UPDATE projection_meta SET change_sequence=? WHERE singleton=1').run(next); }
+  private changeFromRow(row: Row): OperationsProjectionChangeV1 { return { projectionEpoch: String(this.meta().projection_epoch), sequence: String(row.sequence), kind: String(row.change_kind) as 'owner-event' | 'rebuild', ...(row.run_id ? { runId: String(row.run_id) } : {}), protected: Number(row.protected) === 1 }; }
+  private notifyLatestChange(): void {
+    if (!this.client) return; const row = this.db().prepare('SELECT * FROM projection_changes ORDER BY CAST(sequence AS INTEGER) DESC LIMIT 1').get() as Row | undefined; if (!row) return;
+    try { const result = this.client.projectionChanged(this.changeFromRow(row)); if (result && typeof result.then === 'function') void result.catch(error => console.warn('[kogg:operations:stream] closed', { safeCode: 'STREAM_DELIVERY_FAILED', errorType: errorType(error) })); }
+    catch (error) { console.warn('[kogg:operations:stream] closed', { safeCode: 'STREAM_DELIVERY_FAILED', errorType: errorType(error) }); }
+  }
   private meta(): Row { return this.db().prepare('SELECT * FROM projection_meta WHERE singleton=1').get() as Row; }
   private ownerCount(): number { return this.count('SELECT count(*) AS count FROM owner_cursors'); }
   private faultCount(): number { return this.count('SELECT count(*) AS count FROM projection_faults'); }
@@ -284,21 +432,33 @@ function validateEvent(event: OwnerEventV1): OwnerEventV1 {
   if (!SEQUENCE.test(event.sequence) || event.sequence === '0' || !DIGEST.test(event.factDigest) || !DIGEST.test(event.previousEventDigest) || !DIGEST.test(event.eventDigest)) throw new ProjectionFault('OWNER_EVENT_INVALID');
   if (!Array.isArray(event.causalParents) || event.causalParents.length > 16 || Object.keys(event.correlations).some(key => !['taskId', 'projectId', 'runId', 'nodeId', 'attemptId', 'operationId', 'processId', 'checkId', 'evidenceId', 'verdictId', 'mergeId'].includes(key))) throw new ProjectionFault('OWNER_EVENT_INVALID');
   for (const parent of event.causalParents) if (!SAFE_ID.test(parent.ownerInstanceId) || !SAFE_ID.test(parent.epochId) || !SEQUENCE.test(parent.sequence) || !DIGEST.test(parent.eventDigest)) throw new ProjectionFault('OWNER_EVENT_INVALID');
-  validatePayload(event.safePayload);
+  validatePayload(event.eventKind, event.safePayload);
   if (!Number.isFinite(Date.parse(event.observedAt)) || canonical(event).length > 65_536) throw new ProjectionFault('OWNER_EVENT_INVALID');
   const { eventDigest: _eventDigest, ...unsigned } = event;
   if (OperationsReadModel.digest(unsigned) !== event.eventDigest) throw new ProjectionFault('OWNER_EVENT_DIGEST_MISMATCH');
   return event;
 }
 
-function validatePayload(payload: SafeOwnerPayloadV1): void {
+function validatePayload(eventKind: string, payload: SafeOwnerPayloadV1): void {
   if (!payload || typeof payload !== 'object' || Array.isArray(payload) || Object.keys(payload).some(key => !CLOSED_PAYLOAD_KEYS.has(key))) throw new ProjectionFault('OWNER_PAYLOAD_INVALID');
+  const allowed = payloadKeys(eventKind); if (Object.keys(payload).some(key => !allowed.has(key))) throw new ProjectionFault('OWNER_PAYLOAD_INVALID');
   for (const [key, value] of Object.entries(payload)) {
     if (typeof value === 'string' && (!value.length || value.length > 64 || !/^[A-Za-z0-9._:-]+$/u.test(value))) throw new ProjectionFault('OWNER_PAYLOAD_INVALID');
+    if (typeof value === 'string' && key === 'safeCode' && !/^[A-Z][A-Z0-9_]{0,63}$/u.test(value)) throw new ProjectionFault('OWNER_PAYLOAD_INVALID');
+    if (typeof value === 'string' && key !== 'safeCode' && (!CLOSED_STRING_VALUES[key] || !CLOSED_STRING_VALUES[key].has(value))) throw new ProjectionFault('OWNER_PAYLOAD_INVALID');
     if (typeof value === 'number' && (!Number.isSafeInteger(value) || value < 0 || value > 1_000_000_000_000)) throw new ProjectionFault('OWNER_PAYLOAD_INVALID');
     if (!['string', 'number', 'boolean'].includes(typeof value)) throw new ProjectionFault('OWNER_PAYLOAD_INVALID');
     if (key === 'retryOrdinal' && Number(value) > 1_000) throw new ProjectionFault('OWNER_PAYLOAD_INVALID');
   }
+}
+function payloadKeys(eventKind: string): ReadonlySet<string> {
+  if (eventKind === 'usage.observed') return new Set(['knownState', 'value', 'unit']);
+  if (eventKind.startsWith('process.')) return new Set(['processKind', 'processState', 'cleanupState', 'terminalClass', 'abnormalClass', 'safeCode', 'count', 'durationMs', 'freshness']);
+  if (eventKind.startsWith('attempt.')) return new Set(['lifecycle', 'terminalClass', 'safeCode', 'retryOrdinal', 'durationMs', 'freshness']);
+  if (eventKind.startsWith('run.')) return new Set(['lifecycle', 'terminalClass', 'safeCode', 'count', 'durationMs', 'freshness']);
+  if (eventKind.startsWith('check.')) return new Set(['lifecycle', 'resultClass', 'safeCode', 'count', 'durationMs', 'freshness']);
+  if (eventKind.startsWith('verdict.') || eventKind.startsWith('gate.') || eventKind.startsWith('merge.')) return new Set(['lifecycle', 'decisionClass', 'terminalClass', 'safeCode', 'count', 'durationMs', 'freshness']);
+  return new Set(['lifecycle', 'resultClass', 'decisionClass', 'terminalClass', 'safeCode', 'count', 'durationMs', 'freshness']);
 }
 
 function rowToEvent(db: DatabaseSync, row: Row): OwnerEventV1 {
@@ -310,4 +470,10 @@ function safeOwner(value: unknown): OwnerKind | 'unknown' { return typeof value 
 function safeId(value: unknown): string { return typeof value === 'string' && SAFE_ID.test(value) ? value : 'unknown'; }
 function safeSequence(value: unknown): string { return typeof value === 'string' && SEQUENCE.test(value) ? value : '0'; }
 function summary(eventKind: string): string { return eventKind.slice(eventKind.indexOf('.') + 1); }
+function terminalClass(eventKind: string): string | undefined { const suffix = eventKind.slice(eventKind.lastIndexOf('.') + 1); return ['failed', 'cancelled', 'completed', 'recovered', 'passed', 'refused', 'committed', 'quarantined'].includes(suffix) ? suffix : undefined; }
+function safeCodeClass(value?: string): string { if (!value) return 'none'; if (value.includes('TIMEOUT')) return 'timeout'; if (value.includes('AUTH')) return 'authority'; if (value.includes('CLEANUP') || value.includes('PROCESS')) return 'process'; if (value.includes('INTEGRITY') || value.includes('DIGEST')) return 'integrity'; return 'other'; }
 function errorType(error: unknown): string { return error instanceof Error ? error.name : 'UnknownError'; }
+function validateRunQuery(query: OperationsRunQueryV1): void { if (!query || typeof query !== 'object' || Object.keys(query).some(key => !['lifecycle', 'abnormalOnly', 'sort', 'pageCursor', 'pageSize'].includes(key)) || !['run-id-asc', 'lifecycle-asc'].includes(query.sort) || !Number.isSafeInteger(query.pageSize) || query.pageSize < 1 || query.pageSize > 100 || (query.lifecycle !== undefined && !RUN_LIFECYCLES.has(query.lifecycle)) || (query.abnormalOnly !== undefined && typeof query.abnormalOnly !== 'boolean')) throw new ProjectionFault('PROJECTION_QUERY_INVALID'); }
+function isCursor(value: unknown): value is { kind: string; projectionEpoch: string; queryDigest: string; lastKey: string; sortKey: string; expiresAt: number } { if (!value || typeof value !== 'object') return false; const row = value as Record<string, unknown>; return Object.keys(row).sort().join(',') === ['kind', 'projectionEpoch', 'queryDigest', 'lastKey', 'sortKey', 'expiresAt'].sort().join(',') && ['runs', 'timeline', 'stream'].includes(String(row.kind)) && typeof row.projectionEpoch === 'string' && DIGEST.test(String(row.queryDigest)) && typeof row.lastKey === 'string' && typeof row.sortKey === 'string' && typeof row.expiresAt === 'number' && Number.isSafeInteger(row.expiresAt); }
+function timelineFromRow(row: Row): OperationsTimelineEntryV1 { return { entryId: String(row.entry_id), runId: String(row.run_id), ownerKind: String(row.owner_kind) as OwnerKind, ownerSequence: String(row.owner_sequence), eventKind: String(row.event_kind), ...(row.safe_code ? { safeCode: String(row.safe_code) } : {}), ...(row.attempt_id ? { attemptId: String(row.attempt_id) } : {}), ...(row.process_id ? { processId: String(row.process_id) } : {}), displayTime: String(row.display_time) }; }
+function protectedEvent(eventKind: string): boolean { return !eventKind.endsWith('.activity') && !eventKind.endsWith('.updated') && !eventKind.endsWith('.observed'); }

@@ -1,5 +1,8 @@
 // diagnostic-exempt: Closed operations read-model declarations contain no operational behavior.
 
+export const KoggOperationsReadModelServicePath = '/services/kogg-operations-read-model';
+export const KoggOperationsReadModelService = Symbol('KoggOperationsReadModelService');
+
 export const OWNER_KINDS = ['task', 'workflow', 'adapter', 'execution', 'operation', 'project', 'check', 'ranex', 'verdict', 'merge', 'diagnostic'] as const;
 export type OwnerKind = typeof OWNER_KINDS[number];
 
@@ -108,6 +111,26 @@ export interface OperationsTimelineEntryV1 {
   readonly displayTime: string;
 }
 
+export interface OperationsRunQueryV1 {
+  readonly lifecycle?: RunLifecycle;
+  readonly abnormalOnly?: boolean;
+  readonly sort: 'run-id-asc' | 'lifecycle-asc';
+  readonly pageCursor?: string;
+  readonly pageSize: number;
+}
+
+export interface OperationsRunPageV1 {
+  readonly projectionEpoch: string;
+  readonly items: readonly OperationsProjectionRunV1[];
+  readonly nextCursor?: string;
+}
+
+export interface OperationsTimelinePageV1 {
+  readonly projectionEpoch: string;
+  readonly items: readonly OperationsTimelineEntryV1[];
+  readonly nextCursor?: string;
+}
+
 export interface OperationsProjectionSnapshotV1 {
   readonly schemaVersion: 1;
   readonly projectionEpoch: string;
@@ -115,6 +138,26 @@ export interface OperationsProjectionSnapshotV1 {
   readonly lifecycle: ProjectionLifecycle;
   readonly runs: readonly OperationsProjectionRunV1[];
   readonly faultCount: number;
+}
+
+export type OperationsMetricNameV1 =
+  | 'kogg_operations_total' | 'kogg_attempts_total' | 'kogg_retries_total'
+  | 'kogg_refusals_total' | 'kogg_recoveries_total' | 'kogg_quarantines_total'
+  | 'kogg_runs_active' | 'kogg_processes_active' | 'kogg_queue_wait_ms'
+  | 'kogg_run_duration_ms' | 'kogg_process_cleanup_ms' | 'kogg_recovery_duration_ms';
+
+export interface OperationsMetricValueV1 {
+  readonly name: OperationsMetricNameV1;
+  readonly kind: 'counter' | 'gauge' | 'histogram';
+  readonly labels: Readonly<Record<string, string>>;
+  readonly bucketUpperBound?: number;
+  readonly value: number;
+}
+
+export interface OperationsMetricsSnapshotV1 {
+  readonly schemaVersion: 1;
+  readonly projectionEpoch: string;
+  readonly values: readonly OperationsMetricValueV1[];
 }
 
 export interface OperationsProjectionDiagnosticsV1 {
@@ -126,4 +169,30 @@ export interface OperationsProjectionDiagnosticsV1 {
   readonly causalGapCount: number;
   readonly processAbnormalCount: number;
   readonly metricViolationCount: number;
+}
+
+export interface OperationsProjectionChangeV1 {
+  readonly projectionEpoch: string;
+  readonly sequence: string;
+  readonly kind: 'owner-event' | 'rebuild' | 'resync-required';
+  readonly runId?: string;
+  readonly protected: boolean;
+}
+
+export interface OperationsStreamSubscriptionV1 {
+  readonly state: 'current' | 'resync-required';
+  readonly cursor: string;
+  readonly changes: readonly OperationsProjectionChangeV1[];
+}
+
+export interface KoggOperationsReadModelClient {
+  projectionChanged(change: OperationsProjectionChangeV1): void | Promise<void>;
+}
+
+export interface KoggOperationsReadModelService {
+  projectionSnapshot(): OperationsProjectionSnapshotV1 | Promise<OperationsProjectionSnapshotV1>;
+  listRuns(query: OperationsRunQueryV1): OperationsRunPageV1 | Promise<OperationsRunPageV1>;
+  timelinePage(runId: string, pageCursor?: string, limit?: number): OperationsTimelinePageV1 | Promise<OperationsTimelinePageV1>;
+  metricsSnapshot(): OperationsMetricsSnapshotV1 | Promise<OperationsMetricsSnapshotV1>;
+  subscribe(resumeCursor?: string): OperationsStreamSubscriptionV1 | Promise<OperationsStreamSubscriptionV1>;
 }
