@@ -7,7 +7,8 @@ import type { ExecutionGitCode } from '../common/execution-protocol';
 // Every controller Git call is registered before spawn, bounded, drained, and logged without argv, paths, output, or errors.
 // diagnostic-coverage: execution.git-independence, execution.source-integrity, execution.process-cleanup
 const DEFAULT_MAX_OUTPUT_BYTES = 8 * 1024 * 1024;
-export type ControllerGitPhase = 'source-head' | 'source-tree' | 'bundle-create' | 'private-init' | 'private-fetch' | 'private-ref' | 'private-checkout' | 'private-verify';
+export type ControllerGitPhase = 'source-head' | 'source-tree' | 'bundle-create' | 'private-init' | 'private-fetch' | 'private-ref' | 'private-checkout' | 'private-verify'
+  | 'seal-head' | 'seal-tree' | 'seal-status' | 'seal-history' | 'seal-tree-scan' | 'seal-object' | 'seal-fsck';
 export interface ControllerGitEnvironment { readonly home: string; readonly globalConfig: string; readonly templateDirectory: string; }
 type ControllerChild = ChildProcessByStdio<null, Readable, Readable>;
 

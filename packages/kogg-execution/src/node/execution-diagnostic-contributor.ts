@@ -2,6 +2,7 @@ import { inject, injectable } from '@theia/core/shared/inversify';
 import type { KoggDiagnosticCheck, KoggDiagnosticContributor } from '@kogg/contracts';
 import { KoggOperationRegistry, type OperationRegistryApi } from '@kogg/operations/lib/common/operations-protocol';
 import { ExecutionAllocationRegistry } from './execution-allocation-registry';
+import { executionLoggingDiagnostics } from './execution-logger';
 import { ExecutionTargetRegistry } from './execution-target-registry';
 
 // Every execution catalog check is returned even when inspection fails; absent production owners fail rather than disappear.
@@ -15,10 +16,10 @@ export class ExecutionDiagnosticContributor implements KoggDiagnosticContributor
     @inject(KoggOperationRegistry) private readonly operations: OperationRegistryApi) {}
   async diagnose(): Promise<readonly KoggDiagnosticCheck[]> {
     try {
-      const target = this.targets.projection(); const allocation = this.allocations.diagnostics(); const operation = this.operations.diagnostics();
+      const target = this.targets.projection(); const allocation = this.allocations.diagnostics(); const operation = this.operations.diagnostics(); const logging = executionLoggingDiagnostics();
       const registryHealthy = allocation.integrity && allocation.foreignKeys && allocation.permissions
         && allocation.quarantinedCount === 0 && allocation.recoveryRequiredCount === 0 && allocation.cleanupFailureCount === 0
-        && allocation.loggingViolationCount === 0;
+        && allocation.loggingViolationCount === 0 && logging.violationCount === 0;
       return [
         { id: 'execution.target-qualification', ...result(target.qualified, target.qualified ? 'The exact writable-agent Linux target is currently qualified.' : `Execution target refused with ${target.safeCode}.`) },
         { id: 'execution.worktree-registry', ...result(registryHealthy, registryHealthy ? 'The durable private allocation registry is consistent.' : 'The durable private allocation registry requires recovery.') },
