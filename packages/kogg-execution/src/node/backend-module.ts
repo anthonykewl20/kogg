@@ -14,6 +14,8 @@ import { ExecutionOperationsOwnerWiring } from './execution-operations-owner-wir
 import { NativeAllocationController } from './native-allocation-controller';
 import { ProductionPrivateGitSeeder } from './production-private-git-seeder';
 import { ProductionCandidateLifecycle } from './production-candidate-lifecycle';
+import { KoggModeTransitionOwner } from '@kogg/interaction-modes/lib/common/interaction-modes-protocol';
+import { ExecutionModeTransitionOwner } from './interaction-mode-transition-owner';
 
 // diagnostic-coverage: execution.target-qualification, execution.worktree-registry, execution.git-independence, execution.source-integrity, execution.process-cleanup, execution.capacity, execution.recovery, execution.retention, execution.source-maps
 export default new ContainerModule(bind => {
@@ -21,6 +23,8 @@ export default new ContainerModule(bind => {
   bind(ExecutionOperationsOwnerWiring).toSelf().inSingletonScope(); bind(BackendApplicationContribution).toService(ExecutionOperationsOwnerWiring);
   bind(ExecutionTargetRegistry).toSelf().inSingletonScope(); bind(BackendApplicationContribution).toService(ExecutionTargetRegistry);
   bind(ExecutionTargetBindingAuthority).toService(ExecutionTargetRegistry);
+  bind(ExecutionModeTransitionOwner).toSelf().inSingletonScope();
+  bind(KoggModeTransitionOwner).toService(ExecutionModeTransitionOwner);
   bind(NativeAllocationController).toSelf().inSingletonScope(); bind(BackendApplicationContribution).toService(NativeAllocationController);
   bind(ProductionPrivateGitSeeder).toDynamicValue(context => new ProductionPrivateGitSeeder(context.container.get(KoggOperationRegistry))).inSingletonScope();
   bind(ProductionCandidateLifecycle).toSelf().inSingletonScope();

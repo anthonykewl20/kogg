@@ -6,7 +6,7 @@ import { KOGG_TASKS_CHANGED_EVENT } from '@kogg/tasks/lib/browser/tasks-events';
 import { KoggTasksService, type KoggTasksService as TasksService, type TaskSummary } from '@kogg/tasks/lib/common/tasks-protocol';
 import {
   KoggInteractionModesService, type InteractionModeV1, type KoggInteractionModesService as InteractionModesService,
-  type ModeProjectionV1, type ModeTransitionProjectionV1
+  type ModeProjectionV1, type ModeTransitionConfigurationV1, type ModeTransitionProjectionV1
 } from '../common/interaction-modes-protocol';
 import { modeAuthorityLabel, modeBlockedExplanation, modeSelectionAllowed } from '../common/interaction-mode-view-model';
 
@@ -97,19 +97,24 @@ export class InteractionModeFrontendContribution implements FrontendApplicationC
     if (!selected || selected.value === this.projection.selectedMode) return;
     const consequence = `${transitionDescription(this.projection.selectedMode, selected.value)} ${MODE_DETAIL[selected.value]}`;
     if (await this.messages.warn(consequence, 'Request switch', 'Cancel') !== 'Request switch') return;
-    await this.requestTransition(selected.value);
+    const options = (await this.modes.transitionConfigurations({ requestId: crypto.randomUUID(), taskId: this.task.taskId, toMode: selected.value })).options;
+    if (!options.length) { await this.messages.warn(`Mode switch unavailable: no current ${MODE_LABEL[selected.value]} owner configuration is qualified.`); return; }
+    const configuration = options.length === 1 ? options[0]! : (await this.quickInput.showQuickPick(options.map(option => ({ label: configurationSummary(option), value: option })), { placeholder: `Choose the exact ${MODE_LABEL[selected.value]} owner configuration` }))?.value;
+    if (!configuration) return;
+    await this.requestTransition(selected.value, configuration);
   }
 
-  private async requestTransition(toMode: InteractionModeV1): Promise<void> {
+  private async requestTransition(toMode: InteractionModeV1, configuration: ModeTransitionConfigurationV1): Promise<void> {
     const task = this.task!; const projection = this.projection!; const requestId = crypto.randomUUID(); const transitionId = crypto.randomUUID();
     console.info('[kogg:ui:mode-selector] mode.transition-requested', { requestId, taskId: task.taskId, fromMode: projection.selectedMode, toMode });
     try {
       const body = { transitionId, requestId, taskId: task.taskId, expectedSequence: projection.sequence, fromMode: projection.selectedMode, toMode,
-        requestedConfigurationDigest: await configurationDigest(toMode) };
+        requestedConfigurationDigest: await configurationDigest(configuration) };
       this.pending = environment.electron.is() ? await this.modes.requestDesktopTransition(body) : await mutation('/kogg/modes/transitions/request', body);
       this.projection = this.pending.mode; await this.render('ready'); this.broadcast.postMessage({ kind: 'transition-changed' });
       console.info('[kogg:ui:mode-selector] mode.transition-approved', { requestId, taskId: task.taskId, fromMode: projection.selectedMode, toMode, safeCode: this.pending.safeCode });
-      await this.messages.warn(`Switch requested: ${this.pending.safeCode}. Effective authority is disabled until confirmation and owner qualification complete.`, 'Keep pending', 'Cancel request').then(choice => choice === 'Cancel request' ? this.cancelPending() : undefined);
+      const choice = await this.messages.warn(`Confirm ${MODE_LABEL[projection.selectedMode]} → ${MODE_LABEL[toMode]} with ${configurationSummary(configuration)}. Effective authority remains disabled until every owner qualifies.`, 'Confirm switch', 'Keep pending', 'Cancel request');
+      if (choice === 'Confirm switch') await this.confirmPending(configuration); else if (choice === 'Cancel request') await this.cancelPending();
     } catch (error) {
       console.error('[kogg:ui:mode-selector] mode.transition.refused', { requestId, taskId: task.taskId, fromMode: projection.selectedMode, toMode, safeCode: safeCode(error), errorType: errorName(error) });
       await this.messages.error(`Mode switch refused: ${safeCode(error)}.`); await this.refresh();
@@ -118,7 +123,29 @@ export class InteractionModeFrontendContribution implements FrontendApplicationC
 
   private async handlePending(): Promise<void> {
     if (!this.pending) { await this.messages.warn('A durable mode transition is pending. Reopen the originating browser window or wait for expiry; no authority is active meanwhile.'); return; }
-    if (await this.messages.warn(`Switching ${MODE_LABEL[this.pending.fromMode]} → ${MODE_LABEL[this.pending.toMode]}. Effective authority is disabled.`, 'Keep pending', 'Cancel request') === 'Cancel request') await this.cancelPending();
+    const options = (await this.modes.transitionConfigurations({ requestId: crypto.randomUUID(), taskId: this.pending.taskId, toMode: this.pending.toMode })).options;
+    const matching: ModeTransitionConfigurationV1[] = [];
+    for (const option of options) if (await configurationDigest(option) === this.pending.configurationDigest) matching.push(option);
+    const message = `Switching ${MODE_LABEL[this.pending.fromMode]} → ${MODE_LABEL[this.pending.toMode]}. Effective authority is disabled${matching.length === 1 ? ' until owner qualification completes' : '; the exact owner configuration is no longer available'}.`;
+    const choice = matching.length === 1
+      ? await this.messages.warn(message, 'Confirm switch', 'Keep pending', 'Cancel request')
+      : await this.messages.warn(message, 'Keep pending', 'Cancel request');
+    if (choice === 'Confirm switch') await this.confirmPending(matching[0]!); else if (choice === 'Cancel request') await this.cancelPending();
+  }
+
+  private async confirmPending(configuration: ModeTransitionConfigurationV1): Promise<void> {
+    if (!this.pending) return; const prior = this.pending; const requestId = crypto.randomUUID();
+    try {
+      const body = { requestId, transitionId: prior.transitionId, taskId: prior.taskId, ...(prior.challengeDigest ? { challengeDigest: prior.challengeDigest } : {}), explicitGesture: true as const, configuration };
+      const result = environment.electron.is() ? await this.modes.confirmDesktopTransition(body) : await mutation('/kogg/modes/transitions/confirm', body);
+      this.pending = undefined; this.projection = result.mode; await this.render('ready'); this.broadcast.postMessage({ kind: 'transition-changed' });
+      if (result.state === 'committed') await this.messages.info(`Mode switched to ${MODE_LABEL[result.mode.selectedMode]}.`);
+      else await this.messages.error(`Mode switch refused: ${result.safeCode}. No new authority was granted.`);
+      console.info('[kogg:ui:mode-selector] mode.transition-qualified', { requestId, taskId: prior.taskId, fromMode: prior.fromMode, toMode: prior.toMode, safeCode: result.safeCode });
+    } catch (error) {
+      console.error('[kogg:ui:mode-selector] mode.transition.refused', { requestId, taskId: prior.taskId, fromMode: prior.fromMode, toMode: prior.toMode, safeCode: safeCode(error), errorType: errorName(error) });
+      await this.messages.error(`Mode switch qualification failed: ${safeCode(error)}.`); await this.refresh();
+    }
   }
 
   private async cancelPending(): Promise<void> {
@@ -145,9 +172,14 @@ async function mutation(path: string, body: unknown): Promise<TransitionProjecti
   if (!response.ok) throw new ModeUiError(typeof (value as { error?: unknown }).error === 'string' ? String((value as { error: string }).error) : 'MODE_REGISTRY_UNAVAILABLE');
   return value as TransitionProjection;
 }
-async function configurationDigest(mode: InteractionModeV1): Promise<string> {
-  const bytes = new TextEncoder().encode(JSON.stringify({ mode, qualification: 'pending', schemaVersion: 1 }));
+async function configurationDigest(configuration: ModeTransitionConfigurationV1): Promise<string> {
+  const bytes = new TextEncoder().encode(JSON.stringify(configuration));
   const digest = await crypto.subtle.digest('SHA-256', bytes); return `sha256:${[...new Uint8Array(digest)].map(value => value.toString(16).padStart(2, '0')).join('')}`;
+}
+function configurationSummary(configuration: ModeTransitionConfigurationV1): string {
+  if (configuration.kind === 'plan') return 'Plan read-only authority';
+  if (configuration.kind === 'kogg') return `governed workflow ${configuration.workflowVersionId.slice(0, 8)}`;
+  return `${configuration.adapterKey}@${configuration.adapterVersion} · ${configuration.providerId}/${configuration.modelId} · ${configuration.targetId}`;
 }
 function transitionDescription(from: InteractionModeV1, to: InteractionModeV1): string { const order = { plan: 0, build: 1, kogg: 2 }; return order[to] > order[from] ? 'Authority expansion requires explicit confirmation and fresh owner qualification.' : 'Authority reduction requires active-work cancellation and externally proved cleanup.'; }
 class ModeUiError extends Error { constructor(readonly code: string) { super(code); this.name = 'ModeUiError'; } }

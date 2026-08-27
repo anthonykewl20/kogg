@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import { mkdtemp, rm } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
@@ -7,6 +8,7 @@ import { DatabaseSync } from 'node:sqlite';
 import type { TaskProjection } from '@kogg/tasks/lib/common/tasks-protocol';
 import { InteractionModeError, InteractionModeRegistry } from './interaction-mode-registry';
 import { ModeTransitionAuthority, transitionScopeDigest } from './mode-transition-authority';
+import type { ModeTransitionConfigurationV1, ModeTransitionOwnerContribution } from '../common/interaction-modes-protocol';
 
 // diagnostic-coverage: interaction-modes.registry, interaction-modes.authority, interaction-modes.operations, interaction-modes.restoration
 test('persists Plan as the task default and enforces the closed operation ceiling across restart', async () => {
@@ -119,6 +121,63 @@ test('expires an unconfirmed expansion after restart without granting authority'
   } finally { first.onStop(); if (prior === undefined) delete process.env.KOGG_STATE_DIR; else process.env.KOGG_STATE_DIR = prior; await rm(root, { recursive: true, force: true }); }
 });
 
+test('commits only after exact challenge-bound owner qualification and replays without repeating owners', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'kogg-interaction-confirm-')); const prior = process.env.KOGG_STATE_DIR; process.env.KOGG_STATE_DIR = root;
+  const tasks = new TaskAuthority(); const authority = new ModeTransitionAuthority(); const model = new InteractionModeRegistry(tasks, authority); await model.onStart(); let ownerCalls = 0;
+  const actor = { sessionId: 'confirm-session', actorAuthorityDigest: `sha256:${'9'.repeat(64)}`, role: 'owner' as const, originVerified: true as const, csrfVerified: true as const };
+  const configuration = { schemaVersion: 1, kind: 'build', roleRevisionId: '90000000-0000-4000-8000-000000000001', providerId: 'fixture', modelId: 'fixture.echo', adapterKey: 'kogg.fixture', adapterVersion: '1.0.0', deadlinePolicyId: 'standard', targetId: 'qualified-linux' } as const;
+  const owners = (['operations', 'agent-binding', 'execution-target'] as const).map(owner => ({ owner, async qualifyTransition() { ownerCalls++; const value = owner === 'operations' ? 'a' : owner === 'agent-binding' ? 'b' : 'c'; return { owner, qualified: true, safeCode: 'MODE_OK', proofDigest: `sha256:${value.repeat(64)}` }; } })) satisfies readonly ModeTransitionOwnerContribution[];
+  try {
+    await model.get({ requestId: '90000000-0000-4000-8000-000000000002', taskId: TASK.taskId });
+    const transition = { transitionId: '90000000-0000-4000-8000-000000000003', requestId: '90000000-0000-4000-8000-000000000004', taskId: TASK.taskId, expectedSequence: '0', fromMode: 'plan' as const, toMode: 'build' as const, requestedConfigurationDigest: configDigest(configuration) };
+    const pending = await model.requestTransition(transition, authority.mint(actor, transitionScopeDigest('request', transition)));
+    const confirm = { requestId: '90000000-0000-4000-8000-000000000005', transitionId: transition.transitionId, taskId: TASK.taskId, challengeDigest: pending.challengeDigest!, explicitGesture: true as const, configuration };
+    const committed = await model.confirmTransition(confirm, authority.mint(actor, transitionScopeDigest('confirm', confirm)), owners);
+    assert.equal(committed.state, 'committed'); assert.equal(committed.mode.selectedMode, 'build'); assert.equal(committed.mode.sequence, '1'); assert.equal(ownerCalls, 3);
+    assert.deepEqual(await model.confirmTransition(confirm, authority.mint(actor, transitionScopeDigest('confirm', confirm)), owners), committed); assert.equal(ownerCalls, 3);
+    assert.equal(model.diagnostics().eventChain, true); assert.equal(model.diagnostics().pendingTransitionCount, 0);
+
+    const planConfiguration = { schemaVersion: 1, kind: 'plan' } as const;
+    const reduction = { transitionId: '90000000-0000-4000-8000-000000000006', requestId: '90000000-0000-4000-8000-000000000007', taskId: TASK.taskId, expectedSequence: '1', fromMode: 'build' as const, toMode: 'plan' as const, requestedConfigurationDigest: configDigest(planConfiguration) };
+    await model.requestTransition(reduction, authority.mint(actor, transitionScopeDigest('request', reduction)));
+    const reduce = { requestId: '90000000-0000-4000-8000-000000000008', transitionId: reduction.transitionId, taskId: TASK.taskId, explicitGesture: true as const, configuration: planConfiguration };
+    const reduced = await model.confirmTransition(reduce, authority.mint(actor, transitionScopeDigest('confirm', reduce)), [owners[0]!]);
+    assert.equal(reduced.mode.selectedMode, 'plan'); assert.equal(reduced.mode.sequence, '2');
+  } finally { model.onStop(); if (prior === undefined) delete process.env.KOGG_STATE_DIR; else process.env.KOGG_STATE_DIR = prior; await rm(root, { recursive: true, force: true }); }
+});
+
+test('refuses an expansion without every required real owner and never widens mode authority', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'kogg-interaction-owner-refusal-')); const prior = process.env.KOGG_STATE_DIR; process.env.KOGG_STATE_DIR = root;
+  const authority = new ModeTransitionAuthority(); const model = new InteractionModeRegistry(new TaskAuthority(), authority); await model.onStart();
+  const actor = { sessionId: 'refusal-session', actorAuthorityDigest: `sha256:${'8'.repeat(64)}`, role: 'owner' as const, originVerified: true as const, csrfVerified: true as const };
+  const configuration = { schemaVersion: 1, kind: 'build', roleRevisionId: '91000000-0000-4000-8000-000000000001', providerId: 'fixture', modelId: 'fixture.echo', adapterKey: 'kogg.fixture', adapterVersion: '1.0.0', deadlinePolicyId: 'standard', targetId: 'qualified-linux' } as const;
+  try {
+    await model.get({ requestId: '91000000-0000-4000-8000-000000000002', taskId: TASK.taskId });
+    const transition = { transitionId: '91000000-0000-4000-8000-000000000003', requestId: '91000000-0000-4000-8000-000000000004', taskId: TASK.taskId, expectedSequence: '0', fromMode: 'plan' as const, toMode: 'build' as const, requestedConfigurationDigest: configDigest(configuration) };
+    const pending = await model.requestTransition(transition, authority.mint(actor, transitionScopeDigest('request', transition)));
+    const confirm = { requestId: '91000000-0000-4000-8000-000000000005', transitionId: transition.transitionId, taskId: TASK.taskId, challengeDigest: pending.challengeDigest!, explicitGesture: true as const, configuration };
+    const refused = await model.confirmTransition(confirm, authority.mint(actor, transitionScopeDigest('confirm', confirm)), []);
+    assert.equal(refused.state, 'quarantined'); assert.equal(refused.safeCode, 'MODE_CLEANUP_FAILED'); assert.equal(refused.mode.selectedMode, 'plan'); assert.equal(refused.mode.sequence, '0'); assert.equal(refused.mode.state, 'ready'); assert.equal(model.diagnostics().eventChain, true);
+  } finally { model.onStop(); if (prior === undefined) delete process.env.KOGG_STATE_DIR; else process.env.KOGG_STATE_DIR = prior; await rm(root, { recursive: true, force: true }); }
+});
+
+test('refuses the final CAS when the task binding changes during owner qualification', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'kogg-interaction-owner-race-')); const prior = process.env.KOGG_STATE_DIR; process.env.KOGG_STATE_DIR = root;
+  const tasks = new TaskAuthority(); const authority = new ModeTransitionAuthority(); const model = new InteractionModeRegistry(tasks, authority); await model.onStart();
+  const actor = { sessionId: 'race-session', actorAuthorityDigest: `sha256:${'7'.repeat(64)}`, role: 'owner' as const, originVerified: true as const, csrfVerified: true as const };
+  const configuration = { schemaVersion: 1, kind: 'build', roleRevisionId: '92000000-0000-4000-8000-000000000001', providerId: 'fixture', modelId: 'fixture.echo', adapterKey: 'kogg.fixture', adapterVersion: '1.0.0', deadlinePolicyId: 'standard', targetId: 'qualified-linux' } as const;
+  const owners = (['operations', 'agent-binding', 'execution-target'] as const).map(owner => ({ owner, async qualifyTransition() { if (owner === 'execution-target') tasks.revision = '2'; return { owner, qualified: true, safeCode: 'MODE_OK', proofDigest: `sha256:${'6'.repeat(64)}` }; } })) satisfies readonly ModeTransitionOwnerContribution[];
+  try {
+    await model.get({ requestId: '92000000-0000-4000-8000-000000000002', taskId: TASK.taskId });
+    const transition = { transitionId: '92000000-0000-4000-8000-000000000003', requestId: '92000000-0000-4000-8000-000000000004', taskId: TASK.taskId, expectedSequence: '0', fromMode: 'plan' as const, toMode: 'build' as const, requestedConfigurationDigest: configDigest(configuration) };
+    const pending = await model.requestTransition(transition, authority.mint(actor, transitionScopeDigest('request', transition)));
+    const confirm = { requestId: '92000000-0000-4000-8000-000000000005', transitionId: transition.transitionId, taskId: TASK.taskId, challengeDigest: pending.challengeDigest!, explicitGesture: true as const, configuration };
+    await assert.rejects(() => model.confirmTransition(confirm, authority.mint(actor, transitionScopeDigest('confirm', confirm)), owners), error => error instanceof InteractionModeError && error.code === 'MODE_TRANSITION_CONFLICT');
+    const stored = await model.getPendingTransition({ requestId: '92000000-0000-4000-8000-000000000006', taskId: TASK.taskId });
+    assert.equal(stored?.state, 'awaiting-confirmation'); assert.equal(stored?.mode.selectedMode, 'plan'); assert.equal(stored?.mode.sequence, '0');
+  } finally { model.onStop(); if (prior === undefined) delete process.env.KOGG_STATE_DIR; else process.env.KOGG_STATE_DIR = prior; await rm(root, { recursive: true, force: true }); }
+});
+
 test('blocks startup when a transition intent is altered outside its event-chain binding', async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), 'kogg-interaction-transition-integrity-')); const prior = process.env.KOGG_STATE_DIR; process.env.KOGG_STATE_DIR = root;
   const tasks = new TaskAuthority(); const authority = new ModeTransitionAuthority(); const first = new InteractionModeRegistry(tasks, authority); await first.onStart();
@@ -137,3 +196,4 @@ class TaskAuthority {
 function registry(authority: TaskAuthority): InteractionModeRegistry { return new InteractionModeRegistry(authority, new ModeTransitionAuthority()); }
 function createRegistry(authority: TaskAuthority): InteractionModeRegistry { return registry(authority); }
 const TASK: TaskProjection = { taskId: '30000000-0000-4000-8000-000000000001', projectId: '30000000-0000-4000-8000-000000000002', repositoryId: '30000000-0000-4000-8000-000000000003', bindingRevision: '1', taskRevision: '1', registryRevision: '1', lifecycle: 'active', currentSpecification: { specificationId: '30000000-0000-4000-8000-000000000004', sequence: '1', lifecycle: 'draft', content: 'canary', byteLength: 6, lineEnding: 'none', createdAt: '2026-08-27T00:00:00.000Z' } };
+function configDigest(configuration: ModeTransitionConfigurationV1): string { return `sha256:${createHash('sha256').update(JSON.stringify(configuration)).digest('hex')}`; }

@@ -6,6 +6,8 @@ import { CredentialLeaseAuthority, KoggAdapterRegistry, KoggAgentBindingAuthoriz
 import { AdapterRegistry } from './adapter-registry';
 import { AgentDiagnosticContributor } from './agent-diagnostic-contributor';
 import { AgentRegistry } from './agent-registry';
+import { KoggModeTransitionOwner } from '@kogg/interaction-modes/lib/common/interaction-modes-protocol';
+import { AgentModeTransitionOwner } from './interaction-mode-transition-owner';
 import { FixtureAdapter } from './fixture-adapter';
 import { LocalCredentialLeaseAuthority } from './credential-lease-authority';
 import { AgentOperationsOwnerWiring } from './agent-operations-owner-wiring';
@@ -20,6 +22,8 @@ export default new ContainerModule(bind => {
   bind(AgentRegistry).toSelf().inSingletonScope();
   bind(KoggAgentsService).toService(AgentRegistry);
   bind(KoggAgentBindingAuthorizer).toService(AgentRegistry);
+  bind(AgentModeTransitionOwner).toSelf().inSingletonScope();
+  bind(KoggModeTransitionOwner).toService(AgentModeTransitionOwner);
   bind(BackendApplicationContribution).toService(AgentRegistry);
   bind(AgentOperationsOwnerWiring).toSelf().inSingletonScope();
   bind(BackendApplicationContribution).toService(AgentOperationsOwnerWiring);

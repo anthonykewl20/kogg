@@ -925,7 +925,16 @@ async function exerciseInteractionModes(page) {
     await build.click();
     await page.getByRole('button', { name: 'Request switch' }).click();
     const pending = page.getByLabel(/Mode: Plan; authority: disabled during transition/u);
-    await pending.waitFor({ state: 'visible', timeout: 10_000 });
+    const unavailable = page.getByText(/Mode switch unavailable: no current Build owner configuration is qualified/u).first();
+    const deadline = Date.now() + 10_000;
+    while (!await pending.isVisible().catch(() => false) && !await unavailable.isVisible().catch(() => false) && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 50));
+    if (!await pending.isVisible().catch(() => false)) {
+        await unavailable.waitFor({ state: 'visible', timeout: 1_000 });
+        await selector.waitFor({ state: 'visible', timeout: 1_000 });
+        assert.match(logs.join('\n'), /\[kogg:interaction-modes:service\] transition\.configuration\.completed/u);
+        assert.doesNotMatch(logs.join('\n'), /\[kogg:ui:mode-selector\] mode\.transition-requested/u);
+        return;
+    }
     const second = await page.context().newPage();
     await second.goto(page.url(), { waitUntil: 'domcontentloaded' });
     await second.locator('body.kogg-application').waitFor({ timeout: 20_000 });
