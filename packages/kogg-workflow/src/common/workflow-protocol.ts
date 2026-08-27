@@ -87,7 +87,7 @@ export interface WorkflowCompiledPlanProjection {
   readonly editableNodeCount: number;
   readonly injectedAnchorCount: number;
 }
-export interface WorkflowRunProjection { readonly runId: string; readonly planId: string; readonly state: 'admitted' | 'completed' | 'failed'; readonly safeCode: WorkflowSafeCode; readonly completedNodeCount: number; readonly failedNodeCount: number; }
+export interface WorkflowRunProjection { readonly runId: string; readonly planId: string; readonly state: 'admitted' | 'completed' | 'failed'; readonly safeCode: WorkflowSafeCode; readonly completedNodeCount: number; readonly skippedNodeCount: number; readonly failedNodeCount: number; }
 export type WorkflowMutationResult =
   | { readonly kind: 'completed'; readonly code: 'WORKFLOW_OK'; readonly version?: WorkflowTemplateVersionProjection; readonly plan?: WorkflowCompiledPlanProjection; readonly run?: WorkflowRunProjection }
   | { readonly kind: 'conflict' | 'refused' | 'failed'; readonly code: WorkflowSafeCode; readonly currentVersionNumber?: number; readonly run?: WorkflowRunProjection };

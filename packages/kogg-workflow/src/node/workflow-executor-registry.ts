@@ -12,7 +12,7 @@ export interface WorkflowExecutorAttestationV1 {
   readonly supportedKinds: readonly EditableNodeKind[];
 }
 export interface WorkflowExecutorBindingV1 { readonly executorId: string; readonly executorVersion: string; readonly artifactDigest: string; }
-export interface WorkflowControlExecutionRequestV1 { readonly runId: string; readonly node: EditableWorkflowNodeV1; readonly attempt: number; readonly predecessorOutcomes: readonly ('success' | 'failure')[]; }
+export interface WorkflowControlExecutionRequestV1 { readonly runId: string; readonly node: EditableWorkflowNodeV1; readonly attempt: number; readonly predecessorOutcomes: readonly ('success' | 'failure' | 'skipped')[]; }
 export interface WorkflowControlExecutionResultV1 { readonly kind: 'completed' | 'refused'; readonly code: WorkflowSafeCode; readonly output?: EdgeOutcome; readonly processCount: 0; readonly residualProcessCount: 0; }
 
 const SUPPORTED: readonly EditableNodeKind[] = Object.freeze(['control.condition','control.parallel','control.join','control.group','control.finally']);
@@ -49,7 +49,7 @@ function transition(request: WorkflowControlExecutionRequestV1): EdgeOutcome {
   if (request.node.kind === 'control.join' && request.predecessorOutcomes.length < 2) throw new WorkflowExecutorError('WORKFLOW_JOIN_AMBIGUOUS');
   if (request.node.kind !== 'control.condition') return 'success';
   const condition = request.node.configuration?.condition ?? 'always'; if (condition === 'always') return 'true';
-  const prior = request.predecessorOutcomes.at(-1); if (!prior) throw new WorkflowExecutorError('WORKFLOW_CONDITION_INVALID');
+  const prior = [...request.predecessorOutcomes].reverse().find(outcome => outcome !== 'skipped'); if (!prior) throw new WorkflowExecutorError('WORKFLOW_CONDITION_INVALID');
   return condition === 'prior-success' ? prior === 'success' ? 'true' : 'false' : prior === 'failure' ? 'true' : 'false';
 }
 function safeId(value: string): string { return /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u.test(value) ? value : 'invalid'; }
