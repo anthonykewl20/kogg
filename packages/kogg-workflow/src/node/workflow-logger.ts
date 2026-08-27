@@ -17,6 +17,9 @@ type Fields = {
   'compile.refused': { requestId: string; versionId: string; safeCode: WorkflowSafeCode };
   'run.admission.requested': { requestId: string; planId: string };
   'run.admission.refused': { requestId: string; planId: string; safeCode: WorkflowSafeCode; unavailableExecutorCount: number };
+  'node.execution.started': { runId: string; nodeId: string; nodeKind: string; attempt: number; executorId: string };
+  'node.execution.completed': { runId: string; nodeId: string; nodeKind: string; attempt: number; executorId: string; output: string; safeCode: WorkflowSafeCode; processCount: number; residualProcessCount: number };
+  'node.execution.refused': { runId: string; nodeId: string; nodeKind: string; attempt: number; executorId: string; safeCode: WorkflowSafeCode; processCount: number; residualProcessCount: number };
   'run.recovery.quarantined': { runId: string; safeCode: 'WORKFLOW_OUTCOME_UNKNOWN' };
   'owner.publish.failed': { safeCode: 'WORKFLOW_STORE_INTEGRITY'; errorType: string };
   'recovery.started': { versionCount: number; activeRunCount: number; pendingOutboxCount: number };
@@ -42,6 +45,9 @@ export function workflowLog<K extends keyof Fields>(event: K, fields: Fields[K])
   else if (event === 'compile.refused') console.warn('[kogg:workflow:compiler] compile.refused', fields);
   else if (event === 'run.admission.requested') console.info('[kogg:workflow:engine] run.admission.requested', fields);
   else if (event === 'run.admission.refused') console.warn('[kogg:workflow:engine] run.admission.refused', fields);
+  else if (event === 'node.execution.started') console.info('[kogg:workflow:engine] node.execution.started', fields);
+  else if (event === 'node.execution.completed') console.info('[kogg:workflow:engine] node.execution.completed', fields);
+  else if (event === 'node.execution.refused') console.warn('[kogg:workflow:engine] node.execution.refused', fields);
   else if (event === 'run.recovery.quarantined') console.warn('[kogg:workflow:recovery] run.recovery.quarantined', fields);
   else if (event === 'owner.publish.failed') console.error('[kogg:workflow:owners] owner.publish.failed', fields);
   else if (event === 'recovery.started') console.info('[kogg:workflow:recovery] recovery.started', fields);

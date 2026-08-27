@@ -11,7 +11,7 @@ const ANCHORS = ['anchor.spec-frozen','anchor.spec-approved','anchor.producer-se
 @injectable()
 export class WorkflowCompiler {
   constructor(@inject(WorkflowNodeCatalog) private readonly catalog: WorkflowNodeCatalog) {}
-  catalogStatus(): { readonly digest: string; readonly valid: boolean; readonly entryCount: number; readonly unavailableExecutorCount: number } { return { digest: this.catalog.digest, ...this.catalog.diagnostics() }; }
+  catalogStatus(): { readonly digest: string; readonly valid: boolean; readonly entryCount: number; readonly availableExecutorCount: number; readonly unavailableExecutorCount: number } { return { digest: this.catalog.digest, ...this.catalog.diagnostics() }; }
   catalogEntry(kind: EditableNodeKind) { return this.catalog.entry(kind); }
   validate(input: unknown): WorkflowValidationProjection {
     try { const graph = decodeGraph(input); const checked = this.check(graph); return { valid: true, code: 'WORKFLOW_OK', graphDigest: workflowDigest('template', graph), ...checked }; }

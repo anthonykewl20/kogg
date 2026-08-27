@@ -1,8 +1,9 @@
-import { injectable } from '@theia/core/shared/inversify';
+import { inject, injectable } from '@theia/core/shared/inversify';
 import type { EditableNodeKind, WorkflowAuthorityEffect } from '../common/workflow-protocol';
 import { workflowDigest } from '../common/workflow-canonical';
+import { WorkflowExecutorRegistry, type WorkflowExecutorBindingV1 } from './workflow-executor-registry';
 
-// The catalog is compiled in, canonical, and closed. Executable artifacts remain explicitly unavailable until their owning production adapters are wired.
+// The catalog is compiled in, canonical, and closed. Process-free control artifacts are exact-attested; external executors remain explicitly unavailable.
 // observability-exempt: Pure immutable catalog declarations perform no operational I/O.
 // diagnostic-coverage: workflow.catalog, workflow.graph, workflow.authority, workflow.source-maps
 export interface WorkflowCatalogEntryV1 {
@@ -11,7 +12,7 @@ export interface WorkflowCatalogEntryV1 {
   readonly grantCeiling: readonly WorkflowAuthorityEffect[]; readonly retryClass: 'none' | 'read-only' | 'idempotent-exact-key' | 'fresh-authority';
   readonly sideEffectClass: 'none' | 'private-mutation' | 'external-call' | 'approval' | 'verification';
   readonly absoluteDeadlineMs: number; readonly diagnosticId: string;
-  readonly executor: { readonly status: 'unavailable'; readonly safeCode: 'WORKFLOW_EXECUTOR_INCOMPATIBLE' };
+  readonly executor: ({ readonly status: 'available' } & WorkflowExecutorBindingV1) | { readonly status: 'unavailable'; readonly safeCode: 'WORKFLOW_EXECUTOR_INCOMPATIBLE' };
 }
 
 const DEFINITIONS: Readonly<Record<EditableNodeKind, Omit<WorkflowCatalogEntryV1, 'kind' | 'kindVersion' | 'inputPorts' | 'executor'>>> = {
@@ -31,13 +32,17 @@ const DEFINITIONS: Readonly<Record<EditableNodeKind, Omit<WorkflowCatalogEntryV1
 
 @injectable()
 export class WorkflowNodeCatalog {
-  readonly entries: readonly WorkflowCatalogEntryV1[] = (Object.keys(DEFINITIONS) as EditableNodeKind[]).sort().map(kind => ({
-    kind, kindVersion: '1', inputPorts: ['in'], ...DEFINITIONS[kind], executor: { status: 'unavailable', safeCode: 'WORKFLOW_EXECUTOR_INCOMPATIBLE' }
-  }));
-  readonly digest = workflowDigest('catalog', { schemaVersion: '1', entries: this.entries });
+  readonly entries: readonly WorkflowCatalogEntryV1[];
+  readonly digest: string;
+  constructor(@inject(WorkflowExecutorRegistry) executors: WorkflowExecutorRegistry) {
+    this.entries = (Object.keys(DEFINITIONS) as EditableNodeKind[]).sort().map(kind => {
+      const binding = executors.binding(kind); if (binding) executors.resolveExact(kind, binding); return { kind, kindVersion: '1', inputPorts: ['in'], ...DEFINITIONS[kind], executor: binding ? { status: 'available', ...binding } : { status: 'unavailable', safeCode: 'WORKFLOW_EXECUTOR_INCOMPATIBLE' } };
+    });
+    this.digest = workflowDigest('catalog', { schemaVersion: '1', entries: this.entries });
+  }
   entry(kind: EditableNodeKind): WorkflowCatalogEntryV1 { const value = this.entries.find(item => item.kind === kind); if (!value) throw new Error('Closed workflow catalog is incomplete'); return value; }
-  diagnostics(): { readonly valid: boolean; readonly entryCount: number; readonly unavailableExecutorCount: number } {
-    return { valid: this.entries.length === 14 && new Set(this.entries.map(entry => `${entry.kind}@${entry.kindVersion}`)).size === 14, entryCount: this.entries.length, unavailableExecutorCount: this.entries.filter(entry => entry.executor.status === 'unavailable').length };
+  diagnostics(): { readonly valid: boolean; readonly entryCount: number; readonly availableExecutorCount: number; readonly unavailableExecutorCount: number } {
+    return { valid: this.entries.length === 14 && new Set(this.entries.map(entry => `${entry.kind}@${entry.kindVersion}`)).size === 14, entryCount: this.entries.length, availableExecutorCount: this.entries.filter(entry => entry.executor.status === 'available').length, unavailableExecutorCount: this.entries.filter(entry => entry.executor.status === 'unavailable').length };
   }
 }
 
