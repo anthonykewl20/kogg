@@ -4,7 +4,7 @@ import { spawn } from 'node:child_process';
 import { mkdtemp, rm } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { KOGG_RANEX_COMMIT, KOGG_RANEX_PROTOCOL_VERSION, type RepositoryStateV1, type TaskExecutionBindingV1 } from '@kogg/contracts';
+import { KOGG_RANEX_COMMIT, KOGG_RANEX_PROTOCOL_VERSION, type ProducerBindingV1, type RepositoryStateV1, type TaskExecutionBindingV1 } from '@kogg/contracts';
 import { OperationRegistry } from '@kogg/operations/lib/node/operation-registry';
 import type { ILogger } from '@theia/core/lib/common/logger';
 import { ProcessManager } from '@theia/process/lib/node/process-manager';
@@ -19,7 +19,7 @@ test('handshakes with the pinned Ranex kernel and fails closed on missing journa
     const capabilities = await bridge.start();
     assert.equal(capabilities.ranexCommit, KOGG_RANEX_COMMIT);
     assert.equal(capabilities.protocolVersion, KOGG_RANEX_PROTOCOL_VERSION);
-    assert.deepEqual(capabilities.operations.map(operation => operation.operation), ['kernel.handshake', 'kernel.health', 'task.bind']);
+    assert.deepEqual(capabilities.operations.map(operation => operation.operation), ['kernel.handshake', 'kernel.health', 'task.bind', 'producer.dispatch']);
     const verification = await bridge.verifyJournal();
     assert.equal(verification.valid, false);
     assert.equal(verification.reason, 'missing');
@@ -28,12 +28,25 @@ test('handshakes with the pinned Ranex kernel and fails closed on missing journa
     assert.equal(unavailable.safeCode, 'KERNEL_AUTHORITY_INVALID');
     assert.equal(unavailable.projection, null);
     assert.equal(unavailable.journal, null);
+    const unauthorizedProducer = await bridge.execute('producer.dispatch', {});
+    assert.equal(unauthorizedProducer.status, 'refused');
+    assert.equal(unauthorizedProducer.safeCode, 'KERNEL_AUTHORITY_INVALID');
     const committed = await bridge.bindTask(fixtureBinding());
     assert.equal(committed.status, 'succeeded');
     assert.equal(committed.safeCode, 'KERNEL_OK');
     assert.equal(committed.journal?.sequence, '1');
     const replay = await bridge.bindTask(fixtureBinding());
     assert.deepEqual(replay, { ...committed, requestId: replay.requestId, operationId: replay.operationId });
+    const producer = fixtureProducer(committed.projection!.taskBindingDigest);
+    const producerCommitted = await bridge.dispatchProducer(producer);
+    assert.equal(producerCommitted.status, 'succeeded');
+    assert.equal(producerCommitted.journal?.sequence, '2');
+    assert.equal(producerCommitted.projection?.attemptId, producer.attemptId);
+    const producerReplay = await bridge.dispatchProducer(producer);
+    assert.deepEqual(producerReplay, { ...producerCommitted, requestId: producerReplay.requestId, operationId: producerReplay.operationId });
+    const authorityMismatch = await bridge.dispatchProducer({ ...producer, attemptId: '88888888-8888-4888-8888-888888888888', authorityDigest: `sha256:${'f'.repeat(64)}` });
+    assert.equal(authorityMismatch.status, 'refused');
+    assert.equal(authorityMismatch.safeCode, 'KERNEL_AUTHORITY_INVALID');
     assert.equal((await bridge.verifyJournal()).valid, true);
     await bridge.shutdown();
     assert.equal((await operations.snapshot()).active.length, 0);
@@ -101,6 +114,15 @@ function fixtureBinding(): TaskExecutionBindingV1 {
     protectedSource: repository, worktreeId: '55555555-5555-4555-8555-555555555555',
     worktreeIdentityDigest: repository.worktreeIdentity, baseState: repository,
     executionProfileDigest: `sha256:${'5'.repeat(64)}`, expiresAt: '2099-08-27T07:30:00.000Z'
+  };
+}
+
+function fixtureProducer(taskBindingDigest: `sha256:${string}`): ProducerBindingV1 {
+  return {
+    producerId: '66666666-6666-4666-8666-666666666666', producerRole: 'implementation', adapterId: 'kogg.fixture',
+    adapterArtifactDigest: `sha256:${'b'.repeat(64)}`, provider: 'kogg.fixture', model: 'fixture.echo',
+    attemptId: '77777777-7777-4777-8777-777777777777', taskBindingDigest,
+    authorityDigest: `sha256:${'3'.repeat(64)}`, executionProfileDigest: `sha256:${'5'.repeat(64)}`
   };
 }
 

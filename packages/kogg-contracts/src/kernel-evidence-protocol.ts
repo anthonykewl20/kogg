@@ -148,6 +148,12 @@ export interface ProducerBindingV1 {
   readonly executionProfileDigest: KoggDigest;
 }
 
+export interface ProducerBindingProjectionV1 {
+  readonly producerBindingDigest: KoggDigest;
+  readonly producerId: string;
+  readonly attemptId: string;
+}
+
 export interface CheckDefinitionV1 {
   readonly checkId: string;
   readonly kind: 'build' | 'unit' | 'integration' | 'visible-e2e' | 'observability' | 'diagnostics' | 'source-maps' | 'process-cleanup' | 'ranex-evidence';
@@ -224,6 +230,7 @@ export interface KernelBridge {
   capabilities(): Promise<KernelCapabilities>;
   execute<TProjection extends KernelJson>(operation: KernelOperationV2, body: KernelJson): Promise<KernelResultV2<TProjection>>;
   bindTask(binding: TaskExecutionBindingV1): Promise<KernelResultV2<TaskBindingProjectionV1>>;
+  dispatchProducer(binding: ProducerBindingV1): Promise<KernelResultV2<ProducerBindingProjectionV1>>;
   verifyJournal(): Promise<{ readonly valid: boolean; readonly reason?: string }>;
   shutdown(): Promise<void>;
 }

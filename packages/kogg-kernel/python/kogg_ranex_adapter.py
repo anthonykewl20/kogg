@@ -28,7 +28,8 @@ MAX_PENDING_REQUESTS = 64
 MAX_PENDING_RESPONSE_BYTES = 4 * 1024 * 1024
 DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
 UUID = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$")
-IMPLEMENTED_OPERATIONS = {"kernel.handshake": 2, "kernel.health": 1, "task.bind": 1}
+IMPLEMENTED_OPERATIONS = {"kernel.handshake": 2, "kernel.health": 1, "task.bind": 1, "producer.dispatch": 1}
+SYMBOLIC = re.compile(r"^[a-z0-9][a-z0-9._:-]{0,127}$")
 
 
 class ProtocolRefusal(Exception):
@@ -234,6 +235,78 @@ def _bind_task(request: dict[str, Any], body: dict[str, Any]) -> tuple[dict[str,
     return projection, {"sequence": str(len(committed)), "rootDigest": root}
 
 
+def _producer_binding(value: Any) -> dict[str, Any]:
+    try:
+        binding = _closed(value, {
+            "producerId", "producerRole", "adapterId", "adapterArtifactDigest", "provider", "model",
+            "attemptId", "taskBindingDigest", "authorityDigest", "executionProfileDigest",
+        })
+        _uuid(binding["producerId"])
+        _uuid(binding["attemptId"])
+        if binding["producerRole"] != "implementation":
+            raise ProtocolRefusal("KERNEL_PRODUCER_INVALID")
+        for field in ("adapterId", "provider", "model"):
+            if not isinstance(binding[field], str) or not SYMBOLIC.fullmatch(binding[field]):
+                raise ProtocolRefusal("KERNEL_PRODUCER_INVALID")
+        for field in ("adapterArtifactDigest", "taskBindingDigest", "authorityDigest", "executionProfileDigest"):
+            _sha256(binding[field])
+        return binding
+    except ProtocolRefusal as error:
+        if error.safe_code == "KERNEL_PRODUCER_INVALID":
+            raise
+        raise ProtocolRefusal("KERNEL_PRODUCER_INVALID") from error
+
+
+def _dispatch_producer(request: dict[str, Any], body: dict[str, Any]) -> tuple[dict[str, Any], dict[str, str]]:
+    try:
+        closed = _closed(body, {"binding", "bindingDigest"})
+    except ProtocolRefusal as error:
+        raise ProtocolRefusal("KERNEL_PRODUCER_INVALID") from error
+    binding = _producer_binding(closed["binding"])
+    binding_digest = _domain_digest("producer", binding)
+    if closed["bindingDigest"] != binding_digest:
+        raise ProtocolRefusal("KERNEL_PRODUCER_INVALID")
+    journal = Journal(_journal_path())
+    try:
+        if not _journal_path().is_file() or not journal.verify():
+            raise ProtocolRefusal("KERNEL_JOURNAL_INTEGRITY")
+        records = journal.entries()
+    except ProtocolRefusal:
+        raise
+    except Exception as error:
+        raise ProtocolRefusal("KERNEL_JOURNAL_INTEGRITY") from error
+    if any(not isinstance(record, dict) for record in records):
+        raise ProtocolRefusal("KERNEL_JOURNAL_INTEGRITY")
+    tasks = [record for record in records if record.get("kind") == "kogg.task-binding.v1" and record.get("bindingDigest") == binding["taskBindingDigest"]]
+    if len(tasks) != 1:
+        raise ProtocolRefusal("KERNEL_TASK_BINDING_MISMATCH" if not tasks else "KERNEL_JOURNAL_AMBIGUOUS")
+    task = tasks[0].get("binding")
+    if not isinstance(task, dict) or task.get("authorityDigest") != binding["authorityDigest"] or task.get("executionProfileDigest") != binding["executionProfileDigest"]:
+        raise ProtocolRefusal("KERNEL_AUTHORITY_INVALID")
+    prior = [record for record in records if record.get("kind") == "kogg.producer-binding.v1" and record.get("idempotencyKey") == request["idempotencyKey"]]
+    if len(prior) > 1:
+        raise ProtocolRefusal("KERNEL_JOURNAL_AMBIGUOUS")
+    projection = {"producerBindingDigest": binding_digest, "producerId": binding["producerId"], "attemptId": binding["attemptId"]}
+    if prior:
+        if prior[0].get("bodyDigest") != request["bodyDigest"] or prior[0].get("bindingDigest") != binding_digest:
+            raise ProtocolRefusal("KERNEL_IDEMPOTENCY_CONFLICT")
+        return projection, _journal_position(records, records.index(prior[0]) + 1)
+    fact = {
+        "kind": "kogg.producer-binding.v1", "idempotencyKey": request["idempotencyKey"],
+        "bodyDigest": request["bodyDigest"], "bindingDigest": binding_digest, "binding": binding,
+    }
+    try:
+        root = journal.append(_KernelFact(fact))
+        committed = journal.entries()
+        if not journal.verify() or not committed or committed[-1] != fact:
+            raise ProtocolRefusal("KERNEL_JOURNAL_INTEGRITY")
+    except ProtocolRefusal:
+        raise
+    except Exception as error:
+        raise ProtocolRefusal("KERNEL_JOURNAL_INTEGRITY") from error
+    return projection, {"sequence": str(len(committed)), "rootDigest": root}
+
+
 def _capabilities() -> dict[str, Any]:
     provenance = _provenance()
     qualified = platform.system() == "Linux"
@@ -318,6 +391,8 @@ def _dispatch(request: dict[str, Any]) -> tuple[dict[str, Any], dict[str, str] |
         return {"status": status, "journal": journal, "capabilities": capabilities}, None
     if operation == "task.bind":
         return _bind_task(request, body)
+    if operation == "producer.dispatch":
+        return _dispatch_producer(request, body)
     raise ProtocolRefusal("KERNEL_CAPABILITY_UNAVAILABLE")
 
 

@@ -15,6 +15,8 @@ import {
   KernelHealth,
   type KernelOperationV2,
   type KernelResultV2,
+  type ProducerBindingProjectionV1,
+  type ProducerBindingV1,
   type TaskBindingProjectionV1,
   type TaskExecutionBindingV1,
   KOGG_RANEX_COMMIT,
@@ -154,7 +156,7 @@ export class KernelBridgeImpl implements KernelBridge {
   }
 
   execute<TProjection extends KernelJson>(operation: KernelOperationV2, body: KernelJson): Promise<KernelResultV2<TProjection>> {
-    if (operation === 'task.bind') {
+    if (operation === 'task.bind' || operation === 'producer.dispatch') {
       console.warn('[kogg:kernel:bridge] request.refused', { operation, safeCode: 'KERNEL_AUTHORITY_INVALID' });
       return Promise.resolve({
         protocol: KOGG_RANEX_PROTOCOL, requestId: randomUUID(), operationId: randomUUID(), status: 'refused',
@@ -167,6 +169,11 @@ export class KernelBridgeImpl implements KernelBridge {
   bindTask(binding: TaskExecutionBindingV1): Promise<KernelResultV2<TaskBindingProjectionV1>> {
     const bindingDigest = domainDigest('task-binding', binding as unknown as KernelJson);
     return this.requestResult<TaskBindingProjectionV1>('task.bind', { binding: binding as unknown as KernelJson, bindingDigest });
+  }
+
+  dispatchProducer(binding: ProducerBindingV1): Promise<KernelResultV2<ProducerBindingProjectionV1>> {
+    const bindingDigest = domainDigest('producer', binding as unknown as KernelJson);
+    return this.requestResult<ProducerBindingProjectionV1>('producer.dispatch', { binding: binding as unknown as KernelJson, bindingDigest });
   }
 
   async verifyJournal(): Promise<{ readonly valid: boolean; readonly reason?: string }> {
@@ -268,6 +275,7 @@ export class KernelBridgeImpl implements KernelBridge {
     if (response.operationId !== pending.operationId || !['succeeded', 'refused', 'unknown'].includes(response.status)) throw new Error('correlation');
     if ((response.status === 'succeeded') !== (response.safeCode === 'KERNEL_OK')) throw new Error('safe-code');
     if (!validJournal(response.journal) || (response.status === 'succeeded' && JOURNALED_OPERATIONS.has(pending.operation)) !== (response.journal !== null)) throw new Error('journal');
+    if (response.projection !== null && !validOperationProjection(pending.operation, response.projection)) throw new Error('projection');
     if ((response.projection === null) !== (response.resultDigest === null) || (response.projection !== null && sha256(Buffer.from(canonicalKernelJson(response.projection as KernelJson), 'utf8')) !== response.resultDigest)) throw new Error('digest');
     clearTimeout(pending.timer);
     this.pending.delete(response.requestId);
@@ -344,6 +352,22 @@ function validJournal(value: KernelResultV2['journal']): boolean {
   return value === null || (Object.keys(value).sort().join(',') === 'rootDigest,sequence'
     && /^(?:0|[1-9][0-9]*)$/u.test(value.sequence) && /^sha256:[0-9a-f]{64}$/u.test(value.rootDigest));
 }
+function validOperationProjection(operation: KernelOperationV2, value: unknown): boolean {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  const projection = value as Record<string, unknown>;
+  if (operation === 'task.bind') {
+    return Object.keys(projection).sort().join(',') === 'taskBindingDigest,taskId,taskRevision'
+      && validUuid(projection.taskId) && Number.isSafeInteger(projection.taskRevision) && Number(projection.taskRevision) > 0
+      && validDigest(projection.taskBindingDigest);
+  }
+  if (operation === 'producer.dispatch') {
+    return Object.keys(projection).sort().join(',') === 'attemptId,producerBindingDigest,producerId'
+      && validUuid(projection.attemptId) && validUuid(projection.producerId) && validDigest(projection.producerBindingDigest);
+  }
+  return true;
+}
+function validUuid(value: unknown): boolean { return typeof value === 'string' && /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u.test(value); }
+function validDigest(value: unknown): boolean { return typeof value === 'string' && /^sha256:[0-9a-f]{64}$/u.test(value); }
 
 class KoggKernelProcess extends Process {
   readonly child: ChildProcessWithoutNullStreams;
