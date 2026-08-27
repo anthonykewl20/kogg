@@ -4,6 +4,8 @@ import path from 'node:path';
 import { DatabaseSync, type SQLOutputValue } from 'node:sqlite';
 import { BackendApplicationContribution } from '@theia/core/lib/node';
 import { inject, injectable, unmanaged } from '@theia/core/shared/inversify';
+import type { ModeOperationAuthorizer, ModeSafeCodeV1 } from '@kogg/interaction-modes/lib/common/interaction-modes-protocol';
+import { KoggModeOperationAuthorizer } from '@kogg/interaction-modes/lib/common/interaction-modes-protocol';
 import { canonicalJson, verdictMergeDigest } from '../common/verdict-merge-canonical';
 import type {
   MergeAuthorizationProjectionV1, MergeAuthorizationResultV1, MergeAuthorizeRequestV1,
@@ -37,6 +39,7 @@ export class MergeAuthorizationRegistry implements BackendApplicationContributio
   constructor(
     @inject(VerdictMergeService) private readonly verdicts: VerdictMergeService,
     @inject(MergeAuthorizationAuthority) private readonly authority: MergeAuthorizationAuthority,
+    @inject(KoggModeOperationAuthorizer) private readonly modes: ModeOperationAuthorizer,
     @unmanaged() private readonly databasePath = path.join(stateRoot(), 'verdict-merge', 'authorization.sqlite3'),
     @unmanaged() private readonly clock: () => Date = () => new Date()
   ) {}
@@ -70,6 +73,9 @@ export class MergeAuthorizationRegistry implements BackendApplicationContributio
       const request = decodeChallengeRequest(input); requestId = request.requestId; const scope = mergeAuthorizationScopeDigest('challenge', request);
       const actor = this.requireActor(context, scope); const replay = this.replay<MergeChallengeResultV1>(requestId, scope); if (replay) return replay.kind === 'created' ? { ...replay, replay: true } : replay;
       console.info('[kogg:merge:authorization] challenge.requested', { requestId, explanationId: request.explanationId });
+      const taskId = this.verdicts.authorizationTaskId(request.explanationId); if (!taskId) return this.refusedChallenge(requestId, 'VERDICT_UNKNOWN');
+      const mode = await this.modes.authorizeOperation({ requestId, taskId, operation: 'merge-controlled' });
+      if (!mode.allowed) return this.refusedChallenge(requestId, mergeModeRefusal(mode.safeCode));
       const now = this.clock(); const binding = await this.verdicts.currentAuthorizationBinding(request.explanationId, now);
       if (!binding) return this.refusedChallenge(requestId, 'VERDICT_UNKNOWN');
       if (binding.explanation.gateRows.some(row => (row.producerRoleDigest !== null && prefixed(row.producerRoleDigest) === actor.authorizerRoleDigest) || prefixed(row.verifierRoleDigest) === actor.authorizerRoleDigest)) return this.refusedChallenge(requestId, 'IDENTITY_SEPARATION_INVALID');
@@ -116,6 +122,8 @@ export class MergeAuthorizationRegistry implements BackendApplicationContributio
       if (!row) return this.refusedAuthorization(requestId, challengeId, 'AUTHORIZATION_REQUIRED');
       const record = decodeChallengeRecord(JSON.parse(text(row, 'record_json')) as unknown); const state = this.challengeState(challengeId);
       if (state !== 'created') return this.refusedAuthorization(requestId, challengeId, 'AUTHORIZATION_REPLAY');
+      const mode = await this.modes.authorizeOperation({ requestId, taskId: record.taskId, operation: 'merge-controlled' });
+      if (!mode.allowed) return this.refusedAuthorization(requestId, challengeId, mergeModeRefusal(mode.safeCode));
       const now = this.clock(); if (Date.parse(record.expiresAt) <= now.getTime()) { this.appendEvent(challengeId, 'expired', now.toISOString()); return this.refusedAuthorization(requestId, challengeId, 'AUTHORIZATION_EXPIRED'); }
       if (record.sessionId !== actor.sessionId || record.authorizerRoleDigest !== actor.authorizerRoleDigest || !equalDigest(record.challengeDigest, request.displayedChallengeDigest)) return this.refusedAuthorization(requestId, challengeId, 'AUTHORIZATION_REQUIRED');
       const binding = await this.verdicts.currentAuthorizationBinding(text(row, 'explanation_id'), now);
@@ -152,6 +160,8 @@ export class MergeAuthorizationRegistry implements BackendApplicationContributio
       const now = this.clock(); if (Date.parse(authorization.expiresAt) <= now.getTime()) { this.appendAuthorizationEvent(authorizationId, 'expired', now.toISOString()); return this.refusedExecute(requestId, authorizationId, 'AUTHORIZATION_EXPIRED'); }
       if (authorization.sessionId !== actor.sessionId || authorization.actorAuthorityDigest !== actor.actorAuthorityDigest || authorization.authorizerRoleDigest !== actor.authorizerRoleDigest) return this.refusedExecute(requestId, authorizationId, 'AUTHORIZATION_REQUIRED');
       const challenge = decodeChallengeRecord(JSON.parse(text(row, 'challenge_json')) as unknown);
+      const mode = await this.modes.authorizeOperation({ requestId, taskId: challenge.taskId, operation: 'merge-controlled' });
+      if (!mode.allowed) return this.refusedExecute(requestId, authorizationId, mergeModeRefusal(mode.safeCode));
       const binding = await this.verdicts.currentAuthorizationBinding(text(row, 'explanation_id'), now);
       if (!binding || binding.explanation.explanationDigest !== authorization.explanationDigest
         || challenge.exactBindingsDigest !== authorization.exactBindingsDigest
@@ -195,6 +205,8 @@ export class MergeAuthorizationRegistry implements BackendApplicationContributio
 
   async revalidateIntent(intent: PrivateMergeIntent, now = this.clock()): Promise<boolean> {
     if (!intent.explanationId) return false;
+    const mode = await this.modes.authorizeOperation({ requestId: randomUUID(), taskId: intent.taskId, operation: 'merge-controlled' });
+    if (!mode.allowed) { console.warn('[kogg:merge:authorization] intent.mode-refused', { mergeId: intent.mergeId, safeCode: mergeModeRefusal(mode.safeCode) }); return false; }
     const binding = await this.verdicts.currentAuthorizationBinding(intent.explanationId, now);
     return Boolean(binding && binding.explanation.explanationDigest
       && binding.query.projectId === intent.projectId && binding.query.repositoryId === intent.repositoryId
@@ -280,6 +292,10 @@ export class MergeAuthorizationRegistry implements BackendApplicationContributio
   private count(table: 'challenges' | 'authorizations'): number { return Number((this.db().prepare(`SELECT count(*) AS count FROM ${table}`).get() as Row).count); }
   private countTriggers(): number { return Number((this.db().prepare("SELECT count(*) AS count FROM sqlite_master WHERE type='trigger' AND name LIKE 'merge_%'").get() as Row).count); }
   private db(): DatabaseSync { if (!this.database) throw new MergeAuthorizationError('STORE_INTEGRITY_FAILED'); return this.database; }
+}
+function mergeModeRefusal(code: ModeSafeCodeV1): VerdictMergeSafeCode {
+  if (code === 'PLAN_MUTATION_REFUSED' || code === 'BUILD_MERGE_REFUSED') return code;
+  return 'MODE_AUTHORITY_REFUSED';
 }
 
 export class MergeAuthorizationError extends Error { constructor(readonly safeCode: VerdictMergeSafeCode) { super(safeCode); this.name = 'MergeAuthorizationError'; } }
