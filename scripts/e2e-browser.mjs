@@ -99,6 +99,7 @@ try {
     if (process.env.KOGG_E2E_TASKS_ONLY === '1') {
         await exerciseProjects(page);
         await exerciseTasks(page);
+        await createInteractionModeFixture(page);
         await exerciseInteractionModes(page);
         process.stdout.write('Kogg browser governed-tasks E2E passed.\n');
         await browser.close(); browser = undefined;
@@ -239,6 +240,7 @@ try {
 
     await exerciseProjects(page);
     await exerciseTasks(page);
+    await createInteractionModeFixture(page);
     await exerciseInteractionModes(page);
     await exerciseOperations(page);
 
@@ -703,9 +705,10 @@ async function exerciseInteractionModes(page) {
 
 async function createInteractionModeFixture(page) {
     let projects = await ensureProjectsWidget(page);
-    await createProjectThroughPicker(page, projects, 'Mode fixture', workspace);
-    const row = projects.locator('[data-project-row]').filter({ hasText: 'Mode fixture' });
-    if (await row.getByRole('button', { name: 'Switch' }).isVisible().catch(() => false)) {
+    let active = projects.locator('[data-project-row]').filter({ hasText: /Active/u });
+    if (!await active.count()) {
+        await createProjectThroughPicker(page, projects, 'Mode fixture', workspace);
+        const row = projects.locator('[data-project-row]').filter({ hasText: 'Mode fixture' });
         await row.getByRole('button', { name: 'Switch' }).click();
         await page.waitForURL(/\.theia-workspace(?:$|[?#])/u, { timeout: 20_000 });
         await page.locator('body.kogg-application').waitFor({ timeout: 20_000 });
@@ -713,12 +716,19 @@ async function createInteractionModeFixture(page) {
         await trust.waitFor({ state: 'visible', timeout: 10_000 }).catch(() => undefined);
         if (await trust.isVisible().catch(() => false)) await trust.click();
         projects = await ensureProjectsWidget(page);
+        await waitForProjectText(projects, /Mode fixture[\s\S]*Active/u);
+        active = projects.locator('[data-project-row]').filter({ hasText: /Active/u });
     }
-    await waitForProjectText(projects, /Mode fixture[\s\S]*Active/u);
+    await active.first().waitFor({ state: 'visible', timeout: 10_000 });
     const tasks = await ensureTasksWidget(page);
     await tasks.getByLabel('Initial specification').fill('Create the disposable interaction-mode acceptance fixture.');
     await tasks.getByRole('button', { name: 'Create task' }).click();
     await tasks.getByText(/Revision 1 · active · draft/iu).waitFor({ timeout: 10_000 });
+    // The selector intentionally preserves its current active task while a
+    // window is open. Reconnect so it selects the newest fresh task, exactly as
+    // a user does when changing task context after a prior binding degraded.
+    await page.reload({ waitUntil: 'domcontentloaded' });
+    await page.locator('body.kogg-application').waitFor({ timeout: 20_000 });
 }
 
 async function exerciseOperations(page) {

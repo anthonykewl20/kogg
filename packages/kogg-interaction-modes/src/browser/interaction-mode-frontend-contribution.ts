@@ -8,6 +8,7 @@ import {
   KoggInteractionModesService, type InteractionModeV1, type KoggInteractionModesService as InteractionModesService,
   type ModeProjectionV1, type ModeTransitionProjectionV1
 } from '../common/interaction-modes-protocol';
+import { modeAuthorityLabel, modeBlockedExplanation, modeSelectionAllowed } from '../common/interaction-mode-view-model';
 
 // diagnostic-coverage: interaction-modes.authority, interaction-modes.transitions, interaction-modes.operations, interaction-modes.restoration, interaction-modes.accessibility, interaction-modes.source-maps
 const STATUS_ID = 'kogg.interaction-mode';
@@ -70,12 +71,12 @@ export class InteractionModeFrontendContribution implements FrontendApplicationC
 
   private async render(state: 'loading' | 'ready' | 'no-task' | 'unavailable'): Promise<void> {
     const projection = this.projection; const mode = projection ? MODE_LABEL[projection.selectedMode] : 'Plan';
-    const authority = projection ? authorityLabel(projection) : state === 'no-task' ? 'no active task' : state;
+    const authority = projection ? modeAuthorityLabel(projection) : state === 'no-task' ? 'no active task' : state;
     const label = `Mode: ${mode}; authority: ${authority}; stage: ${projection?.activeStage ?? 'unavailable'}`;
     await this.statusBar.setElement(STATUS_ID, {
       text: `$(shield) ${mode} · ${projection?.activeStage ?? authority}`,
       name: 'Kogg interaction mode', alignment: StatusBarAlignment.LEFT, priority: 100,
-      command: SELECT_MODE.id, tooltip: `${label}. ${projection ? blockedExplanation(projection) : 'Create an active task to establish task-scoped authority.'}`,
+      command: SELECT_MODE.id, tooltip: `${label}. ${projection ? modeBlockedExplanation(projection) : 'Create an active task to establish task-scoped authority.'}`,
       accessibilityInformation: { label }
     });
   }
@@ -84,6 +85,9 @@ export class InteractionModeFrontendContribution implements FrontendApplicationC
     await this.refresh();
     if (!this.task || !this.projection) { await this.messages.warn('Create an active governed task before selecting an interaction mode.'); return; }
     if (this.projection.state === 'transition-pending') { await this.handlePending(); return; }
+    if (!modeSelectionAllowed(this.projection)) {
+      await this.messages.warn(`Mode switch unavailable: ${this.projection.safeCode}. Restore the exact current task binding first.`); return;
+    }
     const choices: Array<QuickPickValue<InteractionModeV1>> = (['plan', 'build', 'kogg'] as const).map(mode => ({
       label: `${mode === this.projection!.selectedMode ? '$(check) ' : ''}${MODE_LABEL[mode]}`,
       description: mode === this.projection!.selectedMode ? 'Current task mode' : transitionDescription(this.projection!.selectedMode, mode),
@@ -145,8 +149,6 @@ async function configurationDigest(mode: InteractionModeV1): Promise<string> {
   const bytes = new TextEncoder().encode(JSON.stringify({ mode, qualification: 'pending', schemaVersion: 1 }));
   const digest = await crypto.subtle.digest('SHA-256', bytes); return `sha256:${[...new Uint8Array(digest)].map(value => value.toString(16).padStart(2, '0')).join('')}`;
 }
-function authorityLabel(projection: ModeProjectionV1): string { return projection.state === 'transition-pending' ? 'disabled during transition' : `${projection.effectiveCapabilities.length} bounded capabilities`; }
-function blockedExplanation(projection: ModeProjectionV1): string { if (projection.state === 'transition-pending') return 'All mode operations are refused until transition confirmation, qualification, cleanup, and commit.'; if (projection.selectedMode === 'plan') return 'Plan cannot modify production files; switch to Build or Kogg through explicit confirmation.'; if (projection.selectedMode === 'build') return 'Build cannot claim governed PASS or merge; continue through Kogg verification.'; return 'Kogg remains bounded by approvals, independent checks, evidence, verdict, controlled merge, and cleanup.'; }
 function transitionDescription(from: InteractionModeV1, to: InteractionModeV1): string { const order = { plan: 0, build: 1, kogg: 2 }; return order[to] > order[from] ? 'Authority expansion requires explicit confirmation and fresh owner qualification.' : 'Authority reduction requires active-work cancellation and externally proved cleanup.'; }
 class ModeUiError extends Error { constructor(readonly code: string) { super(code); this.name = 'ModeUiError'; } }
 function safeCode(error: unknown): string { return error instanceof ModeUiError ? error.code : 'MODE_REGISTRY_UNAVAILABLE'; }
