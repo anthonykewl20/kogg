@@ -1,6 +1,7 @@
 // observability-exempt: Pure verdict and merge RPC declarations have no operational behavior.
 // diagnostic-exempt: Pure declarations are covered by the verdict and merge runtime contributors.
 export const KoggVerdictMergeServicePath = '/services/kogg-verdict-merge';
+export const KoggVerdictMergeServiceToken = Symbol('KoggVerdictMergeService');
 export type VerdictMergeSafeCode = 'VERDICT_OK' | 'VERDICT_FAIL' | 'VERDICT_BLOCKED' | 'VERDICT_STALE' | 'VERDICT_UNKNOWN'
   | 'RANEX_PROVENANCE_INVALID' | 'JOURNAL_INVALID' | 'BINDING_MISMATCH' | 'IDENTITY_SEPARATION_INVALID'
   | 'AUTHORIZATION_OK' | 'AUTHORIZATION_REQUIRED' | 'AUTHORIZATION_EXPIRED' | 'AUTHORIZATION_REPLAY' | 'REQUEST_CONFLICT'
@@ -25,4 +26,5 @@ export type MergeAuthorizationResultV1 = { readonly kind: 'authorized'; readonly
 export interface MergeExecuteRequestV1 { readonly requestId: string; readonly authorizationId: string; }
 export interface MergeIntentProjectionV1 { readonly mergeId: string; readonly authorizationId: string; readonly destinationRef: string; readonly expectedOldOid: string; readonly subjectOid: string; readonly expectedTreeOid: string; readonly mergePolicyId: 'local-two-parent-no-ff-v1'; readonly state: 'preflight-pending'; readonly createdAt: string; }
 export type MergeExecuteResultV1 = { readonly kind: 'accepted'; readonly safeCode: 'MERGE_PREFLIGHT_PENDING'; readonly intent: MergeIntentProjectionV1; readonly replay: boolean } | { readonly kind: 'refused'; readonly safeCode: VerdictMergeSafeCode };
-export interface KoggVerdictMergeService { explain(input: unknown): Promise<VerdictExplanationResultV1>; }
+export interface MergeCandidateProjectionV1 { readonly explanationId: string; readonly ranexDecision: 'pass' | 'fail' | 'blocked'; readonly currentness: 'current' | 'stale' | 'unknown'; readonly destinationRef: string; readonly expectedBaseOid: string; readonly subjectOid: string; readonly subjectTreeOid: string; readonly mergePolicyId: 'local-two-parent-no-ff-v1'; readonly requiredCount: number; readonly passCount: number; readonly failCount: number; readonly blockedCount: number; readonly expiresAt: string; }
+export interface KoggVerdictMergeService { explain(input: unknown): Promise<VerdictExplanationResultV1>; mergeCandidates(): Promise<readonly MergeCandidateProjectionV1[]>; }
