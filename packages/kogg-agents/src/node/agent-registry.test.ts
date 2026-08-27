@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import { chmod, mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
@@ -8,7 +9,7 @@ import type { OperationLease, OperationRegistryApi, ProcessLease, StartOperation
 import { OperationsReadModel } from '@kogg/operations/lib/node/operations-read-model';
 import type { TaskAdmissionAuthority, TaskAdmissionSnapshot } from '@kogg/tasks/lib/common/tasks-protocol';
 import type { ModeOperationAuthorizer } from '@kogg/interaction-modes/lib/common/interaction-modes-protocol';
-import type { AdapterAttemptBindingV1, AgentAdapterFactory, AgentWorkspaceAuthority } from '../common/agents-protocol';
+import type { AdapterAttemptBindingV1, AgentAdapterFactory, AgentWorkspaceAuthority, CredentialLeaseAuthority } from '../common/agents-protocol';
 import { AdapterRegistry } from './adapter-registry';
 import { AgentRegistry } from './agent-registry';
 import { FixtureAdapter } from './fixture-adapter';
@@ -17,7 +18,13 @@ import { LocalCredentialLeaseAuthority } from './credential-lease-authority';
 // diagnostic-coverage: agents.adapters, agents.attempts, agents.processes, agents.recovery, agents.logging, agents.source-maps
 
 const ADMISSION: TaskAdmissionSnapshot = { taskAdmissionId: '10000000-0000-4000-8000-000000000001', taskId: '10000000-0000-4000-8000-000000000002', specificationId: '10000000-0000-4000-8000-000000000003', taskRevisionId: '10000000-0000-4000-8000-000000000003', taskRevisionDigest: `sha256:${'1'.repeat(64)}`, approvalId: '10000000-0000-4000-8000-000000000004', approvalDigest: `sha256:${'2'.repeat(64)}`, projectId: '10000000-0000-4000-8000-000000000005', repositoryId: '10000000-0000-4000-8000-000000000006', bindingRevision: '1', registryRevision: '1', taskRevision: '1', runId: '10000000-0000-4000-8000-000000000007', authorizedAt: '2026-08-27T00:00:00.000Z', expiresAt: '2099-08-27T00:00:00.000Z' };
-const MODE_AUTHORITY = { authorizeOperation: async () => ({ allowed: true, safeCode: 'MODE_OK' }) } as unknown as ModeOperationAuthorizer;
+const MODE_AUTHORITY: ModeOperationAuthorizer = { authorizeOperation: async request => modeAuthorization(request.operation) };
+
+function modeAuthorization(operation: string, sequence = '1', selectedMode: 'plan' | 'build' | 'kogg' = operation === 'private-mutate' ? 'build' : 'plan') {
+  return { schemaVersion: 1 as const, allowed: true, safeCode: 'MODE_OK' as const, projection: { schemaVersion: 1 as const,
+    taskId: ADMISSION.taskId, projectId: ADMISSION.projectId, repositoryId: ADMISSION.repositoryId, taskRevision: ADMISSION.taskRevision,
+    selectedMode, effectiveCapabilities: [], sequence, state: 'ready' as const, activeStage: selectedMode, safeCode: 'MODE_OK' as const } };
+}
 
 test('runs a real supervised fixture host through completion and proves cleanup', async () => {
   const directory = await mkdtemp(path.join(os.tmpdir(), 'kogg-agents-')); const prior = process.env.KOGG_STATE_DIR; process.env.KOGG_STATE_DIR = directory;
@@ -30,6 +37,7 @@ test('runs a real supervised fixture host through completion and proves cleanup'
     assert.equal(role.kind, 'completed'); assert.ok(role.role);
     const result = await registry.startAttempt({ schemaVersion: '1', requestId: '30000000-0000-4000-8000-000000000001', expectedRegistryRevision: role.registryRevision, taskAdmissionId: ADMISSION.taskAdmissionId, roleRevisionId: role.role.roleRevisionId, providerId: 'kogg.fixture', modelId: 'fixture.echo', adapterKey: 'kogg.fixture', adapterVersion: '1.0.0', deadlinePolicyId: 'interactive-v1' });
     assert.equal(result.kind, 'completed'); assert.ok(result.attempt);
+    assert.equal(result.attempt.authorityMode, 'plan'); assert.equal(result.attempt.authoritySequence, '1'); assert.equal(result.attempt.authorityOperation, 'research');
     assert.deepEqual(adapterBinding, {
       schemaVersion: '1', attemptId: result.attempt.attemptId, taskId: ADMISSION.taskId, projectId: ADMISSION.projectId,
       repositoryId: ADMISSION.repositoryId, repositoryBindingRevision: ADMISSION.bindingRevision,
@@ -61,6 +69,34 @@ test('refuses agent dispatch by durable mode authority before creating an attemp
     const mutatingResult = await registry.startAttempt({ schemaVersion: '1', requestId: '30000000-0000-4000-8000-000000000092', expectedRegistryRevision: mutatingRole.registryRevision, taskAdmissionId: ADMISSION.taskAdmissionId, roleRevisionId: mutatingRole.role.roleRevisionId, providerId: 'kogg.fixture', modelId: 'fixture.echo', adapterKey: 'kogg.fixture', adapterVersion: '1.0.0', deadlinePolicyId: 'interactive-v1' });
     assert.equal(mutatingResult.kind, 'refused'); assert.deepEqual(modeOperations, ['research', 'private-mutate']); assert.equal(operations.started, 0); assert.equal((await registry.listAttempts()).length, 0);
   } finally { await registry.onStop(); if (prior === undefined) delete process.env.KOGG_STATE_DIR; else process.env.KOGG_STATE_DIR = prior; await rm(directory, { recursive: true, force: true }); }
+});
+
+test('refuses an allowed mode projection whose immutable task binding does not match before creating an attempt', async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), 'kogg-agents-mode-binding-')); const prior = process.env.KOGG_STATE_DIR; process.env.KOGG_STATE_DIR = directory;
+  const operations = new TestOperations(); const modes: ModeOperationAuthorizer = { async authorizeOperation(request) { return { ...modeAuthorization(request.operation), projection: { ...modeAuthorization(request.operation).projection, projectId: '10000000-0000-4000-8000-000000000099' } }; } };
+  const registry = new AgentRegistry({ resolveAdmission: async () => ADMISSION }, operations, new AdapterRegistry(), new LocalCredentialLeaseAuthority(), modes);
+  try {
+    await registry.onStart(); const role = await registry.createRoleRevision(roleRequest('20000000-0000-4000-8000-000000000093', '0')); assert.ok(role.role);
+    const result = await registry.startAttempt({ schemaVersion: '1', requestId: '30000000-0000-4000-8000-000000000093', expectedRegistryRevision: role.registryRevision, taskAdmissionId: ADMISSION.taskAdmissionId, roleRevisionId: role.role.roleRevisionId, providerId: 'kogg.fixture', modelId: 'fixture.echo', adapterKey: 'kogg.fixture', adapterVersion: '1.0.0', deadlinePolicyId: 'interactive-v1' });
+    assert.equal(result.kind, 'refused'); assert.equal(result.code, 'POLICY_REFUSED'); assert.equal(operations.started, 0); assert.equal((await registry.listAttempts()).length, 0);
+  } finally { await registry.onStop(); if (prior === undefined) delete process.env.KOGG_STATE_DIR; else process.env.KOGG_STATE_DIR = prior; await rm(directory, { recursive: true, force: true }); }
+});
+
+test('rechecks the immutable mode sequence before every agent effect and cleans an operation when authority drifts', async () => {
+  for (const driftCall of [2, 3]) {
+    const directory = await mkdtemp(path.join(os.tmpdir(), `kogg-agents-mode-drift-${driftCall}-`)); const prior = process.env.KOGG_STATE_DIR; process.env.KOGG_STATE_DIR = directory;
+    const adapters = new AdapterRegistry(); const fixture = new FixtureAdapter(adapters); const operations = new TestOperations(); let modeCalls = 0; let credentialIssues = 0; let adapterCreates = 0;
+    const modes: ModeOperationAuthorizer = { async authorizeOperation(request) { modeCalls++; return modeAuthorization(request.operation, modeCalls >= driftCall ? '2' : '1'); } };
+    const credentials: CredentialLeaseAuthority = { async issue() { credentialIssues++; return { leaseId: crypto.randomUUID(), expiresAt: '2099-01-01T00:00:00.000Z', consume() {}, dispose() {} }; } };
+    const create = fixture.create.bind(fixture); fixture.create = input => { adapterCreates++; return create(input); };
+    const registry = new AgentRegistry({ resolveAdmission: async () => ADMISSION }, operations, adapters, credentials, modes);
+    try {
+      await registry.onStart(); fixture.onStart(); const role = await registry.createRoleRevision(roleRequest(`20000000-0000-4000-8000-${String(94 + driftCall).padStart(12, '0')}`, '0')); assert.ok(role.role);
+      const result = await registry.startAttempt({ schemaVersion: '1', requestId: `30000000-0000-4000-8000-${String(94 + driftCall).padStart(12, '0')}`, expectedRegistryRevision: role.registryRevision, taskAdmissionId: ADMISSION.taskAdmissionId, roleRevisionId: role.role.roleRevisionId, providerId: 'kogg.fixture', modelId: 'fixture.echo', adapterKey: 'kogg.fixture', adapterVersion: '1.0.0', deadlinePolicyId: 'interactive-v1' });
+      assert.equal(result.kind, 'refused'); assert.equal(result.code, 'POLICY_REFUSED'); assert.equal(result.attempt?.state, 'cleaned'); assert.equal(result.attempt?.authorityMode, 'plan'); assert.equal(result.attempt?.authoritySequence, '1');
+      assert.equal(operations.started, driftCall === 2 ? 0 : 1); assert.equal(operations.cleaned, operations.started); assert.equal(credentialIssues, 0); assert.equal(adapterCreates, 0); assert.equal(registry.diagnostics().residualCount, 0);
+    } finally { await registry.onStop(); if (prior === undefined) delete process.env.KOGG_STATE_DIR; else process.env.KOGG_STATE_DIR = prior; await rm(directory, { recursive: true, force: true }); }
+  }
 });
 
 test('refuses a mutating attempt without governed workspace authority before external effects', async () => {
@@ -112,6 +148,31 @@ test('refuses startup when a durable adapter owner source fact is altered', asyn
   try {
     await first.onStart(); const role = await first.createRoleRevision(roleRequest('20000000-0000-4000-8000-000000000022', '0')); assert.ok(role.role); await first.onStop();
     const database = new DatabaseSync(path.join(directory, 'agents', 'registry.sqlite3')); database.exec('DROP TRIGGER agents_events_update'); database.prepare("UPDATE events SET safe_code='PROVIDER_REFUSED' WHERE event_kind='role.revision.created'").run(); database.close();
+    await assert.rejects(new AgentRegistry({ resolveAdmission: async () => ADMISSION }, new TestOperations(), new AdapterRegistry(), new LocalCredentialLeaseAuthority(), MODE_AUTHORITY).onStart(), /AGENT_REGISTRY_INTEGRITY_FAILED/u);
+  } finally { await first.onStop(); if (prior === undefined) delete process.env.KOGG_STATE_DIR; else process.env.KOGG_STATE_DIR = prior; await rm(directory, { recursive: true, force: true }); }
+});
+
+test('migrates legacy terminal attempts to explicit unknown mode authority without inventing trust', async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), 'kogg-agents-mode-migration-')); const prior = process.env.KOGG_STATE_DIR; process.env.KOGG_STATE_DIR = directory;
+  const first = new AgentRegistry({ resolveAdmission: async () => ADMISSION }, new TestOperations(), new AdapterRegistry(), new LocalCredentialLeaseAuthority(), MODE_AUTHORITY); let second: AgentRegistry | undefined;
+  try {
+    await first.onStart(); const role = await first.createRoleRevision(roleRequest('20000000-0000-4000-8000-000000000023', '0')); assert.ok(role.role);
+    const refused = await first.startAttempt({ schemaVersion: '1', requestId: '30000000-0000-4000-8000-000000000023', expectedRegistryRevision: role.registryRevision, taskAdmissionId: ADMISSION.taskAdmissionId, roleRevisionId: role.role.roleRevisionId, providerId: 'kogg.fixture', modelId: 'fixture.echo', adapterKey: 'kogg.fixture', adapterVersion: '1.0.0', deadlinePolicyId: 'interactive-v1' }); assert.ok(refused.attempt); assert.equal(refused.attempt.state, 'cleaned');
+    await first.onStop(); const database = new DatabaseSync(path.join(directory, 'agents', 'registry.sqlite3')); database.exec('DROP TRIGGER agents_events_update'); database.prepare("UPDATE events SET safe_fields_json='{}' WHERE event_kind='attempt.requested'").run();
+    let previous = ''; for (const event of database.prepare('SELECT * FROM events ORDER BY sequence').all() as Record<string, unknown>[]) { const digest = createHash('sha256').update(testCanonical({ eventId: event.event_id, attemptId: event.attempt_id ?? undefined, kind: event.event_kind, code: event.safe_code, safeFields: JSON.parse(String(event.safe_fields_json)), previous })).digest('hex'); database.prepare('UPDATE events SET previous_digest=?,event_digest=? WHERE sequence=?').run(previous, digest, event.sequence as number); previous = digest; }
+    database.exec('ALTER TABLE attempts DROP COLUMN authority_operation; ALTER TABLE attempts DROP COLUMN authority_sequence; ALTER TABLE attempts DROP COLUMN authority_mode;'); database.close();
+    second = new AgentRegistry({ resolveAdmission: async () => ADMISSION }, new TestOperations(), new AdapterRegistry(), new LocalCredentialLeaseAuthority(), MODE_AUTHORITY); await second.onStart(); const migrated = await second.getAttempt(refused.attempt.attemptId);
+    assert.equal(migrated.authorityMode, 'unknown'); assert.equal(migrated.authoritySequence, '0'); assert.equal(migrated.authorityOperation, 'unknown');
+  } finally { await second?.onStop(); await first.onStop(); if (prior === undefined) delete process.env.KOGG_STATE_DIR; else process.env.KOGG_STATE_DIR = prior; await rm(directory, { recursive: true, force: true }); }
+});
+
+test('refuses startup when an immutable agent mode authority binding is corrupted', async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), 'kogg-agents-mode-integrity-')); const prior = process.env.KOGG_STATE_DIR; process.env.KOGG_STATE_DIR = directory;
+  const first = new AgentRegistry({ resolveAdmission: async () => ADMISSION }, new TestOperations(), new AdapterRegistry(), new LocalCredentialLeaseAuthority(), MODE_AUTHORITY);
+  try {
+    await first.onStart(); const role = await first.createRoleRevision(roleRequest('20000000-0000-4000-8000-000000000024', '0')); assert.ok(role.role);
+    const refused = await first.startAttempt({ schemaVersion: '1', requestId: '30000000-0000-4000-8000-000000000024', expectedRegistryRevision: role.registryRevision, taskAdmissionId: ADMISSION.taskAdmissionId, roleRevisionId: role.role.roleRevisionId, providerId: 'kogg.fixture', modelId: 'fixture.echo', adapterKey: 'kogg.fixture', adapterVersion: '1.0.0', deadlinePolicyId: 'interactive-v1' }); assert.ok(refused.attempt); await first.onStop();
+    const database = new DatabaseSync(path.join(directory, 'agents', 'registry.sqlite3')); database.prepare('UPDATE attempts SET authority_sequence=? WHERE attempt_id=?').run('2', refused.attempt.attemptId); database.close();
     await assert.rejects(new AgentRegistry({ resolveAdmission: async () => ADMISSION }, new TestOperations(), new AdapterRegistry(), new LocalCredentialLeaseAuthority(), MODE_AUTHORITY).onStart(), /AGENT_REGISTRY_INTEGRITY_FAILED/u);
   } finally { await first.onStop(); if (prior === undefined) delete process.env.KOGG_STATE_DIR; else process.env.KOGG_STATE_DIR = prior; await rm(directory, { recursive: true, force: true }); }
 });
@@ -319,10 +380,11 @@ test('refuses child authority expansion before spawn and joins descendants on pa
 function roleRequest(requestId: string, expectedRegistryRevision: string, model = 'fixture.echo') { return { schemaVersion: '1' as const, requestId, expectedRegistryRevision, roleKey: 'implementer', displayName: 'Implementer', authority: { capabilityIds: ['provider-turn'], toolPolicyIds: ['read-only'], mayCreateChildren: false, permittedChildRoleKeys: [], maxChildDepth: '0', maxDirectChildren: '0' }, providerPolicy: { permittedProviderIds: ['kogg.fixture'], permittedModelIds: [model], requiredAdapterCapabilities: ['provider-turn'] }, budgetPolicyId: 'fixture-budget' }; }
 function childRoleRequest(requestId: string, expectedRegistryRevision: string, roleKey: string, toolPolicyIds: string[], mayCreateChildren: boolean, permittedChildRoleKeys: string[], models: string[]) { return { schemaVersion: '1' as const, requestId, expectedRegistryRevision, roleKey, displayName: roleKey, authority: { capabilityIds: ['provider-turn'], toolPolicyIds, mayCreateChildren, permittedChildRoleKeys, maxChildDepth: mayCreateChildren ? '2' : '0', maxDirectChildren: mayCreateChildren ? '2' : '0' }, providerPolicy: { permittedProviderIds: ['kogg.fixture'], permittedModelIds: models, requiredAdapterCapabilities: ['provider-turn'] }, budgetPolicyId: 'fixture-budget' }; }
 async function poll<T>(read: () => Promise<T>, done: (value: T) => boolean): Promise<T> { const deadline = Date.now() + 120_000; while (Date.now() < deadline) { const value = await read(); if (done(value)) return value; await new Promise(resolve => setTimeout(resolve, 20)); } throw new Error('Timed out polling attempt'); }
+function testCanonical(value: unknown): string { if (Array.isArray(value)) return `[${value.map(testCanonical).join(',')}]`; if (value && typeof value === 'object') return `{${Object.keys(value).sort().map(key => `${JSON.stringify(key)}:${testCanonical((value as Record<string, unknown>)[key])}`).join(',')}}`; return JSON.stringify(value); }
 
 class TestOperations implements OperationRegistryApi {
-  started = 0; readonly processes: TestProcess[] = []; recoveryStatus: 'cleaned' | 'unverified' | 'active' | 'missing' = 'cleaned';
-  async startOperation(operation: StartOperation): Promise<OperationLease> { this.started++; const id = operation.id ?? crypto.randomUUID(); return { id, cancellable: true, start: () => undefined, active: () => undefined, waiting: () => undefined, activity: () => undefined, refuse: () => undefined, complete: () => undefined, fail: () => undefined, timeout: () => undefined, cancel: async () => undefined, cleanup: async run => { await run?.(); }, registerProcess: process => { const lease = new TestProcess(process); this.processes.push(lease); return lease; } }; }
+  started = 0; cleaned = 0; readonly processes: TestProcess[] = []; recoveryStatus: 'cleaned' | 'unverified' | 'active' | 'missing' = 'cleaned';
+  async startOperation(operation: StartOperation): Promise<OperationLease> { this.started++; const id = operation.id ?? crypto.randomUUID(); return { id, cancellable: true, start: () => undefined, active: () => undefined, waiting: () => undefined, activity: () => undefined, refuse: () => undefined, complete: () => undefined, fail: () => undefined, timeout: () => undefined, cancel: async () => undefined, cleanup: async run => { await run?.(); this.cleaned++; }, registerProcess: process => { const lease = new TestProcess(process); this.processes.push(lease); return lease; } }; }
   async snapshot() { return { schemaVersion: 1 as const, revision: 1, admission: 'enabled' as const, active: [], recent: [] }; }
   async cancel() { return this.snapshot(); }
   async recoveryResult() { return { status: this.recoveryStatus }; }

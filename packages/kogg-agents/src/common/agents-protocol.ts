@@ -52,6 +52,7 @@ export interface AttemptProjectionV1 {
   readonly schemaVersion: '1'; readonly attemptId: string; readonly rootAttemptId: string; readonly parentAttemptId?: string;
   readonly attemptRevision: Decimal; readonly registryRevision: Decimal; readonly taskId: string; readonly projectId: string; readonly repositoryId: string;
   readonly specificationId: string; readonly approvalId: string; readonly runId?: string; readonly worktreeId?: string; readonly roleRevisionId: string;
+  readonly authorityMode: 'plan' | 'build' | 'kogg' | 'unknown'; readonly authoritySequence: Decimal; readonly authorityOperation: 'research' | 'private-mutate' | 'unknown';
   readonly adapterKey: string; readonly adapterVersion: string; readonly providerId: string; readonly requestedModelId: string; readonly observedModelId?: string;
   readonly state: AttemptState; readonly terminalCode?: AgentSafeCode; readonly activityCount: Decimal; readonly childCount: Decimal; readonly ownedResourceCount: Decimal;
   readonly usage: UsageProjectionV1; readonly requestedAt: string; readonly stateChangedAt: string;
