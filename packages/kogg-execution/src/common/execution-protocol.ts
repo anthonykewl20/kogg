@@ -18,7 +18,7 @@ export type ExecutionImportCode = 'IMPORT_OK' | 'IMPORT_FAILED' | 'IMPORT_PROTOC
   | 'IMPORT_CANDIDATE_INVALID' | 'IMPORT_REF_EXISTS' | 'IMPORT_SOURCE_INTEGRITY_FAILED';
 export type ExecutionRetentionCode = 'RETENTION_OK' | 'RETENTION_ACTIVE' | 'RETENTION_PROTOCOL_INVALID';
 export type ExecutionLifecycleCode = ExecutionAllocationCode | ExecutionGitCode | ExecutionSealCode | ExecutionImportCode
-  | ExecutionRetentionCode | ExecutionQualificationCode | 'PROCESS_EXIT_NONZERO' | 'CLEANUP_FAILED';
+  | ExecutionRetentionCode | ExecutionQualificationCode | 'PROCESS_EXIT_NONZERO' | 'CLEANUP_FAILED' | 'CLEANUP_IDENTITY_MISMATCH';
 export type ExecutionState = 'requested' | 'refused' | 'admitted' | 'allocated' | 'seeding' | 'verified' | 'ready'
   | 'leased' | 'executing' | 'stopping' | 'sealed' | 'candidate-imported' | 'retained' | 'cleaning' | 'cleaned'
   | 'failed' | 'timed-out' | 'cancelled' | 'cleanup-failed' | 'quarantined' | 'recovery-required' | 'reconciling';

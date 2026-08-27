@@ -25,7 +25,7 @@ export class ExecutionDiagnosticContributor implements KoggDiagnosticContributor
         { id: 'execution.worktree-registry', ...result(registryHealthy, registryHealthy ? 'The durable private allocation registry is consistent.' : 'The durable private allocation registry requires recovery.') },
         { id: 'execution.git-independence', ...result(allocation.unverifiedCount === 0, 'No allocation is awaiting Git independence proof.') },
         { id: 'execution.source-integrity', ...result(allocation.unverifiedCount === 0 && allocation.pendingImportIntentCount === 0, 'No source-integrity verification or candidate import is pending.') },
-        { id: 'execution.process-cleanup', ...result(operation.residualCount === 0 && operation.cleanupFailureCount === 0, 'No execution process residual is recorded.') },
+        { id: 'execution.process-cleanup', ...result(operation.residualCount === 0 && operation.cleanupFailureCount === 0 && allocation.pendingCleanupIntentCount === 0, 'No execution process residual or physical cleanup intent is pending.') },
         { id: 'execution.capacity', ...result(allocation.admission === 'enabled' && allocation.reservationCount < 64, 'Execution reservation capacity is available.') },
         { id: 'execution.recovery', ...result(allocation.admission === 'enabled' && operation.recoveryComplete && operation.admission === 'enabled', 'Execution startup recovery is complete.') },
         { id: 'execution.retention', ...result(allocation.retentionViolationCount === 0, 'Every candidate cleanup transition agrees with its durable retention fact.') },
