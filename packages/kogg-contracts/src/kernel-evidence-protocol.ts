@@ -176,6 +176,12 @@ export interface FrozenSuiteV1 {
   readonly verifierAuthorityDigest: KoggDigest;
 }
 
+export interface FrozenSuiteProjectionV1 {
+  readonly suiteDigest: KoggDigest;
+  readonly suiteId: string;
+  readonly suiteRevision: number;
+}
+
 export interface CheckExecutionV1 {
   readonly executionId: string;
   readonly suiteDigest: KoggDigest;
@@ -231,6 +237,7 @@ export interface KernelBridge {
   execute<TProjection extends KernelJson>(operation: KernelOperationV2, body: KernelJson): Promise<KernelResultV2<TProjection>>;
   bindTask(binding: TaskExecutionBindingV1): Promise<KernelResultV2<TaskBindingProjectionV1>>;
   dispatchProducer(binding: ProducerBindingV1): Promise<KernelResultV2<ProducerBindingProjectionV1>>;
+  freezeSuite(suite: FrozenSuiteV1): Promise<KernelResultV2<FrozenSuiteProjectionV1>>;
   verifyJournal(): Promise<{ readonly valid: boolean; readonly reason?: string }>;
   shutdown(): Promise<void>;
 }

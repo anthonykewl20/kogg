@@ -11,7 +11,8 @@ test('reports unfinished evidence capabilities explicitly instead of inferring h
   assert.equal(checks.find(check => check.id === 'kernel.bridge')?.status, 'warn');
   assert.equal(checks.find(check => check.id === 'kernel.bindings')?.status, 'pass');
   assert.equal(checks.find(check => check.id === 'kernel.producers')?.status, 'pass');
-  for (const id of ['kernel.suites', 'kernel.checks', 'kernel.evidence', 'kernel.verdicts', 'kernel.cleanup', 'kernel.recovery']) {
+  assert.equal(checks.find(check => check.id === 'kernel.suites')?.status, 'pass');
+  for (const id of ['kernel.checks', 'kernel.evidence', 'kernel.verdicts', 'kernel.cleanup', 'kernel.recovery']) {
     const check = checks.find(candidate => candidate.id === id); assert.equal(check?.status, 'fail'); assert.equal(check?.details?.safeCode, 'KERNEL_CAPABILITY_UNAVAILABLE');
   }
 });
@@ -29,7 +30,8 @@ const CAPABILITIES: KernelCapabilities = {
   adapterArtifactDigest: `sha256:${'1'.repeat(64)}`, schemaSetDigest: KERNEL_SCHEMA_SET_DIGEST,
   operations: [
     { operation: 'task.bind', version: 1, requestSchemaDigest: `sha256:${'2'.repeat(64)}`, resultSchemaDigest: `sha256:${'3'.repeat(64)}` },
-    { operation: 'producer.dispatch', version: 1, requestSchemaDigest: `sha256:${'4'.repeat(64)}`, resultSchemaDigest: `sha256:${'5'.repeat(64)}` }
+    { operation: 'producer.dispatch', version: 1, requestSchemaDigest: `sha256:${'4'.repeat(64)}`, resultSchemaDigest: `sha256:${'5'.repeat(64)}` },
+    { operation: 'suite.freeze', version: 1, requestSchemaDigest: `sha256:${'6'.repeat(64)}`, resultSchemaDigest: `sha256:${'7'.repeat(64)}` }
   ],
   maxFrameBytes: KERNEL_MAX_FRAME_BYTES, maxPendingRequests: KERNEL_MAX_PENDING_REQUESTS, maxPendingResponseBytes: KERNEL_MAX_PENDING_RESPONSE_BYTES,
   confinement: 'degraded', degradationCodes: ['KERNEL_HOST_UNQUALIFIED', 'KERNEL_JOURNAL_MISSING']

@@ -4,6 +4,8 @@ import { existsSync, mkdirSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import {
   canonicalKernelJson,
+  type FrozenSuiteProjectionV1,
+  type FrozenSuiteV1,
   KERNEL_MAX_FRAME_BYTES,
   KERNEL_MAX_PENDING_REQUESTS,
   KERNEL_MAX_PENDING_RESPONSE_BYTES,
@@ -156,7 +158,7 @@ export class KernelBridgeImpl implements KernelBridge {
   }
 
   execute<TProjection extends KernelJson>(operation: KernelOperationV2, body: KernelJson): Promise<KernelResultV2<TProjection>> {
-    if (operation === 'task.bind' || operation === 'producer.dispatch') {
+    if (operation === 'task.bind' || operation === 'producer.dispatch' || operation === 'suite.freeze') {
       console.warn('[kogg:kernel:bridge] request.refused', { operation, safeCode: 'KERNEL_AUTHORITY_INVALID' });
       return Promise.resolve({
         protocol: KOGG_RANEX_PROTOCOL, requestId: randomUUID(), operationId: randomUUID(), status: 'refused',
@@ -174,6 +176,11 @@ export class KernelBridgeImpl implements KernelBridge {
   dispatchProducer(binding: ProducerBindingV1): Promise<KernelResultV2<ProducerBindingProjectionV1>> {
     const bindingDigest = domainDigest('producer', binding as unknown as KernelJson);
     return this.requestResult<ProducerBindingProjectionV1>('producer.dispatch', { binding: binding as unknown as KernelJson, bindingDigest });
+  }
+
+  freezeSuite(suite: FrozenSuiteV1): Promise<KernelResultV2<FrozenSuiteProjectionV1>> {
+    const suiteDigest = domainDigest('suite', suite as unknown as KernelJson);
+    return this.requestResult<FrozenSuiteProjectionV1>('suite.freeze', { suite: suite as unknown as KernelJson, suiteDigest });
   }
 
   async verifyJournal(): Promise<{ readonly valid: boolean; readonly reason?: string }> {
@@ -363,6 +370,11 @@ function validOperationProjection(operation: KernelOperationV2, value: unknown):
   if (operation === 'producer.dispatch') {
     return Object.keys(projection).sort().join(',') === 'attemptId,producerBindingDigest,producerId'
       && validUuid(projection.attemptId) && validUuid(projection.producerId) && validDigest(projection.producerBindingDigest);
+  }
+  if (operation === 'suite.freeze') {
+    return Object.keys(projection).sort().join(',') === 'suiteDigest,suiteId,suiteRevision'
+      && validUuid(projection.suiteId) && Number.isSafeInteger(projection.suiteRevision) && Number(projection.suiteRevision) > 0
+      && validDigest(projection.suiteDigest);
   }
   return true;
 }

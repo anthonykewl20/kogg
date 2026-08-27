@@ -1,10 +1,11 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { spawn } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { mkdtemp, rm } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { KOGG_RANEX_COMMIT, KOGG_RANEX_PROTOCOL_VERSION, type ProducerBindingV1, type RepositoryStateV1, type TaskExecutionBindingV1 } from '@kogg/contracts';
+import { canonicalKernelJson, KOGG_RANEX_COMMIT, KOGG_RANEX_PROTOCOL_VERSION, type FrozenSuiteV1, type KernelJson, type ProducerBindingV1, type RepositoryStateV1, type TaskExecutionBindingV1 } from '@kogg/contracts';
 import { OperationRegistry } from '@kogg/operations/lib/node/operation-registry';
 import type { ILogger } from '@theia/core/lib/common/logger';
 import { ProcessManager } from '@theia/process/lib/node/process-manager';
@@ -19,7 +20,7 @@ test('handshakes with the pinned Ranex kernel and fails closed on missing journa
     const capabilities = await bridge.start();
     assert.equal(capabilities.ranexCommit, KOGG_RANEX_COMMIT);
     assert.equal(capabilities.protocolVersion, KOGG_RANEX_PROTOCOL_VERSION);
-    assert.deepEqual(capabilities.operations.map(operation => operation.operation), ['kernel.handshake', 'kernel.health', 'task.bind', 'producer.dispatch']);
+    assert.deepEqual(capabilities.operations.map(operation => operation.operation), ['kernel.handshake', 'kernel.health', 'task.bind', 'producer.dispatch', 'suite.freeze']);
     const verification = await bridge.verifyJournal();
     assert.equal(verification.valid, false);
     assert.equal(verification.reason, 'missing');
@@ -31,6 +32,7 @@ test('handshakes with the pinned Ranex kernel and fails closed on missing journa
     const unauthorizedProducer = await bridge.execute('producer.dispatch', {});
     assert.equal(unauthorizedProducer.status, 'refused');
     assert.equal(unauthorizedProducer.safeCode, 'KERNEL_AUTHORITY_INVALID');
+    assert.equal((await bridge.execute('suite.freeze', {})).safeCode, 'KERNEL_AUTHORITY_INVALID');
     const committed = await bridge.bindTask(fixtureBinding());
     assert.equal(committed.status, 'succeeded');
     assert.equal(committed.safeCode, 'KERNEL_OK');
@@ -47,6 +49,15 @@ test('handshakes with the pinned Ranex kernel and fails closed on missing journa
     const authorityMismatch = await bridge.dispatchProducer({ ...producer, attemptId: '88888888-8888-4888-8888-888888888888', authorityDigest: `sha256:${'f'.repeat(64)}` });
     assert.equal(authorityMismatch.status, 'refused');
     assert.equal(authorityMismatch.safeCode, 'KERNEL_AUTHORITY_INVALID');
+    const suite = fixtureSuite(committed.projection!.taskBindingDigest);
+    const frozen = await bridge.freezeSuite(suite);
+    assert.equal(frozen.status, 'succeeded');
+    assert.equal(frozen.journal?.sequence, '3');
+    const frozenReplay = await bridge.freezeSuite(suite);
+    assert.deepEqual(frozenReplay, { ...frozen, requestId: frozenReplay.requestId, operationId: frozenReplay.operationId });
+    const manifestMismatch = await bridge.freezeSuite({ ...suite, suiteId: '99999999-9999-4999-8999-999999999999', manifestDigest: `sha256:${'0'.repeat(64)}` });
+    assert.equal(manifestMismatch.status, 'refused');
+    assert.equal(manifestMismatch.safeCode, 'KERNEL_SUITE_MISMATCH');
     assert.equal((await bridge.verifyJournal()).valid, true);
     await bridge.shutdown();
     assert.equal((await operations.snapshot()).active.length, 0);
@@ -124,6 +135,22 @@ function fixtureProducer(taskBindingDigest: `sha256:${string}`): ProducerBinding
     attemptId: '77777777-7777-4777-8777-777777777777', taskBindingDigest,
     authorityDigest: `sha256:${'3'.repeat(64)}`, executionProfileDigest: `sha256:${'5'.repeat(64)}`
   };
+}
+
+function fixtureSuite(taskBindingDigest: `sha256:${string}`): FrozenSuiteV1 {
+  const checks = [{
+    checkId: 'unit', kind: 'unit' as const, executableArtifactDigest: `sha256:${'a'.repeat(64)}` as const,
+    argvTemplateDigest: `sha256:${'b'.repeat(64)}` as const, environmentProfileDigest: `sha256:${'c'.repeat(64)}` as const,
+    timeoutMs: 30_000, outputPolicyDigest: `sha256:${'d'.repeat(64)}` as const, requiredProducerSeparation: true
+  }];
+  const gateCatalogDigest = `sha256:${'e'.repeat(64)}` as const;
+  const verifierAuthorityDigest = `sha256:${'f'.repeat(64)}` as const;
+  const manifestDigest = domainDigest('suite', { checks, gateCatalogDigest, subjectPolicy: 'exact-commit', taskBindingDigest, verifierAuthorityDigest });
+  return { suiteId: '88888888-8888-4888-8888-888888888888', suiteRevision: 1, manifestDigest, taskBindingDigest, subjectPolicy: 'exact-commit', checks, gateCatalogDigest, verifierAuthorityDigest };
+}
+
+function domainDigest(domain: string, value: KernelJson): `sha256:${string}` {
+  return `sha256:${createHash('sha256').update(Buffer.concat([Buffer.from(`kogg:${domain}:v1\n`, 'utf8'), Buffer.from(canonicalKernelJson(value), 'utf8')])).digest('hex')}`;
 }
 
 function fixtureRepository(): RepositoryStateV1 {

@@ -28,8 +28,9 @@ MAX_PENDING_REQUESTS = 64
 MAX_PENDING_RESPONSE_BYTES = 4 * 1024 * 1024
 DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
 UUID = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$")
-IMPLEMENTED_OPERATIONS = {"kernel.handshake": 2, "kernel.health": 1, "task.bind": 1, "producer.dispatch": 1}
+IMPLEMENTED_OPERATIONS = {"kernel.handshake": 2, "kernel.health": 1, "task.bind": 1, "producer.dispatch": 1, "suite.freeze": 1}
 SYMBOLIC = re.compile(r"^[a-z0-9][a-z0-9._:-]{0,127}$")
+CHECK_KINDS = {"build", "unit", "integration", "visible-e2e", "observability", "diagnostics", "source-maps", "process-cleanup", "ranex-evidence"}
 
 
 class ProtocolRefusal(Exception):
@@ -307,6 +308,102 @@ def _dispatch_producer(request: dict[str, Any], body: dict[str, Any]) -> tuple[d
     return projection, {"sequence": str(len(committed)), "rootDigest": root}
 
 
+def _check_definition(value: Any) -> dict[str, Any]:
+    check = _closed(value, {
+        "checkId", "kind", "executableArtifactDigest", "argvTemplateDigest", "environmentProfileDigest",
+        "timeoutMs", "outputPolicyDigest", "requiredProducerSeparation",
+    })
+    if not isinstance(check["checkId"], str) or not SYMBOLIC.fullmatch(check["checkId"]) or check["kind"] not in CHECK_KINDS:
+        raise ProtocolRefusal("KERNEL_SUITE_MISMATCH")
+    for field in ("executableArtifactDigest", "argvTemplateDigest", "environmentProfileDigest", "outputPolicyDigest"):
+        _sha256(check[field])
+    if not isinstance(check["timeoutMs"], int) or isinstance(check["timeoutMs"], bool) or not 1 <= check["timeoutMs"] <= 900_000:
+        raise ProtocolRefusal("KERNEL_SUITE_MISMATCH")
+    if not isinstance(check["requiredProducerSeparation"], bool):
+        raise ProtocolRefusal("KERNEL_SUITE_MISMATCH")
+    return check
+
+
+def _frozen_suite(value: Any) -> dict[str, Any]:
+    try:
+        suite = _closed(value, {
+            "suiteId", "suiteRevision", "manifestDigest", "taskBindingDigest", "subjectPolicy", "checks",
+            "gateCatalogDigest", "verifierAuthorityDigest",
+        })
+        _uuid(suite["suiteId"])
+        if not isinstance(suite["suiteRevision"], int) or isinstance(suite["suiteRevision"], bool) or suite["suiteRevision"] < 1:
+            raise ProtocolRefusal("KERNEL_SUITE_MISMATCH")
+        for field in ("manifestDigest", "taskBindingDigest", "gateCatalogDigest", "verifierAuthorityDigest"):
+            _sha256(suite[field])
+        if suite["subjectPolicy"] != "exact-commit" or not isinstance(suite["checks"], list) or not 1 <= len(suite["checks"]) <= 64:
+            raise ProtocolRefusal("KERNEL_SUITE_MISMATCH")
+        checks = [_check_definition(check) for check in suite["checks"]]
+        check_ids = [check["checkId"] for check in checks]
+        if check_ids != sorted(check_ids) or len(check_ids) != len(set(check_ids)):
+            raise ProtocolRefusal("KERNEL_SUITE_MISMATCH")
+        expected_manifest = _domain_digest("suite", {
+            "checks": checks, "gateCatalogDigest": suite["gateCatalogDigest"], "subjectPolicy": suite["subjectPolicy"],
+            "taskBindingDigest": suite["taskBindingDigest"], "verifierAuthorityDigest": suite["verifierAuthorityDigest"],
+        })
+        if suite["manifestDigest"] != expected_manifest:
+            raise ProtocolRefusal("KERNEL_SUITE_MISMATCH")
+        return suite
+    except ProtocolRefusal as error:
+        if error.safe_code == "KERNEL_SUITE_MISMATCH":
+            raise
+        raise ProtocolRefusal("KERNEL_SUITE_MISMATCH") from error
+
+
+def _freeze_suite(request: dict[str, Any], body: dict[str, Any]) -> tuple[dict[str, Any], dict[str, str]]:
+    try:
+        closed = _closed(body, {"suite", "suiteDigest"})
+    except ProtocolRefusal as error:
+        raise ProtocolRefusal("KERNEL_SUITE_MISMATCH") from error
+    suite = _frozen_suite(closed["suite"])
+    suite_digest = _domain_digest("suite", suite)
+    if closed["suiteDigest"] != suite_digest:
+        raise ProtocolRefusal("KERNEL_SUITE_MISMATCH")
+    journal = Journal(_journal_path())
+    try:
+        if not _journal_path().is_file() or not journal.verify():
+            raise ProtocolRefusal("KERNEL_JOURNAL_INTEGRITY")
+        records = journal.entries()
+    except ProtocolRefusal:
+        raise
+    except Exception as error:
+        raise ProtocolRefusal("KERNEL_JOURNAL_INTEGRITY") from error
+    if any(not isinstance(record, dict) for record in records):
+        raise ProtocolRefusal("KERNEL_JOURNAL_INTEGRITY")
+    tasks = [record for record in records if record.get("kind") == "kogg.task-binding.v1" and record.get("bindingDigest") == suite["taskBindingDigest"]]
+    if len(tasks) != 1:
+        raise ProtocolRefusal("KERNEL_TASK_BINDING_MISMATCH" if not tasks else "KERNEL_JOURNAL_AMBIGUOUS")
+    task = tasks[0].get("binding")
+    if not isinstance(task, dict) or task.get("authorityDigest") == suite["verifierAuthorityDigest"]:
+        raise ProtocolRefusal("KERNEL_ROLE_SEPARATION_FAILED")
+    prior = [record for record in records if record.get("kind") == "kogg.frozen-suite.v1" and record.get("idempotencyKey") == request["idempotencyKey"]]
+    if len(prior) > 1:
+        raise ProtocolRefusal("KERNEL_JOURNAL_AMBIGUOUS")
+    projection = {"suiteDigest": suite_digest, "suiteId": suite["suiteId"], "suiteRevision": suite["suiteRevision"]}
+    if prior:
+        if prior[0].get("bodyDigest") != request["bodyDigest"] or prior[0].get("suiteDigest") != suite_digest:
+            raise ProtocolRefusal("KERNEL_IDEMPOTENCY_CONFLICT")
+        return projection, _journal_position(records, records.index(prior[0]) + 1)
+    fact = {
+        "kind": "kogg.frozen-suite.v1", "idempotencyKey": request["idempotencyKey"],
+        "bodyDigest": request["bodyDigest"], "suiteDigest": suite_digest, "suite": suite,
+    }
+    try:
+        root = journal.append(_KernelFact(fact))
+        committed = journal.entries()
+        if not journal.verify() or not committed or committed[-1] != fact:
+            raise ProtocolRefusal("KERNEL_JOURNAL_INTEGRITY")
+    except ProtocolRefusal:
+        raise
+    except Exception as error:
+        raise ProtocolRefusal("KERNEL_JOURNAL_INTEGRITY") from error
+    return projection, {"sequence": str(len(committed)), "rootDigest": root}
+
+
 def _capabilities() -> dict[str, Any]:
     provenance = _provenance()
     qualified = platform.system() == "Linux"
@@ -393,6 +490,8 @@ def _dispatch(request: dict[str, Any]) -> tuple[dict[str, Any], dict[str, str] |
         return _bind_task(request, body)
     if operation == "producer.dispatch":
         return _dispatch_producer(request, body)
+    if operation == "suite.freeze":
+        return _freeze_suite(request, body)
     raise ProtocolRefusal("KERNEL_CAPABILITY_UNAVAILABLE")
 
 
