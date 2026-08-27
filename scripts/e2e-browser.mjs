@@ -822,6 +822,17 @@ async function ensureTasksWidget(page) {
     return widget;
 }
 
+async function ensureOperationsWidget(page) {
+    const widgets = page.locator('.kogg-operations-widget:visible');
+    if (!await widgets.count()) {
+        await openCommand(page, 'View: Toggle Kogg Operations');
+        await widgets.first().waitFor({ state: 'visible', timeout: 30_000 });
+    }
+    const widget = widgets.first();
+    await widget.getByText(/Admission:\s+(?:enabled|recovering|blocked)/u).waitFor({ timeout: 15_000 });
+    return widget;
+}
+
 async function exerciseInteractionModes(page) {
     const selector = page.getByLabel(/Mode: Plan; authority: \d+ bounded capabilities; stage: research/u);
     await selector.waitFor({ state: 'visible', timeout: 15_000 });
