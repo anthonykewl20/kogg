@@ -9,7 +9,7 @@
     { "frontend": "lib/browser/frontend-module", "backend": "lib/node/backend-module" }
   ],
   "scripts": {
-    "build": "tsc -b",
+    "build": "node ../../scripts/build-execution-helper.mjs && tsc -b",
     "clean": "rimraf lib tsconfig.tsbuildinfo",
     "typecheck": "tsc --noEmit",
     "test": "node --test lib/node/*.test.js"
