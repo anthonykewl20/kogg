@@ -66,6 +66,23 @@ test('refuses startup when an immutable template catalog binding is changed', as
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 
+test('run admission validates the immutable plan and refuses unavailable executors before any run state exists', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'kogg-workflow-admission-')); const database = path.join(root, 'workflow.sqlite3'); const compiler = workflowCompiler();
+  try {
+    const registry = new WorkflowRegistry(compiler, database); await registry.onStart();
+    const saved = await registry.saveVersion({ requestId: '20000000-0000-4000-8000-000000000040', templateId: TEMPLATE, expectedVersionNumber: 0, graph: validGraph() });
+    assert.equal(saved.kind, 'completed'); if (saved.kind !== 'completed' || !saved.version) throw new Error('Expected immutable workflow version');
+    const compiled = await registry.compile({ requestId: '20000000-0000-4000-8000-000000000041', versionId: saved.version!.versionId });
+    assert.equal(compiled.kind, 'completed'); if (compiled.kind !== 'completed' || !compiled.plan) throw new Error('Expected compiled workflow plan');
+    const request = { requestId: '20000000-0000-4000-8000-000000000042', planId: compiled.plan!.planId };
+    const refused = await registry.admitRun(request); assert.deepEqual(refused, { kind: 'refused', code: 'WORKFLOW_EXECUTOR_INCOMPATIBLE' });
+    assert.deepEqual(await registry.admitRun(request), refused);
+    const mismatch = await registry.admitRun({ ...request, planId: '20000000-0000-4000-8000-000000000099' }); assert.equal(mismatch.code, 'WORKFLOW_SCHEMA_INVALID');
+    const diagnostics = await registry.diagnostics(); assert.equal(diagnostics.versionCount, 1); assert.equal(diagnostics.planCount, 1); assert.equal(diagnostics.activeProcessCount, 0); assert.equal(diagnostics.recoveryBacklogCount, 0);
+    await registry.onStop();
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
 function validGraph(): EditableWorkflowGraphV1 & { nodes: EditableWorkflowNodeV1[]; edges: ReturnType<typeof edge>[] } { const research = node('30000000-0000-4000-8000-000000000001', 'research.agent', ['read-repository','invoke-provider']); const implementation = node('30000000-0000-4000-8000-000000000002', 'implementation.agent', ['read-repository','mutate-private-repository','invoke-provider','run-tool']); return { schemaVersion: '1', projectId: PROJECT, nodes: [research, implementation], edges: [edge('40000000-0000-4000-8000-000000000001', research.nodeId, implementation.nodeId)] }; }
 function node(nodeId: string, kind: EditableWorkflowNodeV1['kind'], requestedEffects: EditableWorkflowNodeV1['requestedEffects']): EditableWorkflowNodeV1 & { requestedEffects: EditableWorkflowNodeV1['requestedEffects']; retry: EditableWorkflowNodeV1['retry']; configurationDigest: string } { return { nodeId, kind, kindVersion: '1', configurationDigest: 'a'.repeat(64), requestedEffects, retry: { maxAttempts: 1, backoffMs: 0, sideEffectPolicy: 'none' } }; }
 function edge(edgeId: string, sourceNodeId: string, targetNodeId: string) { return { edgeId, sourceNodeId, sourcePort: 'success' as const, targetNodeId, targetPort: 'in' as const }; }

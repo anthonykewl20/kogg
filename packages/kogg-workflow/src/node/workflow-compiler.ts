@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { inject, injectable } from '@theia/core/shared/inversify';
-import type { EditableWorkflowGraphV1, WorkflowAuthorityEffect, WorkflowCompiledPlanProjection, WorkflowValidationProjection } from '../common/workflow-protocol';
+import type { EditableNodeKind, EditableWorkflowGraphV1, WorkflowAuthorityEffect, WorkflowCompiledPlanProjection, WorkflowValidationProjection } from '../common/workflow-protocol';
 import { decodeGraph, WorkflowValidationError, workflowDigest } from '../common/workflow-canonical';
 import { WorkflowNodeCatalog } from './workflow-node-catalog';
 
@@ -12,6 +12,7 @@ const ANCHORS = ['anchor.spec-frozen','anchor.spec-approved','anchor.producer-se
 export class WorkflowCompiler {
   constructor(@inject(WorkflowNodeCatalog) private readonly catalog: WorkflowNodeCatalog) {}
   catalogStatus(): { readonly digest: string; readonly valid: boolean; readonly entryCount: number; readonly unavailableExecutorCount: number } { return { digest: this.catalog.digest, ...this.catalog.diagnostics() }; }
+  catalogEntry(kind: EditableNodeKind) { return this.catalog.entry(kind); }
   validate(input: unknown): WorkflowValidationProjection {
     try { const graph = decodeGraph(input); const checked = this.check(graph); return { valid: true, code: 'WORKFLOW_OK', graphDigest: workflowDigest('template', graph), ...checked }; }
     catch (error) { /* observability-exempt: the RPC-owning registry logs the sanitized validation outcome; this pure projection retains no input. */ return { valid: false, code: error instanceof WorkflowValidationError ? error.code : 'WORKFLOW_INTERNAL', nodeCount: count(input, 'nodes'), edgeCount: count(input, 'edges'), rootCount: 0 }; }

@@ -80,6 +80,26 @@ export class WorkflowRegistry implements KoggWorkflowService, BackendApplication
     }
   }
 
+  async admitRun(input: { requestId: string; planId: string }): Promise<WorkflowMutationResult> {
+    workflowLog('run.admission.requested', { requestId: safeId(input.requestId), planId: safeId(input.planId) });
+    let unavailableExecutorCount = 0;
+    try {
+      uuid(input.requestId); uuid(input.planId);
+      const storedPlan = this.compiledPlan(input.planId); const storedVersion = this.version(text(storedPlan, 'version_id'));
+      const graph = this.compiler.decodeAndValidate(JSON.parse(text(storedVersion, 'graph_json')) as unknown);
+      const catalog = this.compiler.catalogStatus();
+      if (text(storedPlan, 'catalog_digest') !== catalog.digest || text(storedVersion, 'catalog_digest') !== catalog.digest) throw new WorkflowValidationError('WORKFLOW_CATALOG_MISMATCH');
+      unavailableExecutorCount = graph.nodes.filter(node => this.compiler.catalogEntry(node.kind).executor.status === 'unavailable').length;
+      const requestDigest = workflowDigest('run-snapshot', { schemaVersion: '1', planId: input.planId, planDigest: text(storedPlan, 'plan_digest') });
+      const result = this.transaction(input.requestId, requestDigest, () => ({ kind: 'refused', code: unavailableExecutorCount > 0 ? 'WORKFLOW_EXECUTOR_INCOMPATIBLE' : 'WORKFLOW_AUTHORITY_EXPANSION' } as const));
+      workflowLog('run.admission.refused', { requestId: input.requestId, planId: input.planId, safeCode: result.code, unavailableExecutorCount });
+      return result;
+    } catch (error) {
+      // observability-exempt: run.admission.refused is the sanitized terminal event and excludes graph, configuration, and executor details.
+      const code = codeOf(error); workflowLog('run.admission.refused', { requestId: safeId(input.requestId), planId: safeId(input.planId), safeCode: code, unavailableExecutorCount }); return { kind: 'refused', code };
+    }
+  }
+
   async listVersions(templateId: string): Promise<readonly WorkflowTemplateVersionProjection[]> { uuid(templateId); return (this.db().prepare('SELECT * FROM template_versions WHERE template_id=? ORDER BY version_number').all(templateId) as Row[]).map(versionProjection); }
 
   async diagnostics(): Promise<{ integrity: boolean; foreignKeys: boolean; immutableTriggers: boolean; canonicalMismatchCount: number; catalogMismatchCount: number; catalogEntryCount: number; unavailableExecutorCount: number; planMismatchCount: number; versionCount: number; planCount: number; activeProcessCount: number; residualProcessCount: number; recoveryBacklogCount: number; sourceMapsPresent: boolean }> {
@@ -110,6 +130,7 @@ export class WorkflowRegistry implements KoggWorkflowService, BackendApplication
   private assertIntegrity(): void { const db = this.db(); if (text(db.prepare('PRAGMA quick_check').get() as Row, 'quick_check') !== 'ok' || db.prepare('PRAGMA foreign_key_check').all().length) throw new WorkflowValidationError('WORKFLOW_STORE_INTEGRITY'); }
   private currentVersion(templateId: string): number { const row = this.db().prepare('SELECT coalesce(max(version_number),0) AS count FROM template_versions WHERE template_id=?').get(templateId) as Row; return number(row, 'count'); }
   private version(versionId: string): Row { const row = this.db().prepare('SELECT * FROM template_versions WHERE version_id=?').get(versionId) as Row | undefined; if (!row) throw new WorkflowValidationError('WORKFLOW_SCHEMA_INVALID'); return row; }
+  private compiledPlan(planId: string): Row { const row = this.db().prepare('SELECT * FROM compiled_plans WHERE plan_id=?').get(planId) as Row | undefined; if (!row) throw new WorkflowValidationError('WORKFLOW_SCHEMA_INVALID'); return row; }
   private versionCount(): number { return number(this.db().prepare('SELECT count(*) AS count FROM template_versions').get() as Row, 'count'); }
   private db(): DatabaseSync { if (!this.database) throw new WorkflowValidationError('WORKFLOW_STORE_INTEGRITY'); return this.database; }
 }

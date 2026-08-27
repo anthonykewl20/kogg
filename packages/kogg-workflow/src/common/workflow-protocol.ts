@@ -80,5 +80,6 @@ export interface KoggWorkflowService {
   validate(graph: unknown): Promise<WorkflowValidationProjection>;
   saveVersion(input: { readonly requestId: string; readonly templateId: string; readonly expectedVersionNumber: number; readonly graph: unknown }): Promise<WorkflowMutationResult>;
   compile(input: { readonly requestId: string; readonly versionId: string }): Promise<WorkflowMutationResult>;
+  admitRun(input: { readonly requestId: string; readonly planId: string }): Promise<WorkflowMutationResult>;
   listVersions(templateId: string): Promise<readonly WorkflowTemplateVersionProjection[]>;
 }
