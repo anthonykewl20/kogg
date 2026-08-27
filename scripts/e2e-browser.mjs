@@ -644,6 +644,7 @@ async function ensureProjectsWidget(page) {
 
 async function exerciseTasks(page) {
     const canary = 'KOGG_TASK_PRIVATE_CANARY_83';
+    const planRepositoryBefore = repositorySnapshot(workspace);
     let tasks = await ensureTasksWidget(page);
     await tasks.getByLabel('Line endings').selectOption('crlf');
     await tasks.getByLabel('Initial specification').fill(canary + '\nInitial requirement\n');
@@ -669,6 +670,7 @@ async function exerciseTasks(page) {
     await tasks.locator('.kogg-review').getByText(canary).waitFor();
     await tasks.getByRole('button', { name: 'Approve this exact revision' }).click();
     await tasks.getByRole('button', { name: /Revoke approval/u }).waitFor();
+    assert.equal(repositorySnapshot(workspace), planRepositoryBefore, 'Plan task artifacts must not change production Git state');
     await tasks.getByLabel('Existing run ID').fill('44444444-4444-4444-8444-444444444444');
     await tasks.getByRole('button', { name: 'Authorize exact task admission' }).click();
     const admission = tasks.locator('[data-admission-id]');
@@ -720,6 +722,12 @@ async function exerciseTasks(page) {
     }
     await page.keyboard.press('Escape');
     assert.equal(logs.join('\n').includes(canary), false);
+}
+
+function repositorySnapshot(repository) {
+    const refs = spawnSync('git', ['-C', repository, 'for-each-ref', '--format=%(refname):%(objectname)'], { encoding: 'utf8' });
+    const status = spawnSync('git', ['-C', repository, 'status', '--porcelain=v2', '--branch'], { encoding: 'utf8' });
+    assert.equal(refs.status, 0); assert.equal(status.status, 0); return `${refs.stdout}\n${status.stdout}`;
 }
 
 async function exerciseAgents(page, admissionId) {

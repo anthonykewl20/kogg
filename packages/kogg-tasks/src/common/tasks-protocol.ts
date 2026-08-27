@@ -4,6 +4,16 @@
 export const KoggTasksServicePath = '/services/kogg-tasks';
 export const KoggTasksService = Symbol('KoggTasksService');
 export const TaskProjectionAuthority = Symbol('TaskProjectionAuthority');
+export const TaskPlanningModeAuthorizer = Symbol('TaskPlanningModeAuthorizer');
+
+export type TaskPlanningModeOperation = 'plan-save' | 'plan-approval-request';
+export interface TaskPlanningModeAuthorizationRequest {
+  readonly requestId: string; readonly taskId: string; readonly operation: TaskPlanningModeOperation;
+}
+export interface TaskPlanningModeAuthorizationResult { readonly allowed: boolean; readonly safeCode: string; }
+export interface TaskPlanningModeAuthorizer {
+  authorizePlanningOperation(request: TaskPlanningModeAuthorizationRequest): Promise<TaskPlanningModeAuthorizationResult>;
+}
 
 export type TaskResultKind = 'completed' | 'refused' | 'conflict' | 'failed';
 export type TaskLifecycle = 'active' | 'archived';
@@ -16,7 +26,7 @@ export type TaskSafeCode = 'TASK_OK' | 'TASK_NOT_AVAILABLE' | 'TASK_ARCHIVED' | 
   | 'ADMISSION_NOT_AUTHORIZED' | 'REGISTRY_REVISION_CONFLICT' | 'TASK_REVISION_CONFLICT'
   | 'REQUEST_ID_REUSED' | 'CURRENT_REVISION_CHANGED' | 'REGISTRY_UNAVAILABLE'
   | 'SCHEMA_UNSUPPORTED' | 'INTEGRITY_FAILED' | 'STORAGE_PERMISSION_FAILED'
-  | 'TRANSACTION_BUSY' | 'INTERNAL_FAILURE';
+  | 'TRANSACTION_BUSY' | 'MODE_AUTHORITY_REFUSED' | 'INTERNAL_FAILURE';
 
 export interface SpecificationProjection {
   readonly specificationId: string; readonly sequence: string; readonly lifecycle: SpecificationLifecycle;

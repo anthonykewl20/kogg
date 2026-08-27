@@ -328,6 +328,7 @@ async function ensureElectronProjectsWidget(page, electronApplication) {
 
 async function exerciseElectronTasks(page, electronApplication) {
     const canary = 'KOGG_ELECTRON_TASK_PRIVATE_CANARY_83';
+    const planRepositoryBefore = repositorySnapshot(workspace);
     const tasks = page.locator('.kogg-tasks-widget').last();
     if (!await tasks.count()) {
         await openCommand(page, 'View: Toggle Kogg Tasks', electronApplication);
@@ -343,6 +344,7 @@ async function exerciseElectronTasks(page, electronApplication) {
     await tasks.locator('.kogg-review').getByText(canary).waitFor();
     await tasks.getByRole('button', { name: 'Approve this exact revision' }).click();
     await tasks.getByRole('button', { name: /Revoke approval/u }).waitFor();
+    assert.equal(repositorySnapshot(workspace), planRepositoryBefore, 'Plan task artifacts must not change production Git state');
     await tasks.getByLabel('Existing run ID').fill('55555555-5555-4555-8555-555555555555');
     await tasks.getByRole('button', { name: 'Authorize exact task admission' }).click();
     const admission = tasks.locator('[data-admission-id]'); await admission.waitFor();
@@ -351,6 +353,12 @@ async function exerciseElectronTasks(page, electronApplication) {
     await openCommand(page, 'View: Toggle Kogg Tasks', electronApplication);
     await tasks.getByRole('button', { name: /Revoke approval/u }).click();
     assert.equal(logs.join('\n').includes(canary), false);
+}
+
+function repositorySnapshot(repository) {
+    const refs = spawnSync('git', ['-C', repository, 'for-each-ref', '--format=%(refname):%(objectname)'], { encoding: 'utf8' });
+    const status = spawnSync('git', ['-C', repository, 'status', '--porcelain=v2', '--branch'], { encoding: 'utf8' });
+    assert.equal(refs.status, 0); assert.equal(status.status, 0); return `${refs.stdout}\n${status.stdout}`;
 }
 
 async function exerciseElectronAgents(page, electronApplication, admissionId) {

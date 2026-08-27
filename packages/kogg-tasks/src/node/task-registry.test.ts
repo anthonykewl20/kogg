@@ -12,13 +12,14 @@ import { OperationsReadModel } from '@kogg/operations/lib/node/operations-read-m
 const PROJECT = '11111111-1111-4111-8111-111111111111';
 const REPOSITORY = '22222222-2222-4222-8222-222222222222';
 const SESSION = '33333333-3333-4333-8333-333333333333';
+const ALLOW_PLANNING = { async authorizePlanningOperation() { return { allowed: true, safeCode: 'MODE_OK' }; } };
 
 test('persists the governed draft, freeze, review, approval, revocation, conflicts, and diagnostics', async () => {
   const temporary = await mkdtemp(path.join(os.tmpdir(), 'kogg-tasks-test-'));
   const original = process.env.KOGG_STATE_DIR;
   process.env.KOGG_STATE_DIR = temporary;
   const authority = new FixtureAuthority();
-  const registry = new TaskRegistry(authority);
+  const registry = new TaskRegistry(authority, ALLOW_PLANNING);
   try {
     await registry.onStart();
     const requestId = crypto.randomUUID();
@@ -60,7 +61,7 @@ test('persists the governed draft, freeze, review, approval, revocation, conflic
     await assert.rejects(registry.resolveAdmission({ ...admitted.admission!, approvalDigest: `sha256:${'0'.repeat(64)}` }), /ADMISSION_NOT_AUTHORIZED/u);
     await registry.onStop();
 
-    const reopened = new TaskRegistry(authority);
+    const reopened = new TaskRegistry(authority, ALLOW_PLANNING);
     await reopened.onStart();
     assert.deepEqual(await reopened.resolveAdmission(admitted.admission!.taskAdmissionId), admitted.admission);
     const revoked = await reopened.revoke(expectation(admitted.projection!, taskId));
@@ -85,9 +86,24 @@ test('fails every task diagnostic safely when registry inspection fails', async 
   assert.ok(checks.every(check => check.status === 'fail'));
 });
 
+test('refuses planning-store mutation before durable task state changes when mode authority denies or fails', async () => {
+  const temporary = await mkdtemp(path.join(os.tmpdir(), 'kogg-task-plan-authority-test-')); const original = process.env.KOGG_STATE_DIR; process.env.KOGG_STATE_DIR = temporary;
+  const operations: string[] = []; let throwAuthority = false;
+  const planning = { async authorizePlanningOperation(request: { operation: string }) { operations.push(request.operation); if (throwAuthority) throw new Error('owner disconnected'); return { allowed: false, safeCode: 'PLAN_MUTATION_REFUSED' }; } };
+  const registry = new TaskRegistry(new FixtureAuthority(), planning);
+  try {
+    await registry.onStart(); const created = await registry.create({ requestId: crypto.randomUUID(), projectId: PROJECT, repositoryId: REPOSITORY, content: 'Planning-owned bytes\n' }); const taskId = created.projection!.taskId;
+    const frozen = await registry.freeze(expectation(created.projection!, taskId)); assert.equal(frozen.kind, 'refused'); assert.equal(frozen.code, 'MODE_AUTHORITY_REFUSED');
+    assert.equal((await registry.get(taskId)).taskRevision, created.projection!.taskRevision);
+    throwAuthority = true; const edited = await registry.edit({ ...expectation(created.projection!, taskId), content: 'Must not persist\n' }); assert.equal(edited.kind, 'refused'); assert.equal(edited.code, 'MODE_AUTHORITY_REFUSED');
+    const current = await registry.get(taskId); assert.equal(current.taskRevision, created.projection!.taskRevision); assert.equal(current.currentSpecification.content, 'Planning-owned bytes\n');
+    assert.deepEqual(operations, ['plan-save', 'plan-save']);
+  } finally { await registry.onStop(); if (original === undefined) delete process.env.KOGG_STATE_DIR; else process.env.KOGG_STATE_DIR = original; await rm(temporary, { recursive: true, force: true }); }
+});
+
 test('publishes immutable safe task facts into the disposable operations projection', async () => {
   const temporary = await mkdtemp(path.join(os.tmpdir(), 'kogg-task-owner-projection-test-')); const original = process.env.KOGG_STATE_DIR; process.env.KOGG_STATE_DIR = temporary;
-  const registry = new TaskRegistry(new FixtureAuthority()); const projection = new OperationsReadModel(path.join(temporary, 'operations', 'projection.sqlite3'));
+  const registry = new TaskRegistry(new FixtureAuthority(), ALLOW_PLANNING); const projection = new OperationsReadModel(path.join(temporary, 'operations', 'projection.sqlite3'));
   try {
     await registry.onStart(); projection.start(); projection.registerOwner('task'); registry.setOwnerSink(projection);
     const created = await registry.create({ requestId: crypto.randomUUID(), projectId: PROJECT, repositoryId: REPOSITORY, content: 'never copy this task content' }); const taskId = created.projection!.taskId;
@@ -104,7 +120,7 @@ test('refuses startup when immutable specification bytes no longer match their d
   const temporary = await mkdtemp(path.join(os.tmpdir(), 'kogg-tasks-corruption-test-'));
   const original = process.env.KOGG_STATE_DIR;
   process.env.KOGG_STATE_DIR = temporary;
-  const registry = new TaskRegistry(new FixtureAuthority());
+  const registry = new TaskRegistry(new FixtureAuthority(), ALLOW_PLANNING);
   try {
     await registry.onStart();
     const created = await registry.create({ requestId: crypto.randomUUID(), projectId: PROJECT, repositoryId: REPOSITORY, content: 'Original exact bytes\n' });
@@ -117,7 +133,7 @@ test('refuses startup when immutable specification bytes no longer match their d
       .run(Buffer.from('Corrupted bytes\n'), created.projection!.currentSpecification.specificationId);
     database.close();
 
-    const reopened = new TaskRegistry(new FixtureAuthority());
+    const reopened = new TaskRegistry(new FixtureAuthority(), ALLOW_PLANNING);
     await assert.rejects(reopened.onStart(), (error: unknown) => error instanceof Error && error.message === 'INTEGRITY_FAILED');
   } finally {
     if (original === undefined) delete process.env.KOGG_STATE_DIR; else process.env.KOGG_STATE_DIR = original;
@@ -129,7 +145,7 @@ test('refuses startup when an immutable approval attestation no longer matches i
   const temporary = await mkdtemp(path.join(os.tmpdir(), 'kogg-tasks-approval-corruption-test-'));
   const original = process.env.KOGG_STATE_DIR;
   process.env.KOGG_STATE_DIR = temporary;
-  const registry = new TaskRegistry(new FixtureAuthority());
+  const registry = new TaskRegistry(new FixtureAuthority(), ALLOW_PLANNING);
   try {
     await registry.onStart();
     const created = await registry.create({ requestId: crypto.randomUUID(), projectId: PROJECT, repositoryId: REPOSITORY, content: 'Approval-bound bytes\n' });
@@ -146,7 +162,7 @@ test('refuses startup when an immutable approval attestation no longer matches i
       .run('0'.repeat(64), approved.projection!.currentApproval!.approvalId);
     database.close();
 
-    const reopened = new TaskRegistry(new FixtureAuthority());
+    const reopened = new TaskRegistry(new FixtureAuthority(), ALLOW_PLANNING);
     await assert.rejects(reopened.onStart(), (error: unknown) => error instanceof Error && error.message === 'INTEGRITY_FAILED');
   } finally {
     if (original === undefined) delete process.env.KOGG_STATE_DIR; else process.env.KOGG_STATE_DIR = original;
