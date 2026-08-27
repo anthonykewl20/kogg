@@ -345,8 +345,13 @@ async function exerciseElectronInteractionModes(page) {
     await build.waitFor({ state: 'visible', timeout: 10_000 });
     await build.click();
     await page.getByRole('button', { name: 'Request switch' }).click();
-    const pending = page.getByLabel(/Mode: Plan; authority: disabled during transition/u);
+    let pending = page.getByLabel(/Mode: Plan; authority: disabled during transition/u);
     await pending.waitFor({ state: 'visible', timeout: 10_000 });
+    await page.reload({ waitUntil: 'domcontentloaded' });
+    await page.locator('body.kogg-application').waitFor({ timeout: 20_000 });
+    pending = page.getByLabel(/Mode: Plan; authority: disabled during transition/u);
+    await pending.waitFor({ state: 'visible', timeout: 10_000 });
+    await pending.click();
     await page.getByRole('button', { name: 'Cancel request' }).click();
     await selector.waitFor({ state: 'visible', timeout: 10_000 });
     assert.match(logs.join('\n'), /\[kogg:interaction-modes:transition-authority\] authority\.mint\.completed.*electron/su);

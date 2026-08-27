@@ -56,6 +56,15 @@ export class InteractionModeRegistry implements BackendApplicationContribution {
     return projection;
   }
 
+  async getPendingTransition(request: ModeReadRequestV1): Promise<ModeTransitionProjectionV1 | undefined> {
+    validateRead(request); await this.ensureStarted(); this.expireChallenges(); const task = await this.resolveTask(request.taskId);
+    const row = this.db().prepare("SELECT transition_id FROM mode_transitions WHERE task_id=? AND state IN ('awaiting-confirmation','cleanup-pending') ORDER BY created_at DESC LIMIT 1").get(request.taskId) as Row | undefined;
+    if (!row) return undefined;
+    const projection = this.transitionProjection(String(row.transition_id), task);
+    modeLog('mode.transition.restored', { requestId: request.requestId, taskId: request.taskId, fromMode: projection.fromMode, toMode: projection.toMode, safeCode: projection.safeCode });
+    return projection;
+  }
+
   async authorizeOperation(request: ModeOperationRequestV1): Promise<ModeOperationResultV1> {
     validateOperation(request); await this.ensureStarted(); this.expireChallenges();
     const digest = requestDigest(request); const replay = this.db().prepare('SELECT request_digest,result_json FROM requests WHERE request_id=?').get(request.requestId) as Row | undefined;

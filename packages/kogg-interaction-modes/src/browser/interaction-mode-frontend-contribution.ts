@@ -11,6 +11,7 @@ import {
 
 // diagnostic-coverage: interaction-modes.authority, interaction-modes.transitions, interaction-modes.operations, interaction-modes.restoration, interaction-modes.accessibility, interaction-modes.source-maps
 const STATUS_ID = 'kogg.interaction-mode';
+const BROADCAST_NAME = 'kogg:interaction-modes:v1';
 const SELECT_MODE: Command = { id: 'kogg.interaction-mode.select', label: 'Kogg: Select Interaction Mode' };
 const MODE_LABEL: Readonly<Record<InteractionModeV1, string>> = { plan: 'Plan', build: 'Build', kogg: 'Kogg' };
 const MODE_DETAIL: Readonly<Record<InteractionModeV1, string>> = {
@@ -25,8 +26,10 @@ export class InteractionModeFrontendContribution implements FrontendApplicationC
   private task: TaskSummary | undefined;
   private projection: ModeProjectionV1 | undefined;
   private pending: TransitionProjection | undefined;
+  private readonly broadcast = new BroadcastChannel(BROADCAST_NAME);
   private readonly focusListener = () => void this.refresh();
   private readonly taskListener = () => void this.refresh();
+  private readonly broadcastListener = () => void this.refresh();
   constructor(
     @inject(StatusBar) private readonly statusBar: StatusBar,
     @inject(QuickInputService) private readonly quickInput: QuickInputService,
@@ -39,10 +42,12 @@ export class InteractionModeFrontendContribution implements FrontendApplicationC
     console.info('[kogg:ui:mode-selector] selector.started');
     void this.render('loading'); void this.refresh(); window.addEventListener('focus', this.focusListener);
     window.addEventListener(KOGG_TASKS_CHANGED_EVENT, this.taskListener);
+    this.broadcast.addEventListener('message', this.broadcastListener);
   }
   onStop(): void {
     window.removeEventListener('focus', this.focusListener);
     window.removeEventListener(KOGG_TASKS_CHANGED_EVENT, this.taskListener);
+    this.broadcast.removeEventListener('message', this.broadcastListener); this.broadcast.close();
     console.info('[kogg:ui:mode-selector] selector.stopped');
     void this.statusBar.removeElement(STATUS_ID);
   }
@@ -54,7 +59,8 @@ export class InteractionModeFrontendContribution implements FrontendApplicationC
       this.task = tasks.find(task => task.taskId === this.task?.taskId) ?? tasks[0];
       if (!this.task) { this.projection = undefined; this.pending = undefined; await this.render('no-task'); return; }
       this.projection = await this.modes.get({ requestId: crypto.randomUUID(), taskId: this.task.taskId });
-      if (this.projection.state !== 'transition-pending') this.pending = undefined;
+      this.pending = this.projection.state === 'transition-pending'
+        ? await this.modes.getPendingTransition({ requestId: crypto.randomUUID(), taskId: this.task.taskId }) : undefined;
       await this.render('ready');
     } catch (error) {
       console.error('[kogg:ui:mode-selector] mode.restore.failed', { errorType: errorName(error) });
@@ -97,7 +103,7 @@ export class InteractionModeFrontendContribution implements FrontendApplicationC
       const body = { transitionId, requestId, taskId: task.taskId, expectedSequence: projection.sequence, fromMode: projection.selectedMode, toMode,
         requestedConfigurationDigest: await configurationDigest(toMode) };
       this.pending = environment.electron.is() ? await this.modes.requestDesktopTransition(body) : await mutation('/kogg/modes/transitions/request', body);
-      this.projection = this.pending.mode; await this.render('ready');
+      this.projection = this.pending.mode; await this.render('ready'); this.broadcast.postMessage({ kind: 'transition-changed' });
       console.info('[kogg:ui:mode-selector] mode.transition-approved', { requestId, taskId: task.taskId, fromMode: projection.selectedMode, toMode, safeCode: this.pending.safeCode });
       await this.messages.warn(`Switch requested: ${this.pending.safeCode}. Effective authority is disabled until confirmation and owner qualification complete.`, 'Keep pending', 'Cancel request').then(choice => choice === 'Cancel request' ? this.cancelPending() : undefined);
     } catch (error) {
@@ -117,6 +123,7 @@ export class InteractionModeFrontendContribution implements FrontendApplicationC
       const cancel = { requestId, transitionId: prior.transitionId, taskId: prior.taskId };
       const result = environment.electron.is() ? await this.modes.cancelDesktopTransition(cancel) : await mutation('/kogg/modes/transitions/cancel', cancel);
       this.pending = undefined; this.projection = result.mode; await this.render('ready');
+      this.broadcast.postMessage({ kind: 'transition-changed' });
       console.info('[kogg:ui:mode-selector] mode.transition-cancelled', { requestId, taskId: prior.taskId, fromMode: prior.fromMode, toMode: prior.toMode, safeCode: result.safeCode });
     } catch (error) {
       console.error('[kogg:ui:mode-selector] mode.transition.refused', { requestId, taskId: prior.taskId, fromMode: prior.fromMode, toMode: prior.toMode, safeCode: safeCode(error), errorType: errorName(error) });

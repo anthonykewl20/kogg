@@ -687,9 +687,17 @@ async function exerciseInteractionModes(page) {
     await page.getByRole('button', { name: 'Request switch' }).click();
     const pending = page.getByLabel(/Mode: Plan; authority: disabled during transition/u);
     await pending.waitFor({ state: 'visible', timeout: 10_000 });
-    await page.getByRole('button', { name: 'Cancel request' }).click();
+    const second = await page.context().newPage();
+    await second.goto(page.url(), { waitUntil: 'domcontentloaded' });
+    await second.locator('body.kogg-application').waitFor({ timeout: 20_000 });
+    const restoredPending = second.getByLabel(/Mode: Plan; authority: disabled during transition/u);
+    await restoredPending.waitFor({ state: 'visible', timeout: 10_000 });
+    await restoredPending.click();
+    await second.getByRole('button', { name: 'Cancel request' }).click();
     await selector.waitFor({ state: 'visible', timeout: 10_000 });
+    await second.close();
     assert.match(logs.join('\n'), /\[kogg:ui:mode-selector\] mode\.transition-requested/u);
+    assert.match(logs.join('\n'), /\[kogg:interaction-modes:service\] mode\.transition\.restored/u);
     assert.match(logs.join('\n'), /\[kogg:interaction-modes:service\] mode\.transition\.cancelled/u);
 }
 

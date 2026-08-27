@@ -74,6 +74,8 @@ test('durably freezes admission for an authenticated expansion intent and permit
     const restoredAuthority = new ModeTransitionAuthority(); const restored = new InteractionModeRegistry(tasks, restoredAuthority); await restored.onStart();
     try {
       const restoredMode = await restored.get({ requestId: '50000000-0000-4000-8000-000000000005', taskId: TASK.taskId }); assert.equal(restoredMode.state, 'transition-pending'); assert.deepEqual(restoredMode.effectiveCapabilities, []);
+      const restoredTransition = await restored.getPendingTransition({ requestId: '50000000-0000-4000-8000-000000000008', taskId: TASK.taskId });
+      assert.equal(restoredTransition?.transitionId, request.transitionId); assert.equal(restoredTransition?.state, 'awaiting-confirmation'); assert.deepEqual(restoredTransition?.mode.effectiveCapabilities, []);
       const cancel = { requestId: '50000000-0000-4000-8000-000000000006', transitionId: request.transitionId, taskId: TASK.taskId }; const cancelContext = restoredAuthority.mint(actor, transitionScopeDigest('cancel', cancel));
       const cancelled = await restored.cancelTransition(cancel, cancelContext); assert.equal(cancelled.state, 'cancelled'); assert.equal(cancelled.mode.state, 'ready'); assert.deepEqual(await restored.cancelTransition(cancel, cancelContext), cancelled);
       assert.equal((await restored.authorizeOperation({ requestId: '50000000-0000-4000-8000-000000000007', taskId: TASK.taskId, operation: 'research' })).allowed, true);

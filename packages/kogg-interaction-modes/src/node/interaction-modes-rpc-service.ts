@@ -16,6 +16,7 @@ export class InteractionModesRpcService implements KoggInteractionModesService {
   ) {}
 
   get(request: ModeReadRequestV1): Promise<ModeProjectionV1> { return this.registry.get(request); }
+  getPendingTransition(request: ModeReadRequestV1): Promise<ModeTransitionProjectionV1 | undefined> { return this.registry.getPendingTransition(request); }
   authorizeOperation(request: ModeOperationRequestV1): Promise<ModeOperationResultV1> { return this.registry.authorizeOperation(request); }
 
   requestDesktopTransition(request: ModeTransitionRequestV1): Promise<ModeTransitionProjectionV1> {

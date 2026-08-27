@@ -15,6 +15,7 @@ type Fields = {
   'mode.transition.cleanup-pending': { requestId: string; taskId: string; fromMode: InteractionModeV1; toMode: InteractionModeV1; safeCode: ModeSafeCodeV1 };
   'mode.transition.committed': { requestId: string; taskId: string; fromMode: InteractionModeV1; toMode: InteractionModeV1; safeCode: ModeSafeCodeV1 };
   'mode.transition.cancelled': { requestId: string; taskId: string; fromMode: InteractionModeV1; toMode: InteractionModeV1; safeCode: ModeSafeCodeV1 };
+  'mode.transition.restored': { requestId: string; taskId: string; fromMode: InteractionModeV1; toMode: InteractionModeV1; safeCode: ModeSafeCodeV1 };
   'mode.transition.expired': { taskId: string; fromMode: InteractionModeV1; toMode: InteractionModeV1; safeCode: ModeSafeCodeV1 };
   'mode.transition.refused': { requestId: string; taskId: string; fromMode: InteractionModeV1; toMode: InteractionModeV1; safeCode: ModeSafeCodeV1 };
 };
@@ -29,6 +30,7 @@ const FIELDS: { [K in keyof Fields]: readonly (keyof Fields[K])[] } = {
   'mode.transition.cleanup-pending': ['requestId', 'taskId', 'fromMode', 'toMode', 'safeCode'],
   'mode.transition.committed': ['requestId', 'taskId', 'fromMode', 'toMode', 'safeCode'],
   'mode.transition.cancelled': ['requestId', 'taskId', 'fromMode', 'toMode', 'safeCode'],
+  'mode.transition.restored': ['requestId', 'taskId', 'fromMode', 'toMode', 'safeCode'],
   'mode.transition.expired': ['taskId', 'fromMode', 'toMode', 'safeCode'],
   'mode.transition.refused': ['requestId', 'taskId', 'fromMode', 'toMode', 'safeCode']
 };

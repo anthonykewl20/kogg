@@ -37,6 +37,7 @@ export interface ModeTransitionProjectionV1 {
 }
 export interface KoggInteractionModesService {
   get(request: ModeReadRequestV1): Promise<ModeProjectionV1>;
+  getPendingTransition(request: ModeReadRequestV1): Promise<ModeTransitionProjectionV1 | undefined>;
   authorizeOperation(request: ModeOperationRequestV1): Promise<ModeOperationResultV1>;
   requestDesktopTransition(request: ModeTransitionRequestV1): Promise<ModeTransitionProjectionV1>;
   cancelDesktopTransition(request: ModeTransitionCancelRequestV1): Promise<ModeTransitionProjectionV1>;
