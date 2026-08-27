@@ -77,7 +77,8 @@ export interface AdapterAttemptBindingV1 {
 export interface AgentWorkspaceAuthorizationRequestV1 {
   readonly schemaVersion: '1'; readonly requestId: string; readonly attemptId: string; readonly taskAdmissionId: string;
   readonly taskId: string; readonly projectId: string; readonly repositoryId: string; readonly repositoryBindingRevision: Decimal;
-  readonly specificationId: string; readonly approvalId: string; readonly runId: string; readonly roleRevisionId: string; readonly workflowPlanDigest: string;
+  readonly specificationId: string; readonly taskRevisionId: string; readonly taskRevisionDigest: string;
+  readonly approvalId: string; readonly approvalDigest: string; readonly runId: string; readonly roleRevisionId: string; readonly workflowPlanDigest: string;
 }
 export interface AgentWorkspaceAuthorizationResultV1 { readonly allowed: boolean; readonly code: AgentSafeCode; readonly worktreeId?: string; readonly workspaceGrantDigest?: string; }
 export interface AgentWorkspaceAuthority { prepareWorkspace(request: AgentWorkspaceAuthorizationRequestV1): Promise<AgentWorkspaceAuthorizationResultV1>; }

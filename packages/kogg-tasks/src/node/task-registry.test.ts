@@ -49,21 +49,27 @@ test('persists the governed draft, freeze, review, approval, revocation, conflic
     assert.deepEqual(replayedAdmission.admission, admitted.admission);
     const authoritySnapshot = await registry.resolveAdmission(admitted.admission!);
     assert.equal(authoritySnapshot.taskRevision, Number(admitted.projection!.taskRevision));
+    assert.equal(admitted.admission!.taskRevisionId, admitted.admission!.specificationId);
+    assert.equal(admitted.admission!.taskRevisionDigest, authoritySnapshot.specificationDigest);
+    assert.equal(admitted.admission!.approvalDigest, authoritySnapshot.approvalDigest);
     assert.equal(authoritySnapshot.approvalDigest.startsWith('sha256:'), true);
     assert.equal(authoritySnapshot.runId, runId);
     assert.deepEqual(await registry.resolveAdmission(admitted.admission!.taskAdmissionId), admitted.admission);
     await assert.rejects(registry.resolveAdmission({ ...admitted.admission!, taskRevision: '1' }), /ADMISSION_NOT_AUTHORIZED/u);
-    const revoked = await registry.revoke(expectation(admitted.projection!, taskId));
-    assert.equal(revoked.projection?.currentApproval, undefined);
-
-    const checks = await new TaskDiagnosticContributor(registry).diagnose();
-    assert.deepEqual(checks.map(check => [check.id, check.status]), [
-      ['tasks.registry', 'pass'], ['tasks.revisions', 'pass'], ['tasks.bindings', 'pass'], ['tasks.approvals', 'pass']
-    ]);
+    await assert.rejects(registry.resolveAdmission({ ...admitted.admission!, taskRevisionDigest: `sha256:${'0'.repeat(64)}` }), /ADMISSION_NOT_AUTHORIZED/u);
+    await assert.rejects(registry.resolveAdmission({ ...admitted.admission!, approvalDigest: `sha256:${'0'.repeat(64)}` }), /ADMISSION_NOT_AUTHORIZED/u);
     await registry.onStop();
 
     const reopened = new TaskRegistry(authority);
     await reopened.onStart();
+    assert.deepEqual(await reopened.resolveAdmission(admitted.admission!.taskAdmissionId), admitted.admission);
+    const revoked = await reopened.revoke(expectation(admitted.projection!, taskId));
+    assert.equal(revoked.projection?.currentApproval, undefined);
+
+    const checks = await new TaskDiagnosticContributor(reopened).diagnose();
+    assert.deepEqual(checks.map(check => [check.id, check.status]), [
+      ['tasks.registry', 'pass'], ['tasks.revisions', 'pass'], ['tasks.bindings', 'pass'], ['tasks.approvals', 'pass']
+    ]);
     assert.equal((await reopened.get(taskId)).currentApproval, undefined);
     await reopened.onStop();
   } finally {
@@ -109,6 +115,35 @@ test('refuses startup when immutable specification bytes no longer match their d
     database.exec('DROP TRIGGER tasks_immutable_specifications_update');
     database.prepare('UPDATE specifications SET content=? WHERE specification_id=?')
       .run(Buffer.from('Corrupted bytes\n'), created.projection!.currentSpecification.specificationId);
+    database.close();
+
+    const reopened = new TaskRegistry(new FixtureAuthority());
+    await assert.rejects(reopened.onStart(), (error: unknown) => error instanceof Error && error.message === 'INTEGRITY_FAILED');
+  } finally {
+    if (original === undefined) delete process.env.KOGG_STATE_DIR; else process.env.KOGG_STATE_DIR = original;
+    await rm(temporary, { recursive: true, force: true });
+  }
+});
+
+test('refuses startup when an immutable approval attestation no longer matches its task revision', async () => {
+  const temporary = await mkdtemp(path.join(os.tmpdir(), 'kogg-tasks-approval-corruption-test-'));
+  const original = process.env.KOGG_STATE_DIR;
+  process.env.KOGG_STATE_DIR = temporary;
+  const registry = new TaskRegistry(new FixtureAuthority());
+  try {
+    await registry.onStart();
+    const created = await registry.create({ requestId: crypto.randomUUID(), projectId: PROJECT, repositoryId: REPOSITORY, content: 'Approval-bound bytes\n' });
+    const taskId = created.projection!.taskId;
+    const frozen = await registry.freeze(expectation(created.projection!, taskId));
+    const review = await registry.beginApprovalReview({ requestId: crypto.randomUUID(), taskId, sessionId: SESSION });
+    const approved = await registry.approve({ ...expectation(frozen.projection!, taskId), sessionId: SESSION, challenge: review.challenge! });
+    assert.equal(approved.kind, 'completed');
+    await registry.onStop();
+
+    const database = new DatabaseSync(path.join(temporary, 'tasks', 'registry.sqlite3'));
+    database.exec('DROP TRIGGER tasks_immutable_approvals_update');
+    database.prepare('UPDATE approvals SET approval_digest=? WHERE approval_id=?')
+      .run('0'.repeat(64), approved.projection!.currentApproval!.approvalId);
     database.close();
 
     const reopened = new TaskRegistry(new FixtureAuthority());

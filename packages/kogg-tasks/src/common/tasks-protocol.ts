@@ -43,7 +43,8 @@ export interface ReviewProjection {
   readonly kind: TaskResultKind; readonly code: TaskSafeCode; readonly challenge?: string; readonly expiresAt?: string; readonly projection?: TaskProjection;
 }
 export interface TaskAdmissionSnapshot {
-  readonly taskAdmissionId: string; readonly taskId: string; readonly specificationId: string; readonly approvalId: string; readonly projectId: string;
+  readonly taskAdmissionId: string; readonly taskId: string; readonly specificationId: string; readonly taskRevisionId: string;
+  readonly taskRevisionDigest: string; readonly approvalId: string; readonly approvalDigest: string; readonly projectId: string;
   readonly repositoryId: string; readonly bindingRevision: string; readonly registryRevision: string; readonly taskRevision: string; readonly runId: string;
   readonly authorizedAt: string; readonly expiresAt: string;
 }

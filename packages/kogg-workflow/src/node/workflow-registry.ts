@@ -401,7 +401,9 @@ function authorityRefused(fields: { runId: string; nodeId: string; nodeKind: str
 function validTaskAdmission(admission: TaskAdmissionSnapshot, expectedId: string): boolean {
   const authorizedAt = Date.parse(admission.authorizedAt); const expiresAt = Date.parse(admission.expiresAt);
   return admission.taskAdmissionId === expectedId
-    && [admission.taskAdmissionId, admission.taskId, admission.specificationId, admission.approvalId, admission.projectId, admission.repositoryId, admission.runId].every(value => UUID.test(value))
+    && [admission.taskAdmissionId, admission.taskId, admission.specificationId, admission.taskRevisionId, admission.approvalId, admission.projectId, admission.repositoryId, admission.runId].every(value => UUID.test(value))
+    && admission.taskRevisionId === admission.specificationId
+    && [admission.taskRevisionDigest, admission.approvalDigest].every(value => /^sha256:[0-9a-f]{64}$/u.test(value))
     && [admission.bindingRevision, admission.registryRevision, admission.taskRevision].every(value => /^(?:0|[1-9][0-9]*)$/u.test(value))
     && Number.isFinite(authorizedAt) && Number.isFinite(expiresAt) && authorizedAt <= expiresAt && expiresAt > Date.now();
 }
