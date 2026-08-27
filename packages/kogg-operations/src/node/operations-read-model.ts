@@ -7,8 +7,9 @@ import { injectable, unmanaged } from '@theia/core/shared/inversify';
 import {
   OWNER_EVENT_KINDS, OWNER_KINDS, type OperationsProjectionDiagnosticsV1,
   type OperationsMetricsSnapshotV1, type OperationsMetricValueV1, type OperationsProjectionRunV1, type OperationsProjectionSnapshotV1, type OperationsRunPageV1, type OperationsRunQueryV1,
+  type OperationsActionReceiptV1, type OperationsActionRequestV1,
   type OperationsTimelinePageV1,
-  type KoggOperationsReadModelClient, type KoggOperationsReadModelService, type OperationsProjectionChangeV1,
+  type KoggOperationsReadModelClient, type OperationsProjectionChangeV1,
   type OperationsStreamSubscriptionV1, type OperationsTimelineEntryV1, type OwnerEventV1, type OwnerKind, type ProjectionLifecycle,
   type RunLifecycle, type SafeOwnerPayloadV1
 } from '../common/operations-read-model-protocol';
@@ -45,7 +46,7 @@ export class ProjectionFault extends Error {
 }
 
 @injectable()
-export class OperationsReadModel implements BackendApplicationContribution, KoggOperationsReadModelService {
+export class OperationsReadModel implements BackendApplicationContribution {
   private database: DatabaseSync | undefined;
   private readonly databasePath: string;
   private client: KoggOperationsReadModelClient | undefined;
@@ -255,6 +256,24 @@ export class OperationsReadModel implements BackendApplicationContribution, Kogg
 
   storagePermissionsValid(): boolean { return process.platform === 'win32' || (statSync(this.databasePath).mode & 0o077) === 0; }
 
+  operationBelongsToRun(runId: string, operationId: string): boolean {
+    if (!SAFE_ID.test(runId) || !SAFE_ID.test(operationId)) return false; this.start();
+    return Boolean(this.db().prepare('SELECT 1 FROM process_projection WHERE run_id=? AND operation_id=? LIMIT 1').get(runId, operationId));
+  }
+
+  actionReceipt(requestId: string): OperationsActionReceiptV1 | undefined {
+    this.start(); const row = this.db().prepare('SELECT * FROM action_requests WHERE request_id=?').get(requestId) as Row | undefined;
+    return row ? { requestId: String(row.request_id), action: String(row.action_kind) as OperationsActionReceiptV1['action'], runId: String(row.run_id), status: String(row.status) as OperationsActionReceiptV1['status'], safeCode: String(row.safe_code) } : undefined;
+  }
+
+  recordAction(request: OperationsActionRequestV1, requestDigest: string, status: OperationsActionReceiptV1['status'], safeCode: string): OperationsActionReceiptV1 {
+    this.start(); const prior = this.db().prepare('SELECT request_digest FROM action_requests WHERE request_id=?').get(request.requestId) as Row | undefined;
+    if (prior && String(prior.request_digest) !== requestDigest) throw new ProjectionFault('ACTION_REQUEST_REPLAY_MISMATCH');
+    if (!prior) this.db().prepare('INSERT INTO action_requests(request_id,request_digest,action_kind,run_id,operation_id,projection_sequence,status,safe_code,created_at) VALUES(?,?,?,?,?,?,?,?,?)').run(request.requestId, requestDigest, request.action, request.runId, request.operationId ?? null, request.expectedProjectionSequence, status, safeCode, new Date().toISOString());
+    else this.db().prepare('UPDATE action_requests SET status=?,safe_code=? WHERE request_id=?').run(status, safeCode, request.requestId);
+    return { requestId: request.requestId, action: request.action, runId: request.runId, status, safeCode };
+  }
+
   private reject(event: OwnerEventV1, safeCode: string, logEvent: 'gap' | 'rewind' | 'conflict'): never {
     this.persistFault(event.ownerKind, event.ownerInstanceId, event.epochId, event.sequence, safeCode);
     if (logEvent === 'gap') console.warn('[kogg:operations:owners] gap', { ownerKind: event.ownerKind, ownerSequence: event.sequence, safeCode });
@@ -399,6 +418,7 @@ export class OperationsReadModel implements BackendApplicationContribution, Kogg
       CREATE TABLE IF NOT EXISTS projection_changes(sequence TEXT PRIMARY KEY,change_kind TEXT NOT NULL,run_id TEXT,protected INTEGER NOT NULL CHECK(protected IN (0,1)),approximate_bytes INTEGER NOT NULL CHECK(approximate_bytes>0)) STRICT;
       CREATE TABLE IF NOT EXISTS metric_values(projection_epoch TEXT NOT NULL,metric_name TEXT NOT NULL,metric_kind TEXT NOT NULL,labels_json TEXT NOT NULL,bucket_upper_bound INTEGER NOT NULL CHECK(bucket_upper_bound>=-1),value INTEGER NOT NULL CHECK(value>=0),PRIMARY KEY(projection_epoch,metric_name,labels_json,bucket_upper_bound)) STRICT;
       CREATE TABLE IF NOT EXISTS projection_faults(fault_sequence INTEGER PRIMARY KEY AUTOINCREMENT,fault_id TEXT NOT NULL UNIQUE,owner_kind TEXT NOT NULL,owner_instance_id TEXT NOT NULL,epoch_id TEXT NOT NULL,owner_sequence TEXT NOT NULL,safe_code TEXT NOT NULL,created_at TEXT NOT NULL) STRICT;
+      CREATE TABLE IF NOT EXISTS action_requests(request_id TEXT PRIMARY KEY,request_digest TEXT NOT NULL,action_kind TEXT NOT NULL,run_id TEXT NOT NULL,operation_id TEXT,projection_sequence TEXT NOT NULL,status TEXT NOT NULL CHECK(status IN ('forwarded','refused','unknown')),safe_code TEXT NOT NULL,created_at TEXT NOT NULL) STRICT;
       INSERT OR IGNORE INTO projection_meta(singleton,schema_version,projection_epoch,cursor_key,lifecycle,change_sequence) VALUES(1,1,'${randomUUID()}','${randomBytes(32).toString('hex')}','stopped','0');
     `);
     const meta = this.meta(); if (Number(meta.schema_version) !== 1) throw new ProjectionFault('PROJECTION_SCHEMA_INCOMPATIBLE');

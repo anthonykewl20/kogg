@@ -1,11 +1,14 @@
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, readdir, rm, stat } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 import type { OwnerEventV1, OwnerKind, SafeCorrelationsV1, SafeOwnerPayloadV1 } from '../common/operations-read-model-protocol';
 import { OperationsReadModel, ProjectionFault } from './operations-read-model';
+import { OperationsSupportExporter } from './operations-support-export';
+import { OperationsActionRouter } from './operations-action-router';
+import type { OperationRegistryApi } from '../common/operations-protocol';
 
 // diagnostic-coverage: operations.projection, operations.owners, operations.correlations, operations.timeline, operations.processes, operations.metrics, operations.source-maps
 
@@ -106,6 +109,56 @@ test('read-model failure logs contain safe classifications and not rejected cont
     assert.throws(() => fixture.model.ingest(event));
     const output = lines.join('\n'); assert.match(output, /OWNER_PAYLOAD_INVALID/u); assert.doesNotMatch(output, /deliberate-canary-value|prompt/u);
   } finally { console.warn = original; await fixture.close(); }
+});
+
+test('writes a bounded private checksummed support export without raw content', async () => {
+  const fixture = await createFixture(); const supportDirectory = await mkdtemp(path.join(os.tmpdir(), 'kogg-operations-support-test-'));
+  try {
+    const runId = randomUUID(); fixture.model.ingest(fixture.owner('workflow').event('run.queued', { runId }, { lifecycle: 'queued' }));
+    const exporter = new OperationsSupportExporter(fixture.model, supportDirectory); const receipt = await exporter.export({ requestId: randomUUID(), runId });
+    const exported = await exporter.read(receipt.exportId); assert.equal(exported.sha256, receipt.sha256); assert.equal(exported.byteLength, receipt.byteLength);
+    assert.doesNotMatch(exported.content, /prompt|source|diff|command|environment|credential|authorization|cookie|rawBody/u);
+    const mode = (await stat(path.join(supportDirectory, `kogg-operations-support-${receipt.exportId}.json`))).mode & 0o077; if (process.platform !== 'win32') assert.equal(mode, 0);
+    await assert.rejects(exporter.read(randomUUID()), /SUPPORT_EXPORT_UNAVAILABLE/u);
+  } finally { await fixture.close(); await rm(supportDirectory, { recursive: true, force: true }); }
+});
+
+test('refuses prohibited support content before creating an export', async () => {
+  const supportDirectory = await mkdtemp(path.join(os.tmpdir(), 'kogg-operations-support-canary-test-'));
+  const unsafe = { snapshot: () => ({ schemaVersion: 1, projectionEpoch: randomUUID(), changeSequence: '0', lifecycle: 'current', faultCount: 0, runs: [{ runId: randomUUID(), prompt: 'canary' }] }), timeline: () => [], metrics: () => ({ schemaVersion: 1, projectionEpoch: randomUUID(), values: [] }), diagnostics: () => ({}) } as unknown as OperationsReadModel;
+  try {
+    const exporter = new OperationsSupportExporter(unsafe, supportDirectory);
+    await assert.rejects(exporter.export({ requestId: randomUUID() }), /SUPPORT_CONTENT_PROHIBITED/u);
+    assert.deepEqual(await readdir(supportDirectory), []);
+  } finally { await rm(supportDirectory, { recursive: true, force: true }); }
+});
+
+test('routes exact cancel authority once without optimistic lifecycle mutation', async () => {
+  const fixture = await createFixture(); let calls = 0;
+  try {
+    const runId = randomUUID(); const operationId = randomUUID(); const processId = randomUUID();
+    fixture.model.ingest(fixture.owner('workflow').event('run.started', { runId }, { lifecycle: 'active' }));
+    fixture.model.ingest(fixture.owner('operation').event('process.reserved', { runId, operationId, processId }, { processKind: 'governed-command', cleanupState: 'required' }));
+    const operations = { async cancel(request: { requestId: string; operationId: string }) { calls++; assert.equal(request.operationId, operationId); return { schemaVersion: 1, revision: 1, admission: 'enabled', active: [], recent: [] }; } } as unknown as OperationRegistryApi;
+    const router = new OperationsActionRouter(fixture.model, operations); const request = { requestId: randomUUID(), action: 'cancel' as const, runId, operationId, expectedProjectionSequence: fixture.model.snapshot().changeSequence };
+    const first = await router.request(request); assert.equal(first.status, 'forwarded'); assert.equal(first.safeCode, 'ACTION_OWNER_ACCEPTED');
+    assert.equal(fixture.model.snapshot().runs[0]?.lifecycle, 'active');
+    assert.deepEqual(await router.request(request), first); assert.equal(calls, 1);
+    await assert.rejects(router.request({ ...request, action: 'retry' }), /ACTION_REQUEST_REPLAY_MISMATCH/u);
+  } finally { await fixture.close(); }
+});
+
+test('keeps failed owner action outcome unknown and never retries it automatically', async () => {
+  const fixture = await createFixture(); let calls = 0;
+  try {
+    const runId = randomUUID(); const operationId = randomUUID(); const processId = randomUUID();
+    fixture.model.ingest(fixture.owner('workflow').event('run.started', { runId }, { lifecycle: 'active' }));
+    fixture.model.ingest(fixture.owner('operation').event('process.reserved', { runId, operationId, processId }, { processKind: 'governed-command', cleanupState: 'required' }));
+    const operations = { async cancel(): Promise<never> { calls++; throw new Error('transport lost after send'); } } as unknown as OperationRegistryApi;
+    const router = new OperationsActionRouter(fixture.model, operations); const request = { requestId: randomUUID(), action: 'cancel' as const, runId, operationId, expectedProjectionSequence: fixture.model.snapshot().changeSequence };
+    await assert.rejects(router.request(request), /transport lost/u); const replay = await router.request(request);
+    assert.equal(replay.status, 'unknown'); assert.equal(replay.safeCode, 'ACTION_OUTCOME_UNKNOWN'); assert.equal(calls, 1);
+  } finally { await fixture.close(); }
 });
 
 test('production operations read model emits a TypeScript source map', async () => {

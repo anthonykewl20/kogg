@@ -185,6 +185,25 @@ export interface OperationsStreamSubscriptionV1 {
   readonly changes: readonly OperationsProjectionChangeV1[];
 }
 
+export interface OperationsSupportExportRequestV1 { readonly requestId: string; readonly runId?: string; }
+export interface OperationsSupportExportReceiptV1 { readonly exportId: string; readonly byteLength: number; readonly sha256: string; readonly expiresAt: string; }
+export interface OperationsSupportExportContentV1 extends OperationsSupportExportReceiptV1 { readonly content: string; }
+export type OperationsActionKindV1 = 'cancel' | 'pause' | 'resume' | 'retry' | 'diagnose' | 'open-owner-view';
+export interface OperationsActionRequestV1 {
+  readonly requestId: string;
+  readonly action: OperationsActionKindV1;
+  readonly runId: string;
+  readonly operationId?: string;
+  readonly expectedProjectionSequence: string;
+}
+export interface OperationsActionReceiptV1 {
+  readonly requestId: string;
+  readonly action: OperationsActionKindV1;
+  readonly runId: string;
+  readonly status: 'forwarded' | 'refused' | 'unknown';
+  readonly safeCode: string;
+}
+
 export interface KoggOperationsReadModelClient {
   projectionChanged(change: OperationsProjectionChangeV1): void | Promise<void>;
 }
@@ -195,4 +214,7 @@ export interface KoggOperationsReadModelService {
   timelinePage(runId: string, pageCursor?: string, limit?: number): OperationsTimelinePageV1 | Promise<OperationsTimelinePageV1>;
   metricsSnapshot(): OperationsMetricsSnapshotV1 | Promise<OperationsMetricsSnapshotV1>;
   subscribe(resumeCursor?: string): OperationsStreamSubscriptionV1 | Promise<OperationsStreamSubscriptionV1>;
+  exportSupport(request: OperationsSupportExportRequestV1): Promise<OperationsSupportExportReceiptV1>;
+  readSupportExport(exportId: string): Promise<OperationsSupportExportContentV1>;
+  requestAction(request: OperationsActionRequestV1): Promise<OperationsActionReceiptV1>;
 }
