@@ -1,8 +1,9 @@
 import { existsSync } from 'node:fs';
+import { createHash, timingSafeEqual } from 'node:crypto';
 import { BackendApplicationContribution } from '@theia/core/lib/node';
 import { inject, injectable, unmanaged } from '@theia/core/shared/inversify';
 import { KernelBridgeToken, KOGG_RANEX_COMMIT, type KernelBridge, type KernelExecutionQualification } from '@kogg/contracts';
-import type { ExecutionQualificationCode, ExecutionQualificationProjection } from '../common/execution-protocol';
+import type { ExecutionBindingV1, ExecutionQualificationCode, ExecutionQualificationProjection } from '../common/execution-protocol';
 import { executionLog } from './execution-logger';
 
 // Qualification is owned by the pinned Ranex boundary. This registry validates only its closed, fresh result and never infers qualification from Linux alone.
@@ -17,6 +18,7 @@ const FIELDS = ['schemaVersion', 'qualificationId', 'targetId', 'architecture', 
 @injectable()
 export class ExecutionTargetRegistry implements BackendApplicationContribution {
   private value: ExecutionQualificationProjection;
+  private authority: KernelExecutionQualification | undefined;
   constructor(@inject(KernelBridgeToken) private readonly kernel: KernelBridge,
     @unmanaged() private readonly runtime: { readonly platform: NodeJS.Platform; readonly arch: string } = { platform: process.platform, arch: process.arch },
     @unmanaged() private readonly targetId = 'local-qualified-linux') {
@@ -24,6 +26,15 @@ export class ExecutionTargetRegistry implements BackendApplicationContribution {
   }
   async onStart(): Promise<void> { await this.refresh(); }
   projection(): ExecutionQualificationProjection { return { ...this.value, sourceMapsPresent: existsSync(`${__filename}.map`) }; }
+  async authorize(binding: ExecutionBindingV1): Promise<boolean> {
+    const current = await this.refresh(); const authority = this.authority;
+    const authorized = current.qualified && authority !== undefined && authority.qualificationId === binding.qualificationId
+      && authority.targetId === binding.targetId && authority.profileId === binding.profileId
+      && equal(authority.profileDigest, binding.profileDigest) && equal(qualificationDigest(authority), binding.qualificationDigest);
+    if (authorized) executionLog('qualification.authorization.completed', { targetId: binding.targetId, qualificationId: binding.qualificationId });
+    else executionLog('qualification.authorization.refused', { targetId: binding.targetId, qualificationId: binding.qualificationId, safeCode: current.qualified ? 'QUALIFICATION_PROTOCOL_INVALID' : current.safeCode });
+    return authorized;
+  }
   async refresh(): Promise<ExecutionQualificationProjection> {
     executionLog('qualification.started', { targetId: this.targetId });
     if (this.runtime.platform !== 'linux' || this.runtime.arch !== 'x64') return this.invalidate('QUALIFICATION_PLATFORM_UNSUPPORTED');
@@ -33,13 +44,18 @@ export class ExecutionTargetRegistry implements BackendApplicationContribution {
       const result = await this.kernel.qualifyExecution(this.targetId);
       const code = validate(result, this.targetId, Date.now());
       if (code) return this.invalidate(code);
+      this.authority = result;
       this.value = { qualified: true, targetId: result.targetId, profileId: result.profileId, safeCode: 'EXECUTION_OK', qualificationId: result.qualificationId, expiresAt: result.expiresAt, sourceMapsPresent: true };
       executionLog('qualification.completed', { targetId: result.targetId, qualificationId: result.qualificationId }); return this.projection();
     } catch (error) { // observability-exempt: The closed failure log intentionally discards raw kernel errors and qualification bodies.
-      this.value = refused(this.targetId, 'QUALIFICATION_FAILED'); executionLog('qualification.failed', { targetId: this.targetId, safeCode: 'QUALIFICATION_FAILED', errorType: error instanceof Error ? error.name : 'UnknownError' }); return this.projection();
+      this.authority = undefined; this.value = refused(this.targetId, 'QUALIFICATION_FAILED'); executionLog('qualification.failed', { targetId: this.targetId, safeCode: 'QUALIFICATION_FAILED', errorType: error instanceof Error ? error.name : 'UnknownError' }); return this.projection();
     }
   }
-  private invalidate(code: ExecutionQualificationCode): ExecutionQualificationProjection { this.value = refused(this.targetId, code); executionLog('qualification.invalidated', { targetId: this.targetId, safeCode: code }); return this.projection(); }
+  private invalidate(code: ExecutionQualificationCode): ExecutionQualificationProjection { this.authority = undefined; this.value = refused(this.targetId, code); executionLog('qualification.invalidated', { targetId: this.targetId, safeCode: code }); return this.projection(); }
+}
+
+export function qualificationDigest(value: KernelExecutionQualification): string {
+  return `sha256:${createHash('sha256').update(`kogg-execution-qualification-v1\n${canonical(value)}`).digest('hex')}`;
 }
 
 function validate(value: KernelExecutionQualification, targetId: string, now: number): ExecutionQualificationCode | undefined {
@@ -56,3 +72,5 @@ function validate(value: KernelExecutionQualification, targetId: string, now: nu
 }
 function supportedKernel(release: string): boolean { const match = /^(\d+)\.(\d+)(?:\.|$)/u.exec(release); if (!match) return false; const major = Number(match[1]); const minor = Number(match[2]); return Number.isSafeInteger(major) && Number.isSafeInteger(minor) && (major > 6 || (major === 6 && minor >= 6)); }
 function refused(targetId: string, safeCode: ExecutionQualificationCode): ExecutionQualificationProjection { return { qualified: false, targetId, profileId: 'kogg-writable-agent-v1', safeCode, sourceMapsPresent: true }; }
+function canonical(value: unknown): string { if (Array.isArray(value)) return `[${value.map(canonical).join(',')}]`; if (value && typeof value === 'object') return `{${Object.keys(value).sort().map(key => `${JSON.stringify(key)}:${canonical((value as Record<string, unknown>)[key])}`).join(',')}}`; return JSON.stringify(value); }
+function equal(left: string, right: string): boolean { const a = Buffer.from(left); const b = Buffer.from(right); return a.length === b.length && timingSafeEqual(a, b); }

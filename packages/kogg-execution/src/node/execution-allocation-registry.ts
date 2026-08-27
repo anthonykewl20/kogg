@@ -3,7 +3,7 @@ import { chmodSync, mkdirSync, statSync } from 'node:fs';
 import path from 'node:path';
 import { DatabaseSync, type SQLOutputValue } from 'node:sqlite';
 import { BackendApplicationContribution } from '@theia/core/lib/node';
-import { injectable } from '@theia/core/shared/inversify';
+import { inject, injectable } from '@theia/core/shared/inversify';
 import type {
   AdvanceExecutionStateV1, CandidateBindingV1, CandidateImportIntentV1, CompleteCandidateImportV1,
   CandidateRetentionV1, ExecutionAllocationSummaryV1, ExecutionBindingV1, ExecutionLifecycleCode, ExecutionRunListV1, ExecutionRunProjectionV1, ExecutionState,
@@ -11,6 +11,7 @@ import type {
   RecordCandidateRetentionV1, RecordSealedCandidateV1, ReserveExecutionAllocationV1
 } from '../common/execution-protocol';
 import { CANDIDATE_MUTATION_POLICY_DIGEST } from './candidate-sealer';
+import { ExecutionTargetRegistry } from './execution-target-registry';
 
 // Allocation identity and idempotency commit before external effects; ambiguous startup state is quarantined without pathname deletion or side-effect replay.
 // diagnostic-coverage: execution.worktree-registry, execution.capacity, execution.recovery, execution.retention
@@ -32,7 +33,7 @@ const LEGAL_TRANSITIONS: Readonly<Record<ExecutionState, readonly ExecutionState
   'cleanup-failed': ['cleaning', 'quarantined'], 'recovery-required': ['reconciling'], reconciling: ['refused', 'admitted', 'allocated', 'seeding', 'verified', 'ready', 'leased', 'executing', 'stopping', 'sealed', 'candidate-imported', 'retained', 'cleaning', 'cleaned', 'failed', 'timed-out', 'cancelled', 'cleanup-failed', 'quarantined'],
   cleaned: [], failed: ['cleaning'], 'timed-out': ['cleaning'], cancelled: ['cleaning'], quarantined: []
 };
-const TRANSITION_CODES = new Set(['ALLOCATION_OK', 'ALLOCATION_ADMISSION_BLOCKED', 'ALLOCATION_PROTOCOL_INVALID', 'ALLOCATION_REQUEST_REPLAY_MISMATCH', 'ALLOCATION_RUN_EXISTS', 'ALLOCATION_INTEGRITY_FAILED', 'ALLOCATION_REVISION_CONFLICT', 'ALLOCATION_BINDING_MISMATCH', 'ALLOCATION_STATE_INVALID', 'ALLOCATION_REPOSITORY_LEASE_CONFLICT', 'RECOVERY_OWNER_UNAVAILABLE', 'GIT_SEED_FAILED', 'GIT_SEED_TIMEOUT', 'GIT_SEED_OUTPUT_LIMIT', 'GIT_BASE_CHANGED', 'GIT_INDEPENDENCE_FAILED', 'GIT_SOURCE_INTEGRITY_FAILED', 'SEAL_OK', 'SEAL_FAILED', 'SEAL_BASE_MISMATCH', 'SEAL_NO_CHANGE', 'SEAL_DIRTY', 'SEAL_HEAD_INVALID', 'SEAL_ANCESTRY_INVALID', 'SEAL_MERGE_COMMIT', 'SEAL_MUTATION_POLICY', 'SEAL_OBJECT_INVALID', 'IMPORT_OK', 'IMPORT_FAILED', 'IMPORT_PROTOCOL_INVALID', 'IMPORT_SOURCE_CHANGED', 'IMPORT_CANDIDATE_INVALID', 'IMPORT_REF_EXISTS', 'IMPORT_SOURCE_INTEGRITY_FAILED', 'RETENTION_OK', 'RETENTION_ACTIVE', 'RETENTION_PROTOCOL_INVALID', 'EXECUTION_OK', 'QUALIFICATION_PLATFORM_UNSUPPORTED', 'QUALIFICATION_PROFILE_UNAVAILABLE', 'QUALIFICATION_PROTOCOL_INVALID', 'QUALIFICATION_EXPIRED', 'QUALIFICATION_FAILED', 'EXECUTION_INTERNAL_FAILED', 'PROCESS_EXIT_NONZERO', 'CLEANUP_FAILED']);
+const TRANSITION_CODES = new Set(['ALLOCATION_OK', 'ALLOCATION_ADMISSION_BLOCKED', 'ALLOCATION_PROTOCOL_INVALID', 'ALLOCATION_REQUEST_REPLAY_MISMATCH', 'ALLOCATION_RUN_EXISTS', 'ALLOCATION_INTEGRITY_FAILED', 'ALLOCATION_REVISION_CONFLICT', 'ALLOCATION_BINDING_MISMATCH', 'ALLOCATION_STATE_INVALID', 'ALLOCATION_REPOSITORY_LEASE_CONFLICT', 'ALLOCATION_QUALIFICATION_INVALID', 'RECOVERY_OWNER_UNAVAILABLE', 'GIT_SEED_FAILED', 'GIT_SEED_TIMEOUT', 'GIT_SEED_OUTPUT_LIMIT', 'GIT_BASE_CHANGED', 'GIT_INDEPENDENCE_FAILED', 'GIT_SOURCE_INTEGRITY_FAILED', 'SEAL_OK', 'SEAL_FAILED', 'SEAL_BASE_MISMATCH', 'SEAL_NO_CHANGE', 'SEAL_DIRTY', 'SEAL_HEAD_INVALID', 'SEAL_ANCESTRY_INVALID', 'SEAL_MERGE_COMMIT', 'SEAL_MUTATION_POLICY', 'SEAL_OBJECT_INVALID', 'IMPORT_OK', 'IMPORT_FAILED', 'IMPORT_PROTOCOL_INVALID', 'IMPORT_SOURCE_CHANGED', 'IMPORT_CANDIDATE_INVALID', 'IMPORT_REF_EXISTS', 'IMPORT_SOURCE_INTEGRITY_FAILED', 'RETENTION_OK', 'RETENTION_ACTIVE', 'RETENTION_PROTOCOL_INVALID', 'EXECUTION_OK', 'QUALIFICATION_PLATFORM_UNSUPPORTED', 'QUALIFICATION_PROFILE_UNAVAILABLE', 'QUALIFICATION_PROTOCOL_INVALID', 'QUALIFICATION_EXPIRED', 'QUALIFICATION_FAILED', 'EXECUTION_INTERNAL_FAILED', 'PROCESS_EXIT_NONZERO', 'CLEANUP_FAILED']);
 const IMPORT_FAILURE_CODES = new Set(['IMPORT_FAILED', 'IMPORT_PROTOCOL_INVALID', 'IMPORT_SOURCE_CHANGED', 'IMPORT_CANDIDATE_INVALID', 'IMPORT_REF_EXISTS', 'IMPORT_SOURCE_INTEGRITY_FAILED']);
 const RETENTION_MILLISECONDS = { rejected: 24 * 60 * 60 * 1000, completed: 24 * 60 * 60 * 1000, incident: 30 * 24 * 60 * 60 * 1000 } as const;
 
@@ -51,6 +52,8 @@ export class ExecutionAllocationRegistry implements BackendApplicationContributi
   private startup: Promise<void> | undefined;
   private readonly ownerInstanceId = randomUUID();
   private readonly databasePath = path.join(stateRoot(), 'execution', 'registry.sqlite3');
+
+  constructor(@inject(ExecutionTargetRegistry) private readonly targets: Pick<ExecutionTargetRegistry, 'authorize'>) {}
 
   onStart(): Promise<void> { return this.ensureStarted(); }
   onStop(): void { this.database?.close(); this.database = undefined; this.startup = undefined; }
@@ -99,6 +102,10 @@ export class ExecutionAllocationRegistry implements BackendApplicationContributi
     if (this.admission() !== 'enabled') {
       log('request.refused', { requestId: request.requestId, runId: request.binding.runId, safeCode: 'ALLOCATION_ADMISSION_BLOCKED' });
       throw new AllocationRegistryError('ALLOCATION_ADMISSION_BLOCKED');
+    }
+    if (!await this.targets.authorize(request.binding)) {
+      log('request.refused', { requestId: request.requestId, runId: request.binding.runId, safeCode: 'ALLOCATION_QUALIFICATION_INVALID' });
+      throw new AllocationRegistryError('ALLOCATION_QUALIFICATION_INVALID');
     }
     log('allocation.requested', { requestId: request.requestId, runId: request.binding.runId });
     const existing = this.databaseOrThrow().prepare('SELECT binding_digest FROM allocations WHERE run_id=?').get(request.binding.runId) as SqlRow | undefined;

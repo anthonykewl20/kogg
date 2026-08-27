@@ -10,7 +10,7 @@ import { AllocationRegistryError, ExecutionAllocationRegistry } from './executio
 // diagnostic-coverage: execution.worktree-registry, execution.capacity, execution.recovery
 test('reserves one opaque allocation identity before effects and replays only an identical request', async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), 'kogg-allocation-registry-')); process.env.KOGG_STATE_DIR = root;
-  const registry = new ExecutionAllocationRegistry(); await registry.onStart();
+  const registry = allocationRegistry(); await registry.onStart();
   const logs: string[] = []; const original = { info: console.info, warn: console.warn };
   console.info = (...values: unknown[]) => { logs.push(JSON.stringify(values)); }; console.warn = (...values: unknown[]) => { logs.push(JSON.stringify(values)); };
   try {
@@ -30,9 +30,9 @@ test('reserves one opaque allocation identity before effects and replays only an
 
 test('startup quarantines an ambiguous reserved allocation and blocks new admission without replaying effects', async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), 'kogg-allocation-recovery-')); process.env.KOGG_STATE_DIR = root;
-  const request = allocationRequest(); const first = new ExecutionAllocationRegistry(); await first.onStart();
+  const request = allocationRequest(); const first = allocationRegistry(); await first.onStart();
   const reserved = await first.reserve(request); first.onStop();
-  const recovered = new ExecutionAllocationRegistry(); await recovered.onStart();
+  const recovered = allocationRegistry(); await recovered.onStart();
   try {
     const diagnostics = recovered.diagnostics(); assert.equal(diagnostics.admission, 'blocked'); assert.equal(diagnostics.activeCount, 0);
     assert.equal(diagnostics.quarantinedCount, 1); assert.equal(diagnostics.cleanupFailureCount, 1); assert.equal(diagnostics.recoveryRequiredCount, 0);
@@ -45,7 +45,7 @@ test('startup quarantines an ambiguous reserved allocation and blocks new admiss
 
 test('refuses unknown allocation fields before creating durable state', async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), 'kogg-allocation-invalid-')); process.env.KOGG_STATE_DIR = root;
-  const registry = new ExecutionAllocationRegistry(); await registry.onStart();
+  const registry = allocationRegistry(); await registry.onStart();
   try {
     await assert.rejects(() => registry.reserve({ ...allocationRequest(), privatePath: '/private/canary' } as never),
       (error: unknown) => error instanceof AllocationRegistryError && error.code === 'ALLOCATION_PROTOCOL_INVALID');
@@ -53,9 +53,22 @@ test('refuses unknown allocation fields before creating durable state', async ()
   } finally { registry.onStop(); await rm(root, { recursive: true, force: true }); }
 });
 
+test('revalidates the exact live qualification before reserving any allocation identity', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'kogg-allocation-qualification-')); process.env.KOGG_STATE_DIR = root;
+  let observed: ExecutionBindingV1 | undefined;
+  const registry = allocationRegistry(async binding => { observed = binding; return false; }); await registry.onStart();
+  try {
+    const request = allocationRequest();
+    await assert.rejects(() => registry.reserve(request),
+      (error: unknown) => error instanceof AllocationRegistryError && error.code === 'ALLOCATION_QUALIFICATION_INVALID');
+    assert.deepEqual(observed, request.binding);
+    assert.equal(registry.diagnostics().reservationCount, 0);
+  } finally { registry.onStop(); await rm(root, { recursive: true, force: true }); }
+});
+
 test('projects execution runs through the closed path-free RPC contract and refuses extra fields', async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), 'kogg-allocation-projection-')); process.env.KOGG_STATE_DIR = root;
-  const registry = new ExecutionAllocationRegistry(); await registry.onStart();
+  const registry = allocationRegistry(); await registry.onStart();
   try {
     const allocation = await registry.reserve(allocationRequest());
     const requestId = '10000000-0000-4000-8000-000000000020';
@@ -78,7 +91,7 @@ test('projects execution runs through the closed path-free RPC contract and refu
 });
 
 test('persists only legal binding-and-revision-fenced state transitions with exact request replay', async () => {
-  const root = await mkdtemp(path.join(os.tmpdir(), 'kogg-allocation-state-')); process.env.KOGG_STATE_DIR = root; const registry = new ExecutionAllocationRegistry(); await registry.onStart();
+  const root = await mkdtemp(path.join(os.tmpdir(), 'kogg-allocation-state-')); process.env.KOGG_STATE_DIR = root; const registry = allocationRegistry(); await registry.onStart();
   try {
     const allocation = await registry.reserve(allocationRequest()); const request = { requestId: '10000000-0000-4000-8000-00000000000c', worktreeId: allocation.worktreeId, expectedRevision: '1', bindingDigest: allocation.bindingDigest, nextState: 'allocated' as const, safeCode: 'ALLOCATION_OK' as const };
     const advanced = await registry.advance(request); assert.equal(advanced.state, 'allocated'); assert.equal(advanced.revision, '2'); assert.deepEqual(await registry.advance(request), advanced);
@@ -89,7 +102,7 @@ test('persists only legal binding-and-revision-fenced state transitions with exa
 });
 
 test('records one sealed candidate only after the legal stopping state and replays the exact request', async () => {
-  const root = await mkdtemp(path.join(os.tmpdir(), 'kogg-allocation-seal-')); process.env.KOGG_STATE_DIR = root; const registry = new ExecutionAllocationRegistry(); await registry.onStart();
+  const root = await mkdtemp(path.join(os.tmpdir(), 'kogg-allocation-seal-')); process.env.KOGG_STATE_DIR = root; const registry = allocationRegistry(); await registry.onStart();
   try {
     const allocation = await advanceToStopping(registry);
     const candidate = { schemaVersion: 1 as const, candidateId: '30000000-0000-4000-8000-000000000001', worktreeId: allocation.worktreeId, runId: allocationRequest().binding.runId, attemptId: allocationRequest().binding.attemptId, baseCommit: allocationRequest().binding.baseCommit, baseTree: allocationRequest().binding.baseTree, candidateCommit: 'd'.repeat(40), candidateTree: 'e'.repeat(40), objectClosureDigest: `sha256:${'f'.repeat(64)}`, mutationPolicyDigest: CANDIDATE_MUTATION_POLICY_DIGEST, sealedAt: new Date().toISOString(), retentionClass: 'pending-evidence' as const, retentionUntil: '9999-12-31T23:59:59.999Z', safeCode: 'SEAL_OK' as const };
@@ -106,7 +119,7 @@ test('records one sealed candidate only after the legal stopping state and repla
 });
 
 test('requires a durable authority-bound retention fact and refuses cleanup before its policy deadline', async () => {
-  const root = await mkdtemp(path.join(os.tmpdir(), 'kogg-allocation-retention-')); process.env.KOGG_STATE_DIR = root; const registry = new ExecutionAllocationRegistry(); await registry.onStart();
+  const root = await mkdtemp(path.join(os.tmpdir(), 'kogg-allocation-retention-')); process.env.KOGG_STATE_DIR = root; const registry = allocationRegistry(); await registry.onStart();
   try {
     const allocation = await advanceToStopping(registry); const candidate = candidateFor(allocation, '35000000-0000-4000-8000-000000000001');
     const sealed = await registry.recordSeal({ requestId: '35000000-0000-4000-8000-000000000002', worktreeId: allocation.worktreeId, expectedRevision: allocation.revision, bindingDigest: allocation.bindingDigest, candidate });
@@ -127,7 +140,7 @@ test('requires a durable authority-bound retention fact and refuses cleanup befo
 });
 
 test('allows only one durable import mutation lease per repository until terminal completion', async () => {
-  const root = await mkdtemp(path.join(os.tmpdir(), 'kogg-allocation-repository-lease-')); process.env.KOGG_STATE_DIR = root; const registry = new ExecutionAllocationRegistry(); await registry.onStart();
+  const root = await mkdtemp(path.join(os.tmpdir(), 'kogg-allocation-repository-lease-')); process.env.KOGG_STATE_DIR = root; const registry = allocationRegistry(); await registry.onStart();
   try {
     const first = await advanceToStopping(registry); const base = allocationRequest().binding;
     const firstCandidate = candidateFor(first, '40000000-0000-4000-8000-000000000001');
@@ -145,7 +158,7 @@ test('allows only one durable import mutation lease per repository until termina
 });
 
 test('atomically quarantines a failed import intent and blocks admission without deleting evidence', async () => {
-  const root = await mkdtemp(path.join(os.tmpdir(), 'kogg-allocation-import-failure-')); process.env.KOGG_STATE_DIR = root; const registry = new ExecutionAllocationRegistry(); await registry.onStart();
+  const root = await mkdtemp(path.join(os.tmpdir(), 'kogg-allocation-import-failure-')); process.env.KOGG_STATE_DIR = root; const registry = allocationRegistry(); await registry.onStart();
   try {
     const allocation = await advanceToStopping(registry); const base = allocationRequest().binding;
     const candidate = { schemaVersion: 1 as const, candidateId: '30000000-0000-4000-8000-000000000021', worktreeId: allocation.worktreeId, runId: base.runId, attemptId: base.attemptId, baseCommit: base.baseCommit, baseTree: base.baseTree, candidateCommit: 'd'.repeat(40), candidateTree: 'e'.repeat(40), objectClosureDigest: `sha256:${'f'.repeat(64)}`, mutationPolicyDigest: CANDIDATE_MUTATION_POLICY_DIGEST, sealedAt: new Date().toISOString(), retentionClass: 'pending-evidence' as const, retentionUntil: '9999-12-31T23:59:59.999Z', safeCode: 'SEAL_OK' as const };
@@ -159,18 +172,21 @@ test('atomically quarantines a failed import intent and blocks admission without
 });
 
 test('startup retains an ambiguous import intent and quarantines its allocation without replay', async () => {
-  const root = await mkdtemp(path.join(os.tmpdir(), 'kogg-allocation-import-recovery-')); process.env.KOGG_STATE_DIR = root; const first = new ExecutionAllocationRegistry(); await first.onStart();
+  const root = await mkdtemp(path.join(os.tmpdir(), 'kogg-allocation-import-recovery-')); process.env.KOGG_STATE_DIR = root; const first = allocationRegistry(); await first.onStart();
   const allocation = await advanceToStopping(first); const base = allocationRequest().binding;
   const candidate = { schemaVersion: 1 as const, candidateId: '30000000-0000-4000-8000-000000000011', worktreeId: allocation.worktreeId, runId: base.runId, attemptId: base.attemptId, baseCommit: base.baseCommit, baseTree: base.baseTree, candidateCommit: 'd'.repeat(40), candidateTree: 'e'.repeat(40), objectClosureDigest: `sha256:${'f'.repeat(64)}`, mutationPolicyDigest: CANDIDATE_MUTATION_POLICY_DIGEST, sealedAt: new Date().toISOString(), retentionClass: 'pending-evidence' as const, retentionUntil: '9999-12-31T23:59:59.999Z', safeCode: 'SEAL_OK' as const };
   await first.recordSeal({ requestId: '30000000-0000-4000-8000-000000000012', worktreeId: allocation.worktreeId, expectedRevision: allocation.revision, bindingDigest: allocation.bindingDigest, candidate });
   await first.prepareCandidateImport({ requestId: '30000000-0000-4000-8000-000000000013', worktreeId: allocation.worktreeId, expectedRevision: String(Number(allocation.revision) + 1), bindingDigest: allocation.bindingDigest, candidateId: candidate.candidateId, expectedSourceIdentityDigest: `sha256:${'1'.repeat(64)}` }); first.onStop();
-  const recovered = new ExecutionAllocationRegistry(); await recovered.onStart();
+  const recovered = allocationRegistry(); await recovered.onStart();
   try { const diagnostics = recovered.diagnostics(); assert.equal(diagnostics.admission, 'blocked'); assert.equal(diagnostics.quarantinedCount, 1); assert.equal(diagnostics.pendingImportIntentCount, 1); assert.equal(diagnostics.candidateCount, 1); assert.equal(diagnostics.activeRepositoryLeaseCount, 0); assert.equal(diagnostics.quarantinedRepositoryLeaseCount, 1); }
   finally { recovered.onStop(); await rm(root, { recursive: true, force: true }); }
 });
 
 function allocationRequest(): ReserveExecutionAllocationV1 {
   return { requestId: '10000000-0000-4000-8000-00000000000b', binding: binding(), quotaBytes: '1073741824', quotaInodes: '100000' };
+}
+function allocationRegistry(authorize: (binding: ExecutionBindingV1) => Promise<boolean> = async () => true): ExecutionAllocationRegistry {
+  return new ExecutionAllocationRegistry({ authorize } as never);
 }
 async function advanceToStopping(registry: ExecutionAllocationRegistry) {
   return advanceRequestToStopping(registry, allocationRequest());

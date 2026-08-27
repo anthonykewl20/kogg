@@ -2,10 +2,11 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { KOGG_RANEX_COMMIT, type KernelBridge, type KernelExecutionQualification } from '@kogg/contracts';
 import type { OperationRegistryApi } from '@kogg/operations/lib/common/operations-protocol';
+import type { ExecutionBindingV1 } from '../common/execution-protocol';
 import type { ExecutionAllocationRegistry } from './execution-allocation-registry';
 import { EXECUTION_CHECKS, ExecutionDiagnosticContributor } from './execution-diagnostic-contributor';
 import { executionLog, executionLoggingDiagnostics } from './execution-logger';
-import { ExecutionTargetRegistry } from './execution-target-registry';
+import { ExecutionTargetRegistry, qualificationDigest } from './execution-target-registry';
 
 // diagnostic-coverage: execution.target-qualification, execution.worktree-registry, execution.git-independence, execution.source-integrity, execution.process-cleanup, execution.capacity, execution.recovery, execution.retention, execution.source-maps
 test('refuses non-Linux controllers without contacting the kernel or logging private values', async () => {
@@ -29,6 +30,15 @@ test('accepts only a fresh closed exact qualification and reports every catalog 
   const checks = await new ExecutionDiagnosticContributor(registry, healthyAllocations(), healthyOperations()).diagnose(); assert.deepEqual(checks.map(check => check.id), [...EXECUTION_CHECKS]); assert.equal(checks.every(check => check.status === 'pass'), true);
 });
 
+test('requalifies immediately before allocation and authorizes only the exact immutable fact', async () => {
+  const facts = [qualification(), qualification(), qualification()]; let calls = 0;
+  const registry = new ExecutionTargetRegistry(bridge(async () => facts[calls++]!), { platform: 'linux', arch: 'x64' });
+  await registry.onStart();
+  assert.equal(await registry.authorize(bindingFor(facts[1]!)), true);
+  assert.equal(await registry.authorize({ ...bindingFor(facts[2]!), qualificationDigest: `sha256:${'f'.repeat(64)}` }), false);
+  assert.equal(calls, 3);
+});
+
 test('invalid, expired, and failed owner results remain unqualified with closed failures', async () => {
   const invalid = new ExecutionTargetRegistry(bridge(async () => ({ ...qualification(), extra: 'private' } as never)), { platform: 'linux', arch: 'x64' }); await invalid.onStart(); assert.equal(invalid.projection().safeCode, 'QUALIFICATION_PROTOCOL_INVALID');
   const unknownRefusal = new ExecutionTargetRegistry(bridge(async () => ({ ...qualification(), status: 'refused', refusalCodes: ['PRIVATE_REASON'] } as never)), { platform: 'linux', arch: 'x64' }); await unknownRefusal.onStart(); assert.equal(unknownRefusal.projection().safeCode, 'QUALIFICATION_PROTOCOL_INVALID');
@@ -49,6 +59,10 @@ function bridge(qualify: () => Promise<KernelExecutionQualification>): KernelBri
 function qualification(): KernelExecutionQualification {
   const checkedAt = new Date(Date.now() - 1_000).toISOString(); const expiresAt = new Date(Date.now() + 4 * 60_000).toISOString(); const digest = `sha256:${'a'.repeat(64)}`;
   return { schemaVersion: 1, qualificationId: '10000000-0000-4000-8000-000000000001', targetId: 'local-qualified-linux', architecture: 'amd64', profileId: 'kogg-writable-agent-v1', profileDigest: digest, bootIdDigest: digest, kernelRelease: '6.6.1', landlockAbi: '4', cgroupProfileDigest: digest, mountQuotaDigest: digest, launcherDigest: digest, bubblewrapDigest: digest, seccompDigest: digest, brokerDigest: digest, ranexCommit: KOGG_RANEX_COMMIT, checkedAt, expiresAt, status: 'qualified', refusalCodes: [] };
+}
+function bindingFor(value: KernelExecutionQualification): ExecutionBindingV1 {
+  const digest = `sha256:${'b'.repeat(64)}`;
+  return { schemaVersion: 1, projectId: '10000000-0000-4000-8000-000000000011', projectRevision: '1', repositoryId: '10000000-0000-4000-8000-000000000012', repositoryBindingRevision: '1', taskId: '10000000-0000-4000-8000-000000000013', taskRevisionId: '10000000-0000-4000-8000-000000000014', taskRevisionDigest: digest, approvalDigest: digest, runId: '10000000-0000-4000-8000-000000000015', attemptId: '10000000-0000-4000-8000-000000000016', workflowPlanDigest: digest, baseCommit: 'b'.repeat(40), baseTree: 'c'.repeat(40), gitObjectFormat: 'sha1', targetId: value.targetId, qualificationId: value.qualificationId, qualificationDigest: qualificationDigest(value), profileId: value.profileId, profileDigest: value.profileDigest };
 }
 function healthyAllocations(): ExecutionAllocationRegistry { return { diagnostics: () => ({ integrity: true, foreignKeys: true, permissions: true, admission: 'enabled', activeCount: 0, quarantinedCount: 0, recoveryRequiredCount: 0, unverifiedCount: 0, cleanupFailureCount: 0, reservationCount: 0, candidateCount: 0, pendingImportIntentCount: 0, activeRepositoryLeaseCount: 0, quarantinedRepositoryLeaseCount: 0, retentionViolationCount: 0, loggingViolationCount: 0 }) } as ExecutionAllocationRegistry; }
 function healthyOperations(): OperationRegistryApi { return { diagnostics: () => ({ integrity: true, foreignKeys: true, permissions: true, recoveryComplete: true, activeCount: 0, stalledCount: 0, residualCount: 0, cleanupFailureCount: 0, admission: 'enabled' }) } as OperationRegistryApi; }
