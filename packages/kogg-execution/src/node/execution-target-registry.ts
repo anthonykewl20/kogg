@@ -3,7 +3,7 @@ import { createHash, timingSafeEqual } from 'node:crypto';
 import { BackendApplicationContribution } from '@theia/core/lib/node';
 import { inject, injectable, unmanaged } from '@theia/core/shared/inversify';
 import { KernelBridgeToken, KOGG_RANEX_COMMIT, type KernelBridge, type KernelExecutionQualification } from '@kogg/contracts';
-import type { ExecutionBindingV1, ExecutionQualificationCode, ExecutionQualificationProjection } from '../common/execution-protocol';
+import type { ExecutionBindingV1, ExecutionQualificationCode, ExecutionQualificationProjection, ExecutionTargetBindingAuthority, ExecutionTargetBindingV1 } from '../common/execution-protocol';
 import { executionLog } from './execution-logger';
 
 // Qualification is owned by the pinned Ranex boundary. This registry validates only its closed, fresh result and never infers qualification from Linux alone.
@@ -16,7 +16,7 @@ const REFUSALS = new Set(['QUALIFICATION_PLATFORM_UNSUPPORTED', 'QUALIFICATION_P
 const FIELDS = ['schemaVersion', 'qualificationId', 'targetId', 'architecture', 'profileId', 'profileDigest', 'bootIdDigest', 'kernelRelease', 'landlockAbi', 'cgroupProfileDigest', 'mountQuotaDigest', 'launcherDigest', 'bubblewrapDigest', 'seccompDigest', 'brokerDigest', 'ranexCommit', 'checkedAt', 'expiresAt', 'status', 'refusalCodes'] as const;
 
 @injectable()
-export class ExecutionTargetRegistry implements BackendApplicationContribution {
+export class ExecutionTargetRegistry implements BackendApplicationContribution, ExecutionTargetBindingAuthority {
   private value: ExecutionQualificationProjection;
   private authority: KernelExecutionQualification | undefined;
   constructor(@inject(KernelBridgeToken) private readonly kernel: KernelBridge,
@@ -34,6 +34,19 @@ export class ExecutionTargetRegistry implements BackendApplicationContribution {
     if (authorized) executionLog('qualification.authorization.completed', { targetId: binding.targetId, qualificationId: binding.qualificationId });
     else executionLog('qualification.authorization.refused', { targetId: binding.targetId, qualificationId: binding.qualificationId, safeCode: current.qualified ? 'QUALIFICATION_PROTOCOL_INVALID' : current.safeCode });
     return authorized;
+  }
+  async resolveTargetBinding(): Promise<ExecutionTargetBindingV1 | undefined> {
+    executionLog('target-binding.requested', { targetId: this.targetId });
+    const current = await this.refresh(); const authority = this.authority;
+    if (!current.qualified || !authority) {
+      executionLog('target-binding.refused', { targetId: this.targetId, safeCode: current.safeCode });
+      return undefined;
+    }
+    const binding = { targetId: authority.targetId, qualificationId: authority.qualificationId,
+      qualificationDigest: qualificationDigest(authority), profileId: authority.profileId,
+      profileDigest: authority.profileDigest } satisfies ExecutionTargetBindingV1;
+    executionLog('target-binding.completed', { targetId: binding.targetId, qualificationId: binding.qualificationId });
+    return binding;
   }
   async authorizePhysicalAllocation(binding: ExecutionBindingV1, helperDigest: string, mountQuotaDigest: string): Promise<boolean> {
     const authority = await this.physicalAllocationAuthority(binding, helperDigest);

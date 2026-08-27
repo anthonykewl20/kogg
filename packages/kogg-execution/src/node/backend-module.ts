@@ -2,7 +2,7 @@ import { KoggDiagnosticContribution } from '@kogg/contracts';
 import { BackendApplicationContribution } from '@theia/core/lib/node';
 import { ConnectionHandler, JsonRpcConnectionHandler } from '@theia/core/lib/common/messaging';
 import { ContainerModule } from '@theia/core/shared/inversify';
-import { KoggExecutionServicePath, type KoggExecutionService } from '../common/execution-protocol';
+import { ExecutionTargetBindingAuthority, KoggExecutionServicePath, type KoggExecutionService } from '../common/execution-protocol';
 import { ExecutionAllocationRegistry } from './execution-allocation-registry';
 import { ExecutionDiagnosticContributor } from './execution-diagnostic-contributor';
 import { ExecutionService } from './execution-service';
@@ -15,6 +15,7 @@ export default new ContainerModule(bind => {
   bind(ExecutionAllocationRegistry).toSelf().inSingletonScope(); bind(BackendApplicationContribution).toService(ExecutionAllocationRegistry);
   bind(ExecutionOperationsOwnerWiring).toSelf().inSingletonScope(); bind(BackendApplicationContribution).toService(ExecutionOperationsOwnerWiring);
   bind(ExecutionTargetRegistry).toSelf().inSingletonScope(); bind(BackendApplicationContribution).toService(ExecutionTargetRegistry);
+  bind(ExecutionTargetBindingAuthority).toService(ExecutionTargetRegistry);
   bind(NativeAllocationController).toSelf().inSingletonScope(); bind(BackendApplicationContribution).toService(NativeAllocationController);
   bind(ExecutionDiagnosticContributor).toSelf().inSingletonScope(); bind(KoggDiagnosticContribution).toService(ExecutionDiagnosticContributor);
   bind(ExecutionService).toSelf().inSingletonScope();
