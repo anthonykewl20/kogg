@@ -59,6 +59,7 @@ export interface RecordPhysicalAllocationV1 {
 export interface ExecutionRunProjectionV1 {
   readonly schemaVersion: 1; readonly projectId: string; readonly repositoryId: string;
   readonly runId: string; readonly attemptId: string; readonly state: ExecutionState; readonly revision: string;
+  readonly authorityMode: 'build' | 'kogg' | 'unknown'; readonly authoritySequence: string;
   readonly cleanupState: 'required' | 'cleaning' | 'cleaned' | 'failed'; readonly safeCode: ExecutionLifecycleCode;
 }
 export interface GetExecutionRunV1 { readonly requestId: string; readonly runId: string; }

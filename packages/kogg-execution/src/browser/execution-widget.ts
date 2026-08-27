@@ -3,7 +3,7 @@ import { KoggProjectsService, type KoggProjectsService as ProjectsService } from
 import { BaseWidget } from '@theia/core/lib/browser/widgets/widget';
 import { inject, injectable, postConstruct } from '@theia/core/shared/inversify';
 import { KoggExecutionService, type ExecutionQualificationProjection, type ExecutionRunProjectionV1, type KoggExecutionService as ExecutionService } from '../common/execution-protocol';
-import { executionStartGate, executionStateLabel } from '../common/execution-view-model';
+import { executionAuthorityNotice, executionStartGate, executionStateLabel } from '../common/execution-view-model';
 
 // Read-only execution UI renders safe projections only; paths, Git controls, bindings, prompts, and provider bodies never enter this boundary.
 // diagnostic-coverage: execution.target-qualification, execution.worktree-registry, execution.source-maps
@@ -54,7 +54,7 @@ export class ExecutionWidget extends BaseWidget {
 
 function renderRun(run: ExecutionRunProjectionV1, project: KoggProjectSummary | undefined): string {
   const repository = project?.repositories.find(item => item.id === run.repositoryId)?.displayName ?? 'Registered repository';
-  return `<article><div><strong>${escapeHtml(executionStateLabel(run.state))}</strong><p>${escapeHtml(repository)} · run ${escapeHtml(shortId(run.runId))} · attempt ${escapeHtml(shortId(run.attemptId))}</p></div><div><span>${escapeHtml(run.safeCode)}</span><p>Revision ${escapeHtml(run.revision)} · cleanup ${escapeHtml(run.cleanupState)}</p></div></article>`;
+  return `<article><div><strong>${escapeHtml(executionStateLabel(run.state))}</strong><p>${escapeHtml(repository)} · run ${escapeHtml(shortId(run.runId))} · attempt ${escapeHtml(shortId(run.attemptId))}</p><p class="kogg-blocked">${escapeHtml(executionAuthorityNotice(run))}</p></div><div><span>${escapeHtml(run.authorityMode)} authority · sequence ${escapeHtml(run.authoritySequence)}</span><p>${escapeHtml(run.safeCode)} · revision ${escapeHtml(run.revision)} · cleanup ${escapeHtml(run.cleanupState)}</p></div></article>`;
 }
 function shortId(value: string): string { return value.slice(0, 8); }
 function escapeHtml(value: string): string { return value.replace(/[&<>'"]/gu, character => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;' })[character]!); }

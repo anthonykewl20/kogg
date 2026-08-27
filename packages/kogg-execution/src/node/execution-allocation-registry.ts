@@ -120,7 +120,7 @@ export class ExecutionAllocationRegistry implements BackendApplicationContributi
     log('projection.get.requested', { requestId: request.requestId, runId: request.runId });
     try {
       await this.ensureStarted();
-      const row = this.databaseOrThrow().prepare('SELECT project_id,repository_id,run_id,attempt_id,state,revision,cleanup_state,safe_code FROM allocations WHERE run_id=?').get(request.runId) as SqlRow | undefined;
+      const row = this.databaseOrThrow().prepare('SELECT project_id,repository_id,run_id,attempt_id,authority_mode,authority_sequence,state,revision,cleanup_state,safe_code FROM allocations WHERE run_id=?').get(request.runId) as SqlRow | undefined;
       const projection = row ? runProjection(row) : undefined;
       log('projection.get.completed', { requestId: request.requestId, runId: request.runId, resultCount: projection ? 1 : 0 });
       return projection;
@@ -135,7 +135,7 @@ export class ExecutionAllocationRegistry implements BackendApplicationContributi
     log('projection.list.requested', { requestId: request.requestId, projectId: request.projectId });
     try {
       await this.ensureStarted();
-      const rows = this.databaseOrThrow().prepare('SELECT project_id,repository_id,run_id,attempt_id,state,revision,cleanup_state,safe_code FROM allocations WHERE project_id=? ORDER BY updated_at DESC,run_id LIMIT 201').all(request.projectId) as SqlRow[];
+      const rows = this.databaseOrThrow().prepare('SELECT project_id,repository_id,run_id,attempt_id,authority_mode,authority_sequence,state,revision,cleanup_state,safe_code FROM allocations WHERE project_id=? ORDER BY updated_at DESC,run_id LIMIT 201').all(request.projectId) as SqlRow[];
       const truncated = rows.length > 200; const runs = rows.slice(0, 200).map(runProjection);
       log('projection.list.completed', { requestId: request.requestId, projectId: request.projectId, resultCount: runs.length, truncated: truncated ? 1 : 0 });
       return { schemaVersion: 1, projectId: request.projectId, runs, truncated };
@@ -165,7 +165,7 @@ export class ExecutionAllocationRegistry implements BackendApplicationContributi
     catch { // observability-exempt: the immediately following closed refusal log records the allocation-domain denial without leaking authority error details.
       mode = { allowed: false, safeCode: 'MODE_AUTHORITY_REFUSED' } as Awaited<ReturnType<ModeOperationAuthorizer['authorizeOperation']>>;
     }
-    if (!mode.allowed) {
+    if (!mode.allowed || !modeBindingMatches(mode, request.binding)) {
       log('request.refused', { requestId: request.requestId, runId: request.binding.runId, safeCode: 'ALLOCATION_ADMISSION_BLOCKED' });
       throw new AllocationRegistryError('ALLOCATION_ADMISSION_BLOCKED');
     }
@@ -184,12 +184,12 @@ export class ExecutionAllocationRegistry implements BackendApplicationContributi
     const now = new Date().toISOString();
     this.transaction(database => {
       database.prepare(`INSERT INTO allocations(
-        worktree_id,run_id,attempt_id,project_id,repository_id,binding_json,binding_digest,allocation_name,
+        worktree_id,run_id,attempt_id,project_id,repository_id,binding_json,binding_digest,authority_mode,authority_sequence,allocation_name,
         allocation_nonce,allocation_nonce_digest,quota_bytes,quota_inodes,owner_instance_id,state,cleanup_state,
         safe_code,revision,created_at,updated_at
-      ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,'admitted','required','ALLOCATION_OK',1,?,?)`).run(
+      ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'admitted','required','ALLOCATION_OK',1,?,?)`).run(
         worktreeId, request.binding.runId, request.binding.attemptId, request.binding.projectId, request.binding.repositoryId,
-        bindingJson, bindingDigest, allocationName(worktreeId), nonce, digest('kogg-execution-allocation-nonce-v1', nonce),
+        bindingJson, bindingDigest, mode.projection.selectedMode, mode.projection.sequence, allocationName(worktreeId), nonce, digest('kogg-execution-allocation-nonce-v1', nonce),
         request.quotaBytes, request.quotaInodes, this.ownerInstanceId, now, now
       );
       database.prepare('INSERT INTO request_results(request_id,request_digest,worktree_id,created_at) VALUES(?,?,?,?)')
@@ -261,7 +261,9 @@ export class ExecutionAllocationRegistry implements BackendApplicationContributi
     catch { // observability-exempt: the closed allocation refusal below records no authority error details.
       mode = { allowed: false, safeCode: 'MODE_AUTHORITY_REFUSED' } as Awaited<ReturnType<ModeOperationAuthorizer['authorizeOperation']>>;
     }
-    if (!mode.allowed) refusePhysicalAllocation(request, 'ALLOCATION_ADMISSION_BLOCKED');
+    if (!mode.allowed || !modeBindingMatches(mode, binding)
+      || mode.projection.selectedMode !== String(row.authority_mode)
+      || mode.projection.sequence !== String(row.authority_sequence)) refusePhysicalAllocation(request, 'ALLOCATION_ADMISSION_BLOCKED');
     if (!await this.targets.authorizePhysicalAllocation(binding, request.helperDigest, request.mountQuotaDigest)) refusePhysicalAllocation(request, 'ALLOCATION_QUALIFICATION_INVALID');
     const intentId = randomUUID(); const fencingToken = randomBytes(32).toString('hex'); const now = new Date().toISOString(); let quotaProjectId = 0;
     this.transaction(database => {
@@ -645,7 +647,7 @@ export class ExecutionAllocationRegistry implements BackendApplicationContributi
       CREATE TABLE IF NOT EXISTS execution_meta(singleton INTEGER PRIMARY KEY CHECK(singleton=1),schema_version INTEGER NOT NULL CHECK(schema_version=1),revision INTEGER NOT NULL CHECK(revision>=1),owner_instance_id TEXT NOT NULL,owner_id TEXT,owner_epoch_id TEXT,admission TEXT NOT NULL CHECK(admission IN ('enabled','recovering','blocked')));
       CREATE TABLE IF NOT EXISTS allocations(
         worktree_id TEXT PRIMARY KEY,run_id TEXT NOT NULL UNIQUE,attempt_id TEXT NOT NULL,project_id TEXT NOT NULL,repository_id TEXT NOT NULL,
-        binding_json TEXT NOT NULL,binding_digest TEXT NOT NULL,allocation_name TEXT NOT NULL UNIQUE,allocation_nonce TEXT NOT NULL,
+        binding_json TEXT NOT NULL,binding_digest TEXT NOT NULL,authority_mode TEXT NOT NULL CHECK(authority_mode IN ('build','kogg','unknown')),authority_sequence TEXT NOT NULL,allocation_name TEXT NOT NULL UNIQUE,allocation_nonce TEXT NOT NULL,
         allocation_nonce_digest TEXT NOT NULL,filesystem_identity_digest TEXT,filesystem_device TEXT,filesystem_inode TEXT,owner_uid TEXT,allocation_mode TEXT,mount_id TEXT,quota_project_id TEXT,helper_digest TEXT,mount_quota_digest TEXT,quota_bytes TEXT NOT NULL,quota_inodes TEXT NOT NULL,
         owner_instance_id TEXT NOT NULL,state TEXT NOT NULL CHECK(state IN ('requested','refused','admitted','allocated','seeding','verified','ready','leased','executing','stopping','sealed','candidate-imported','retained','cleaning','cleaned','failed','timed-out','cancelled','cleanup-failed','quarantined','recovery-required','reconciling')),
         cleanup_state TEXT NOT NULL CHECK(cleanup_state IN ('required','cleaning','cleaned','failed')),safe_code TEXT NOT NULL,revision INTEGER NOT NULL CHECK(revision>=1),created_at TEXT NOT NULL,updated_at TEXT NOT NULL
@@ -669,6 +671,7 @@ export class ExecutionAllocationRegistry implements BackendApplicationContributi
     ensurePhysicalIdentitySchema(this.databaseOrThrow());
     ensureAllocationIntentSchema(this.databaseOrThrow());
     ensureQuotaProjectLeaseSchema(this.databaseOrThrow());
+    ensureExecutionModeSchema(this.databaseOrThrow());
     ensureOwnerSchema(this.databaseOrThrow());
     const version = Number((this.databaseOrThrow().prepare('SELECT schema_version FROM execution_meta WHERE singleton=1').get() as SqlRow).schema_version);
     if (version !== 1) throw new Error('Unsupported execution registry schema');
@@ -679,6 +682,7 @@ export class ExecutionAllocationRegistry implements BackendApplicationContributi
     if (String((database.prepare('PRAGMA integrity_check').get() as SqlRow).integrity_check) !== 'ok'
       || database.prepare('PRAGMA foreign_key_check').all().length) throw new Error('Execution registry integrity failed');
     if (!ownerEventsValid(database)) throw new Error('Execution owner event integrity failed');
+    if (!executionModeBindingsValid(database)) throw new Error('Execution mode binding integrity failed');
     for (const row of database.prepare("SELECT * FROM allocations WHERE filesystem_identity_digest IS NOT NULL").all() as SqlRow[]) if (!physicalIdentityValid(row)) throw new Error('Execution physical identity integrity failed');
     if (!quotaProjectLeasesValid(database)) throw new Error('Execution quota project lease integrity failed');
   }
@@ -884,6 +888,11 @@ function refusePhysicalAllocation(request: { readonly requestId: string; readonl
 function refuseRetention(request: RecordCandidateRetentionV1, code: ExecutionLifecycleCode): never { log('retention.refused', { requestId: request.requestId, worktreeId: request.worktreeId, candidateId: request.candidateId, retentionClass: request.retentionClass, safeCode: code }); throw new AllocationRegistryError(code); }
 function refuseCleanup(request: { readonly requestId: string; readonly worktreeId: string }, code: ExecutionLifecycleCode): never { log('cleanup.refused', { requestId: request.requestId, worktreeId: request.worktreeId, safeCode: code }); throw new AllocationRegistryError(code); }
 function canonicalBinding(value: ExecutionBindingV1): string { return `{${[...BINDING_FIELDS].sort().map(key => `${JSON.stringify(key)}:${JSON.stringify(value[key as keyof ExecutionBindingV1])}`).join(',')}}`; }
+function modeBindingMatches(result: Awaited<ReturnType<ModeOperationAuthorizer['authorizeOperation']>>, binding: ExecutionBindingV1): boolean {
+  const projection = result.projection;
+  return Boolean(result.allowed && projection && (projection.selectedMode === 'build' || projection.selectedMode === 'kogg') && DECIMAL.test(projection.sequence)
+    && projection.taskId === binding.taskId && projection.projectId === binding.projectId && projection.repositoryId === binding.repositoryId);
+}
 function digest(domain: string, value: string): string { return `sha256:${createHash('sha256').update(`${domain}\0${value}`).digest('hex')}`; }
 function allocationName(worktreeId: string): string { const alphabet = 'abcdefghijklmnopqrstuvwxyz234567'; const bytes = Buffer.from(worktreeId.replaceAll('-', ''), 'hex'); let bits = 0; let accumulator = 0; let output = ''; for (const byte of bytes) { accumulator = (accumulator << 8) | byte; bits += 8; while (bits >= 5) { bits -= 5; output += alphabet[(accumulator >>> bits) & 31]; } } if (bits) output += alphabet[(accumulator << (5 - bits)) & 31]; return `r-${output}`; }
 function stateRoot(): string { return path.resolve(process.env.KOGG_STATE_DIR ?? path.join(process.env.KOGG_ROOT ? path.resolve(process.env.KOGG_ROOT) : process.cwd(), '.kogg', 'state')); }
@@ -893,6 +902,7 @@ function runProjection(row: SqlRow): ExecutionRunProjectionV1 {
   return {
     schemaVersion: 1, projectId: String(row.project_id), repositoryId: String(row.repository_id), runId: String(row.run_id),
     attemptId: String(row.attempt_id), state: String(row.state) as ExecutionState, revision: String(row.revision),
+    authorityMode: String(row.authority_mode) as ExecutionRunProjectionV1['authorityMode'], authoritySequence: String(row.authority_sequence),
     cleanupState: String(row.cleanup_state) as ExecutionRunProjectionV1['cleanupState'], safeCode: String(row.safe_code) as ExecutionRunProjectionV1['safeCode']
   };
 }
@@ -914,6 +924,18 @@ function ensureQuotaProjectLeaseSchema(database: DatabaseSync): void {
   const columns = new Set((database.prepare('PRAGMA table_info(execution_meta)').all() as SqlRow[]).map(row => String(row.name)));
   if (!columns.has('next_quota_project_id')) database.exec('ALTER TABLE execution_meta ADD COLUMN next_quota_project_id INTEGER');
   database.prepare('UPDATE execution_meta SET next_quota_project_id=COALESCE(next_quota_project_id,?) WHERE singleton=1').run(FIRST_QUOTA_PROJECT_ID);
+}
+
+function ensureExecutionModeSchema(database: DatabaseSync): void {
+  const columns = new Set((database.prepare('PRAGMA table_info(allocations)').all() as SqlRow[]).map(row => String(row.name)));
+  if (!columns.has('authority_mode')) database.exec('ALTER TABLE allocations ADD COLUMN authority_mode TEXT');
+  if (!columns.has('authority_sequence')) database.exec('ALTER TABLE allocations ADD COLUMN authority_sequence TEXT');
+  database.prepare("UPDATE allocations SET authority_mode=COALESCE(authority_mode,'unknown'),authority_sequence=COALESCE(authority_sequence,'0')").run();
+}
+
+function executionModeBindingsValid(database: DatabaseSync): boolean {
+  return Number((database.prepare("SELECT count(*) AS count FROM allocations WHERE authority_mode IS NULL OR authority_mode NOT IN ('build','kogg','unknown') OR authority_sequence IS NULL").get() as SqlRow).count) === 0
+    && (database.prepare('SELECT authority_mode,authority_sequence FROM allocations').all() as SqlRow[]).every(row => DECIMAL.test(String(row.authority_sequence)) && (String(row.authority_mode) !== 'unknown' || String(row.authority_sequence) === '0'));
 }
 
 function quotaProjectLeasesValid(database: DatabaseSync): boolean {
