@@ -84,6 +84,10 @@ try {
     await trust.waitFor({ state: 'visible', timeout: 10_000 }).catch(() => undefined);
     if (await trust.isVisible().catch(() => false)) await trust.click();
 
+    if (process.env.KOGG_E2E_OPERATIONS_ONLY === '1') {
+        await exerciseElectronOperations(page, application);
+        process.stdout.write('Kogg Electron operations-stream E2E passed.\n');
+    } else {
     // Exercise a real editor save before Git actions. This activates filesystem
     // and repository watchers through the same path a person uses on a clean
     // profile, without relying on an externally modified pre-launch fixture.
@@ -189,6 +193,7 @@ try {
     assert.doesNotMatch(logs.join('\n'), /Uncaught Exception:\s+Error: transport error/iu);
     assert.doesNotMatch(logs.join('\n'), /Command with id '_chat\.editSessions\.accept' is not registered/iu);
     process.stdout.write('Kogg Electron E2E passed: native window, marketplace, provider, Git, debug, projects, switching, and branding.\n');
+    }
 } catch (error) {
     process.stderr.write(`${logs.join('\n')}\n`);
     if (application) {
@@ -337,21 +342,89 @@ async function exerciseElectronTasks(page, electronApplication) {
 }
 
 async function exerciseElectronOperations(page, electronApplication) {
-    const widget = page.locator('.kogg-operations-widget').last();
-    if (!await widget.count()) {
-        await openCommand(page, 'Kogg: Show Operations', electronApplication);
-        await widget.waitFor({ state: 'attached', timeout: 10_000 });
-    }
+    let widget = await ensureElectronOperationsWidget(page, electronApplication);
     await widget.getByRole('button', { name: 'Refresh' }).click();
     await widget.getByText('Admission: enabled').waitFor({ timeout: 10_000 });
-    await widget.getByText('ranex-bridge').first().waitFor({ timeout: 10_000 });
-    await widget.getByText('repository-probe').first().waitFor({ timeout: 10_000 });
-    await widget.locator('[data-operation-row]').filter({ hasText: 'provider-connection' }).filter({ hasText: 'OWNER_UNAVAILABLE' }).first().waitFor({ timeout: 10_000 });
     const visibleOperations = await widget.innerText();
-    for (const kind of ['marketplace', 'provider-connection', 'provider-session', 'project-mutation', 'project-switch']) {
-        assert.match(visibleOperations, new RegExp(kind, 'u'));
+    if (process.env.KOGG_E2E_OPERATIONS_ONLY !== '1') {
+        await widget.getByText('ranex-bridge').first().waitFor({ timeout: 10_000 });
+        await widget.getByText('repository-probe').first().waitFor({ timeout: 10_000 });
+        await widget.locator('[data-operation-row]').filter({ hasText: 'provider-connection' }).filter({ hasText: 'OWNER_UNAVAILABLE' }).first().waitFor({ timeout: 10_000 });
+        for (const kind of ['marketplace', 'provider-connection', 'provider-session', 'project-mutation', 'project-switch']) {
+            assert.match(visibleOperations, new RegExp(kind, 'u'));
+        }
     }
     assert.doesNotMatch(visibleOperations, /pid|argv|environment|prompt|source code/iu);
+
+    const secondWindow = electronApplication.waitForEvent('window');
+    await openCommand(page, 'New Window', electronApplication);
+    const secondPage = await secondWindow;
+    secondPage.on('console', entry => logs.push(`[frontend:second:${entry.type()}] ${entry.text()}`));
+    secondPage.on('pageerror', error => logs.push(`[frontend:second:error] ${error.stack ?? error.message}`));
+    await secondPage.locator('body.kogg-application').waitFor({ timeout: 20_000 });
+    let secondWidget = await ensureElectronOperationsWidget(secondPage, electronApplication);
+    const initialSequence = await synchronizeElectronStreamSequences(widget, secondWidget);
+    await openCommand(page, 'Kogg: Run Diagnostics', electronApplication);
+    const advancedFirst = await waitForElectronStreamAdvance(widget, initialSequence);
+    await waitForElectronStreamAdvance(secondWidget, initialSequence);
+    const diagnosticMessage = page.getByText(/Diagnostics: (?:FAIL|WARN|PASS)/u).filter({ visible: true }).first();
+    await diagnosticMessage.waitFor({ timeout: 15_000 });
+    assert.doesNotMatch(await diagnosticMessage.innerText(), /operations\.stream/u);
+    await clearNotifications(page);
+
+    await secondPage.close();
+    await openCommand(page, 'Kogg: Run Diagnostics', electronApplication);
+    const afterClose = await waitForElectronStreamAdvance(widget, advancedFirst);
+    await clearNotifications(page);
+
+    await page.reload({ waitUntil: 'domcontentloaded' });
+    await page.locator('body.kogg-application').waitFor({ timeout: 20_000 });
+    widget = await ensureElectronOperationsWidget(page, electronApplication);
+    assert(await electronStreamSequence(widget) >= afterClose);
+    await page.evaluate(() => sessionStorage.setItem('kogg.operations.stream.cursor.v1', 'corrupt-electron-e2e-cursor'));
+    await page.reload({ waitUntil: 'domcontentloaded' });
+    await page.locator('body.kogg-application').waitFor({ timeout: 20_000 });
+    widget = await ensureElectronOperationsWidget(page, electronApplication);
+    assert(await electronStreamSequence(widget) >= afterClose);
+    assert.match(logs.join('\n'), /\[kogg:operations:stream\] resync-required/u);
+}
+
+async function ensureElectronOperationsWidget(page, electronApplication) {
+    const widgets = page.locator('.kogg-operations-widget');
+    if (!await widgets.count()) {
+        await openCommand(page, 'Kogg: Show Operations', electronApplication);
+        await widgets.first().waitFor({ state: 'attached', timeout: 10_000 });
+    }
+    const widget = widgets.filter({ visible: true }).first();
+    await widget.getByRole('status').filter({ hasText: /Stream: current/u }).waitFor({ timeout: 10_000 });
+    return widget;
+}
+
+async function electronStreamSequence(widget) {
+    const status = await widget.getByRole('status').filter({ hasText: /Stream:/u }).innerText();
+    const match = /sequence (\d+)/u.exec(status);
+    assert(match, `Missing operations stream sequence in: ${status}`);
+    return BigInt(match[1]);
+}
+
+async function synchronizeElectronStreamSequences(first, second) {
+    const expected = [await electronStreamSequence(first), await electronStreamSequence(second)].reduce((maximum, current) => current > maximum ? current : maximum, 0n);
+    await Promise.all([waitForElectronStreamAtLeast(first, expected), waitForElectronStreamAtLeast(second, expected)]);
+    return expected;
+}
+
+async function waitForElectronStreamAdvance(widget, previous) {
+    return waitForElectronStreamAtLeast(widget, previous + 1n);
+}
+
+async function waitForElectronStreamAtLeast(widget, expected) {
+    const deadline = Date.now() + 15_000;
+    while (Date.now() < deadline) {
+        const current = await electronStreamSequence(widget);
+        if (current >= expected) return current;
+        await new Promise(resolve => setTimeout(resolve, 50));
+    }
+    throw new Error(`Timed out waiting for Electron operations stream sequence ${expected}`);
 }
 
 async function createElectronProject(page, projects, name, repository) {

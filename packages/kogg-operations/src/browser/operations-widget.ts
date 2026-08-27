@@ -5,7 +5,7 @@ import { KoggOperationsClientToken, KoggOperationsService, type OperationsSnapsh
 import { OperationsClient } from './operations-client';
 import { KoggOperationsReadModelService, type KoggOperationsReadModelService as OperationsReadModelService, type OperationsProjectionSnapshotV1, type OperationsTimelineEntryV1 } from '../common/operations-read-model-protocol';
 
-// diagnostic-coverage: operations.projection, operations.owners, operations.timeline, operations.processes, operations.cleanup, operations.admission, operations.support
+// diagnostic-coverage: operations.projection, operations.owners, operations.timeline, operations.processes, operations.cleanup, operations.admission, operations.stream, operations.support
 
 @injectable()
 export class OperationsWidget extends BaseWidget {
@@ -16,13 +16,16 @@ export class OperationsWidget extends BaseWidget {
   private timeline: readonly OperationsTimelineEntryV1[] = [];
   private selectedRunId: string | undefined;
   private cancellingOperation: string | undefined;
+  private streamCursor = restoreStreamCursor();
+  private streamState: 'connecting' | 'current' | 'resync-required' = 'connecting';
+  private streamSync: Promise<void> = Promise.resolve();
   constructor(
     @inject(KoggOperationsService) private readonly service: KoggOperationsService,
     @inject(KoggOperationsReadModelService) private readonly readModel: OperationsReadModelService,
     @inject(KoggOperationsClientToken) client: OperationsClient,
     @inject(MessageService) private readonly messages: MessageService,
     @inject(CommandService) private readonly commands: CommandService
-  ) { super(); client.listen(snapshot => this.applySnapshot(snapshot)); client.listenProjection(() => void this.refreshProjection()); }
+  ) { super(); client.listen(snapshot => this.applySnapshot(snapshot)); client.listenProjection(() => void this.scheduleProjectionSync()); }
   @postConstruct() protected init(): void {
     this.id = OperationsWidget.ID; this.title.label = OperationsWidget.LABEL;
     this.title.caption = 'Kogg operation lifecycle and process cleanup'; this.title.closable = true;
@@ -30,12 +33,25 @@ export class OperationsWidget extends BaseWidget {
   }
   applySnapshot(snapshot: OperationsSnapshot): void { this.snapshotValue = snapshot; this.render(); }
   private async refresh(): Promise<void> {
-    try { [this.snapshotValue, this.projection] = await Promise.all([this.service.snapshot(), this.readModel.projectionSnapshot()]); }
+    try { [this.snapshotValue] = await Promise.all([this.service.snapshot(), this.scheduleProjectionSync()]); }
     catch (error) { console.error('[kogg:operations:widget] snapshot.failed', { errorType: errorName(error) }); void this.messages.error('Kogg operations could not be loaded.'); }
     finally { this.render(); }
   }
-  private async refreshProjection(): Promise<void> {
-    try { this.projection = await this.readModel.projectionSnapshot(); if (this.selectedRunId) this.timeline = (await this.readModel.timelinePage(this.selectedRunId, undefined, 200)).items; }
+  private scheduleProjectionSync(): Promise<void> {
+    const scheduled = this.streamSync.then(() => this.synchronizeProjection());
+    this.streamSync = scheduled.catch(() => undefined);
+    return scheduled;
+  }
+  private async synchronizeProjection(): Promise<void> {
+    try {
+      const subscription = await this.readModel.subscribe(this.streamCursor);
+      this.streamState = subscription.state;
+      if (subscription.state === 'resync-required') console.warn('[kogg:operations:stream] resync-required', { safeCode: 'STREAM_CURSOR_REJECTED' });
+      this.projection = await this.readModel.projectionSnapshot();
+      if (this.selectedRunId) this.timeline = (await this.readModel.timelinePage(this.selectedRunId, undefined, 200)).items;
+      this.streamCursor = subscription.cursor; persistStreamCursor(subscription.cursor);
+      this.streamState = 'current';
+    }
     catch (error) { console.error('[kogg:operations:widget] projection.refresh.failed', { errorType: errorName(error) }); }
     finally { this.render(); }
   }
@@ -54,6 +70,7 @@ export class OperationsWidget extends BaseWidget {
     this.node.innerHTML = `<div class="kogg-panel"><header><h2>Kogg Operations</h2><p>Safe lifecycle, recovery, and cleanup status for Kogg-owned work.</p></header>
       <p role="status"><strong>Admission:</strong> ${escapeHtml(this.snapshotValue.admission)}</p>
       <p role="status"><strong>Projection:</strong> ${escapeHtml(this.projection?.lifecycle ?? 'loading')} · ${this.projection?.faultCount ?? 0} faults</p>
+      <p role="status"><strong>Stream:</strong> ${escapeHtml(this.streamState)} · sequence ${escapeHtml(this.projection?.changeSequence ?? 'loading')}</p>
       <button data-refresh ${this.cancellingOperation ? 'disabled' : ''}>Refresh</button><button data-support>Export safe support bundle</button>${needsDiagnostics ? '<button data-diagnostics>Run Diagnostics</button>' : ''}
       <section><h3>Governed runs</h3>${projectedRuns.length ? `<div tabindex="0" role="region" aria-label="Governed run projection"><table><thead><tr><th>Run</th><th>Lifecycle</th><th>Attempts</th><th>Retries</th><th>Live</th><th>Abnormal</th><th>Evidence / verdict / merge</th></tr></thead><tbody>${projectionRows}</tbody></table></div>` : `<p>${this.projection?.lifecycle === 'degraded' ? 'Run projection is degraded.' : 'No governed runs match the current projection.'}</p>`}</section>
       ${this.selectedRunId ? `<section><h3>Timeline for run ${escapeHtml(this.selectedRunId.slice(0, 8))}</h3><div tabindex="0" role="region" aria-label="Correlated run timeline"><table><thead><tr><th>Observed</th><th>Owner</th><th>Event</th><th>Safe code</th></tr></thead><tbody>${timelineRows || '<tr><td colspan="4">No timeline entries.</td></tr>'}</tbody></table></div></section>` : ''}
@@ -93,3 +110,12 @@ export class OperationsWidget extends BaseWidget {
 }
 function escapeHtml(value: string): string { return value.replace(/[&<>'"]/gu, character => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;' })[character]!); }
 function errorName(error: unknown): string { return error instanceof Error ? error.name : 'UnknownError'; }
+const STREAM_CURSOR_KEY = 'kogg.operations.stream.cursor.v1';
+function restoreStreamCursor(): string | undefined {
+  try { return sessionStorage.getItem(STREAM_CURSOR_KEY) ?? undefined; }
+  catch (error) { console.warn('[kogg:operations:stream] cursor.restore.failed', { safeCode: 'STREAM_CURSOR_STORAGE_UNAVAILABLE', errorType: errorName(error) }); return undefined; }
+}
+function persistStreamCursor(cursor: string): void {
+  try { sessionStorage.setItem(STREAM_CURSOR_KEY, cursor); }
+  catch (error) { console.warn('[kogg:operations:stream] cursor.persist.failed', { safeCode: 'STREAM_CURSOR_STORAGE_UNAVAILABLE', errorType: errorName(error) }); }
+}

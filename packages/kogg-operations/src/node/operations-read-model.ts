@@ -152,7 +152,7 @@ export class OperationsReadModel implements BackendApplicationContribution {
   addClient(client: KoggOperationsReadModelClient): () => void {
     this.clients.add(client); console.info('[kogg:operations:stream] client.opened', { clientCount: this.clients.size });
     let disposed = false;
-    return () => { if (disposed) return; disposed = true; this.clients.delete(client); console.info('[kogg:operations:stream] client.closed', { clientCount: this.clients.size }); };
+    return () => { if (disposed) return; disposed = true; if (this.clients.delete(client)) console.info('[kogg:operations:stream] client.closed', { clientCount: this.clients.size }); };
   }
 
   registerOwner(ownerKind: OwnerKind): void {
@@ -170,7 +170,7 @@ export class OperationsReadModel implements BackendApplicationContribution {
     if (resumeCursor) {
       try { after = this.decodeCursor(resumeCursor, 'stream', queryDigest).lastKey; }
       catch (error) {
-        if (error instanceof ProjectionFault && error.safeCode === 'PROJECTION_CURSOR_RESYNC_REQUIRED') {
+        if (error instanceof ProjectionFault && (error.safeCode === 'PROJECTION_CURSOR_RESYNC_REQUIRED' || error.safeCode === 'PROJECTION_CURSOR_INVALID')) {
           console.warn('[kogg:operations:stream] resync-required', { safeCode: error.safeCode });
           return { state: 'resync-required', cursor: this.encodeCursor('stream', queryDigest, String(this.meta().change_sequence), ''), changes: [] };
         }
@@ -271,6 +271,11 @@ export class OperationsReadModel implements BackendApplicationContribution {
       processAbnormalCount: this.count('SELECT count(*) AS count FROM process_projection WHERE abnormal=1'),
       metricViolationCount: 0
     };
+  }
+
+  streamDiagnostics(): { clientCount: number; cursorRoundTrip: boolean; resyncRecovery: boolean; bounded: boolean } {
+    const initial = this.subscribe(); const resumed = this.subscribe(initial.cursor); const recovered = this.subscribe('diagnostic-invalid-cursor');
+    return { clientCount: this.clients.size, cursorRoundTrip: initial.state === 'current' && resumed.state === 'current', resyncRecovery: recovered.state === 'resync-required', bounded: initial.changes.length <= 1_000 && resumed.changes.length <= 1_000 };
   }
 
   storagePermissionsValid(): boolean { return process.platform === 'win32' || (statSync(this.databasePath).mode & 0o077) === 0; }
@@ -466,7 +471,7 @@ export class OperationsReadModel implements BackendApplicationContribution {
       }
     }
   }
-  private dropClient(client: KoggOperationsReadModelClient, error: unknown): void { this.clients.delete(client); console.warn('[kogg:operations:stream] client.failed', { clientCount: this.clients.size, safeCode: 'STREAM_DELIVERY_FAILED', errorType: errorType(error) }); }
+  private dropClient(client: KoggOperationsReadModelClient, error: unknown): void { if (!this.clients.delete(client)) return; console.warn('[kogg:operations:stream] client.failed', { clientCount: this.clients.size, safeCode: 'STREAM_DELIVERY_FAILED', errorType: errorType(error) }); }
   private meta(): Row { return this.db().prepare('SELECT * FROM projection_meta WHERE singleton=1').get() as Row; }
   private ownerCount(): number { return this.count('SELECT count(DISTINCT owner_kind) AS count FROM owner_cursors'); }
   private faultCount(): number { return this.count('SELECT count(*) AS count FROM projection_faults'); }

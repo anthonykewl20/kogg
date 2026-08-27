@@ -14,15 +14,17 @@ export class OperationsReadModelDiagnosticContributor implements KoggDiagnosticC
   async diagnose(): Promise<readonly KoggDiagnosticCheck[]> {
     try {
       const result = this.projection.diagnostics();
+      const stream = this.projection.streamDiagnostics();
       const support = await this.support.diagnostics();
       const projectionReady = result.integrity && result.foreignKeys && this.projection.storagePermissionsValid() && result.lifecycle !== 'failed';
       const ownersReady = result.ownerCount === OWNER_KINDS.length && result.lifecycle === 'current';
+      const streamReady = stream.clientCount > 0 && stream.cursorRoundTrip && stream.resyncRecovery && stream.bounded;
       return [
         { id: 'operations.projection', status: projectionReady ? 'pass' : 'fail', summary: projectionReady ? 'The disposable operations projection is structurally valid.' : 'The operations projection store or lifecycle failed verification.' },
         { id: 'operations.owners', status: ownersReady ? 'pass' : 'fail', summary: ownersReady ? 'Owner cursors are verified and current.' : 'No current verified owner projection is available.', details: { ownerCount: result.ownerCount, faultCount: result.faultCount } },
         { id: 'operations.correlations', status: result.causalGapCount ? 'fail' : 'pass', summary: result.causalGapCount ? 'A causal owner-event gap requires resynchronization.' : 'Accepted causal references are complete.', details: { causalGapCount: result.causalGapCount } },
         { id: 'operations.timeline', status: result.causalGapCount ? 'fail' : 'pass', summary: result.causalGapCount ? 'Timeline ordering is degraded by a causal gap.' : 'Timeline entries retain verified owner order.' },
-        { id: 'operations.stream', status: 'fail', summary: 'Authenticated operations streaming is not active.' },
+        { id: 'operations.stream', status: streamReady ? 'pass' : 'fail', summary: streamReady ? 'Authenticated bounded streaming, cursor resume, and safe resync are active.' : 'Authenticated operations streaming is not active.', details: { clientCount: stream.clientCount } },
         { id: 'operations.metrics', status: result.metricViolationCount ? 'fail' : 'pass', summary: result.metricViolationCount ? 'A closed metric contract failed validation.' : 'Closed local metric cardinality is valid.' },
         { id: 'operations.support', status: support.permissions && support.expired ? 'pass' : 'fail', summary: support.permissions && support.expired ? 'Private bounded operations support export storage is valid.' : 'Private operations support export storage failed its safety checks.' },
         { id: 'operations.actions', status: 'fail', summary: 'No authoritative owner action routes are active.' },

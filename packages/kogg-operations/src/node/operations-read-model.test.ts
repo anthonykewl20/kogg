@@ -81,6 +81,8 @@ test('resumes bounded projection changes and requires resync after rebuild', asy
     const owner = fixture.owner('workflow'); fixture.model.ingest(owner.event('run.queued', { runId: randomUUID() }, { lifecycle: 'queued' }));
     assert.deepEqual(delivered, ['1']);
     const resumed = fixture.model.subscribe(initial.cursor); assert.equal(resumed.state, 'current'); assert.equal(resumed.changes.length, 1); assert.equal(resumed.changes[0]?.protected, true);
+    const corrupt = fixture.model.subscribe('corrupt-cursor'); assert.equal(corrupt.state, 'resync-required'); assert.deepEqual(corrupt.changes, []);
+    assert.deepEqual(fixture.model.streamDiagnostics(), { clientCount: 1, cursorRoundTrip: true, resyncRecovery: true, bounded: true });
     fixture.model.rebuild();
     const stale = fixture.model.subscribe(resumed.cursor); assert.equal(stale.state, 'resync-required'); assert.deepEqual(stale.changes, []);
   } finally { fixture.model.setClient(undefined); await fixture.close(); }
