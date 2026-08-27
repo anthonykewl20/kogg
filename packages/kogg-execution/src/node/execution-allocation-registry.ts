@@ -158,7 +158,7 @@ export class ExecutionAllocationRegistry implements BackendApplicationContributi
     const replay = this.databaseOrThrow().prepare(`SELECT request_digest,resource_id FROM lifecycle_request_results WHERE request_id=? AND response_kind='import-intent'`).get(request.requestId) as SqlRow | undefined;
     if (replay) {
       if (String(replay.request_digest) !== requestDigest) throw new AllocationRegistryError('ALLOCATION_REQUEST_REPLAY_MISMATCH');
-      return this.importIntent(String(replay.resource_id));
+      return { ...this.importIntent(String(replay.resource_id)), replay: true };
     }
     if (this.admission() !== 'enabled') throw new AllocationRegistryError('ALLOCATION_ADMISSION_BLOCKED');
     const row = this.databaseOrThrow().prepare('SELECT state,revision,binding_digest FROM allocations WHERE worktree_id=?').get(request.worktreeId) as SqlRow | undefined;
@@ -176,7 +176,7 @@ export class ExecutionAllocationRegistry implements BackendApplicationContributi
       this.event(database, request.worktreeId, 'import.requested', 'IMPORT_OK'); this.bump(database);
     });
     log('import.intent.recorded', { requestId: request.requestId, worktreeId: request.worktreeId, candidateId: request.candidateId, intentId });
-    return { schemaVersion: 1, intentId, worktreeId: request.worktreeId, candidateId: request.candidateId, fencingToken, phase: 'requested', safeCode: 'IMPORT_OK' };
+    return { schemaVersion: 1, intentId, worktreeId: request.worktreeId, candidateId: request.candidateId, fencingToken, phase: 'requested', replay: false, safeCode: 'IMPORT_OK' };
   }
 
   async completeCandidateImport(request: CompleteCandidateImportV1): Promise<ImportedCandidateV1> {
@@ -302,7 +302,7 @@ export class ExecutionAllocationRegistry implements BackendApplicationContributi
     };
   }
   private candidate(candidateId: string): CandidateBindingV1 { const row = this.databaseOrThrow().prepare('SELECT candidate_json FROM candidates WHERE candidate_id=?').get(candidateId) as SqlRow | undefined; if (!row) throw new AllocationRegistryError('ALLOCATION_INTEGRITY_FAILED'); return JSON.parse(String(row.candidate_json)) as CandidateBindingV1; }
-  private importIntent(intentId: string): CandidateImportIntentV1 { const row = this.databaseOrThrow().prepare('SELECT * FROM candidate_import_intents WHERE intent_id=?').get(intentId) as SqlRow | undefined; if (!row || String(row.phase) !== 'requested') throw new AllocationRegistryError('ALLOCATION_INTEGRITY_FAILED'); return { schemaVersion: 1, intentId, worktreeId: String(row.worktree_id), candidateId: String(row.candidate_id), fencingToken: String(row.fencing_token), phase: 'requested', safeCode: 'IMPORT_OK' }; }
+  private importIntent(intentId: string): CandidateImportIntentV1 { const row = this.databaseOrThrow().prepare('SELECT * FROM candidate_import_intents WHERE intent_id=?').get(intentId) as SqlRow | undefined; if (!row || String(row.phase) !== 'requested') throw new AllocationRegistryError('ALLOCATION_INTEGRITY_FAILED'); return { schemaVersion: 1, intentId, worktreeId: String(row.worktree_id), candidateId: String(row.candidate_id), fencingToken: String(row.fencing_token), phase: 'requested', replay: false, safeCode: 'IMPORT_OK' }; }
   private importedCandidate(candidateId: string): ImportedCandidateV1 { const candidate = this.candidate(candidateId); const row = this.databaseOrThrow().prepare('SELECT quarantine_ref_digest FROM candidates WHERE candidate_id=?').get(candidateId) as SqlRow | undefined; if (!row || !DIGEST.test(String(row.quarantine_ref_digest))) throw new AllocationRegistryError('ALLOCATION_INTEGRITY_FAILED'); const { safeCode: _sealCode, ...binding } = candidate; return { ...binding, quarantineRefDigest: String(row.quarantine_ref_digest), safeCode: 'IMPORT_OK' }; }
   private admission(): ExecutionAllocationDiagnostics['admission'] { return String((this.databaseOrThrow().prepare('SELECT admission FROM execution_meta WHERE singleton=1').get() as SqlRow).admission) as ExecutionAllocationDiagnostics['admission']; }
   private event(database: DatabaseSync, worktreeId: string, eventName: string, safeCode: string): void { database.prepare('INSERT INTO allocation_events(worktree_id,event_name,safe_code,created_at) VALUES(?,?,?,?)').run(worktreeId, eventName, safeCode, new Date().toISOString()); }

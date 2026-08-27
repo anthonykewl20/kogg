@@ -14,6 +14,12 @@ type Fields = {
   'import.started': { eventVersion: 1; operationId: string; runId: string; attemptId: string; worktreeId: string };
   'import.completed': { eventVersion: 1; operationId: string; runId: string; attemptId: string; worktreeId: string; candidateCommit: string; candidateTree: string };
   'import.refused': { eventVersion: 1; operationId: string; runId: string; attemptId: string; worktreeId: string; safeCode: ExecutionImportCode; errorType: string };
+  'service.seal.requested': { eventVersion: 1; requestId: string; worktreeId: string };
+  'service.seal.completed': { eventVersion: 1; requestId: string; worktreeId: string };
+  'service.seal.failed': { eventVersion: 1; requestId: string; worktreeId: string; safeCode: string; errorType: string };
+  'service.import.requested': { eventVersion: 1; requestId: string; worktreeId: string };
+  'service.import.completed': { eventVersion: 1; requestId: string; worktreeId: string };
+  'service.import.failed': { eventVersion: 1; requestId: string; worktreeId: string; safeCode: string; errorType: string };
 };
 const ALLOWED: { [K in keyof Fields]: readonly (keyof Fields[K])[] } = {
   'qualification.started': ['targetId'],
@@ -26,7 +32,13 @@ const ALLOWED: { [K in keyof Fields]: readonly (keyof Fields[K])[] } = {
   'seal.refused': ['eventVersion', 'operationId', 'runId', 'attemptId', 'worktreeId', 'safeCode', 'errorType'],
   'import.started': ['eventVersion', 'operationId', 'runId', 'attemptId', 'worktreeId'],
   'import.completed': ['eventVersion', 'operationId', 'runId', 'attemptId', 'worktreeId', 'candidateCommit', 'candidateTree'],
-  'import.refused': ['eventVersion', 'operationId', 'runId', 'attemptId', 'worktreeId', 'safeCode', 'errorType']
+  'import.refused': ['eventVersion', 'operationId', 'runId', 'attemptId', 'worktreeId', 'safeCode', 'errorType'],
+  'service.seal.requested': ['eventVersion', 'requestId', 'worktreeId'],
+  'service.seal.completed': ['eventVersion', 'requestId', 'worktreeId'],
+  'service.seal.failed': ['eventVersion', 'requestId', 'worktreeId', 'safeCode', 'errorType'],
+  'service.import.requested': ['eventVersion', 'requestId', 'worktreeId'],
+  'service.import.completed': ['eventVersion', 'requestId', 'worktreeId'],
+  'service.import.failed': ['eventVersion', 'requestId', 'worktreeId', 'safeCode', 'errorType']
 };
 let violations = 0;
 export function executionLog<K extends keyof Fields>(event: K, fields: Fields[K]): void {
@@ -34,7 +46,9 @@ export function executionLog<K extends keyof Fields>(event: K, fields: Fields[K]
   if (Object.keys(values).sort().join(',') !== [...allowed].sort().join(',') || Object.entries(values).some(([key, value]) => !validLogValue(key, value))) {
     violations++; console.error('[kogg:execution:target] logging.schema.violation', { event }); return;
   }
-  if (event === 'import.started') console.info('[kogg:execution:candidate] import.started', fields);
+  if (event === 'service.seal.requested' || event === 'service.seal.completed' || event === 'service.import.requested' || event === 'service.import.completed') console.info('[kogg:execution:service]', event, fields);
+  else if (event === 'service.seal.failed' || event === 'service.import.failed') console.error('[kogg:execution:service]', event, fields);
+  else if (event === 'import.started') console.info('[kogg:execution:candidate] import.started', fields);
   else if (event === 'import.completed') console.info('[kogg:execution:candidate] import.completed', fields);
   else if (event === 'import.refused') console.error('[kogg:execution:candidate] import.refused', fields);
   else if (event === 'seal.started') console.info('[kogg:execution:candidate] seal.started', fields);
@@ -51,7 +65,7 @@ export function executionLoggingDiagnostics(): { readonly schemaCount: number; r
 function validLogValue(key: string, value: unknown): boolean {
   if (key === 'eventVersion') return value === 1;
   if (typeof value !== 'string' || Buffer.byteLength(value) > 128) return false;
-  if (['operationId', 'runId', 'attemptId', 'worktreeId', 'qualificationId'].includes(key)) return /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u.test(value);
+  if (['operationId', 'requestId', 'runId', 'attemptId', 'worktreeId', 'qualificationId'].includes(key)) return /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u.test(value);
   if (key === 'candidateCommit' || key === 'candidateTree') return /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/u.test(value);
   if (key === 'safeCode') return /^[A-Z][A-Z0-9_]{1,63}$/u.test(value);
   if (key === 'errorType') return /^[A-Za-z][A-Za-z0-9]{0,63}$/u.test(value);

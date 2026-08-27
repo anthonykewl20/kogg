@@ -63,7 +63,7 @@ export interface PrepareCandidateImportV1 {
 }
 export interface CandidateImportIntentV1 {
   readonly schemaVersion: 1; readonly intentId: string; readonly worktreeId: string; readonly candidateId: string;
-  readonly fencingToken: string; readonly phase: 'requested'; readonly safeCode: 'IMPORT_OK';
+  readonly fencingToken: string; readonly phase: 'requested'; readonly replay: boolean; readonly safeCode: 'IMPORT_OK';
 }
 export interface CompleteCandidateImportV1 {
   readonly requestId: string; readonly intentId: string; readonly worktreeId: string; readonly expectedRevision: string;
