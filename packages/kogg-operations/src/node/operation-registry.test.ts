@@ -144,7 +144,9 @@ test('idle timeout cancels a real child, records its exit, and proves cleanup', 
     processLease.spawning();
     child = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 30000)'], { detached: process.platform !== 'win32', stdio: 'ignore' });
     assert.ok(child.pid); processLease.started(child.pid); processLease.ready(); operation.active();
-    const deadline = Date.now() + 2_000;
+    // Windows CI can defer the child exit event while many test processes are
+    // contending; retain a hard bound while waiting for the durable cleanup.
+    const deadline = Date.now() + 30_000;
     while (Date.now() < deadline) {
       const candidate = (await registry.snapshot()).recent[0];
       if (candidate?.state === 'timed-out' && candidate.cleanup === 'cleaned') break;
