@@ -6,7 +6,7 @@ import { OperationsClient } from './operations-client';
 import { KoggOperationsReadModelService, type KoggOperationsReadModelService as OperationsReadModelService, type OperationsProjectionSnapshotV1, type OperationsTimelineEntryV1 } from '../common/operations-read-model-protocol';
 import { entriesForRunDetail, RUN_DETAIL_TABS, runOutcomeSummary, type RunDetailTab } from '../common/operations-presentation';
 
-// diagnostic-coverage: operations.projection, operations.owners, operations.timeline, operations.processes, operations.cleanup, operations.admission, operations.stream, operations.support
+// diagnostic-coverage: operations.projection, operations.owners, operations.timeline, operations.processes, operations.cleanup, operations.admission, operations.stream, operations.support, operations.actions
 
 @injectable()
 export class OperationsWidget extends BaseWidget {
@@ -18,6 +18,7 @@ export class OperationsWidget extends BaseWidget {
   private selectedRunId: string | undefined;
   private selectedDetail: RunDetailTab = 'timeline';
   private cancellingOperation: string | undefined;
+  private diagnosingRun = false;
   private streamCursor = restoreStreamCursor();
   private streamState: 'connecting' | 'current' | 'resync-required' = 'connecting';
   private streamSync: Promise<void> = Promise.resolve();
@@ -77,13 +78,14 @@ export class OperationsWidget extends BaseWidget {
       <p role="status"><strong>Stream:</strong> ${escapeHtml(this.streamState)} · sequence ${escapeHtml(this.projection?.changeSequence ?? 'loading')}</p>
       <button data-refresh ${this.cancellingOperation ? 'disabled' : ''}>Refresh</button><button data-support>Export safe support bundle</button>${needsDiagnostics ? '<button data-diagnostics>Run Diagnostics</button>' : ''}
       <section><h3>Governed runs</h3>${projectedRuns.length ? `<div tabindex="0" role="region" aria-label="Governed run projection"><table><thead><tr><th>Run</th><th>Lifecycle</th><th>Attempts</th><th>Retries</th><th>Live</th><th>Abnormal</th><th>Checks / evidence / verdict / merge</th></tr></thead><tbody>${projectionRows}</tbody></table></div>` : `<p>${this.projection?.lifecycle === 'degraded' ? 'Run projection is degraded.' : 'No governed runs match the current projection.'}</p>`}</section>
-      ${this.selectedRunId ? `<section><h3>Details for run ${escapeHtml(this.selectedRunId.slice(0, 8))}</h3><div role="tablist" aria-label="Governed run details">${detailTabs}</div><div tabindex="0" role="tabpanel" aria-label="${escapeHtml(detailLabel(this.selectedDetail))} details"><table><thead><tr><th>Observed</th><th>Owner</th><th>Event</th><th>Safe code</th></tr></thead><tbody>${timelineRows || '<tr><td colspan="4">No matching safe timeline entries.</td></tr>'}</tbody></table></div></section>` : ''}
+      ${this.selectedRunId ? `<section><h3>Details for run ${escapeHtml(this.selectedRunId.slice(0, 8))}</h3><button data-diagnose-run ${this.diagnosingRun || this.projection?.lifecycle !== 'current' ? 'disabled' : ''}>${this.diagnosingRun ? 'Diagnosing…' : 'Diagnose selected run'}</button><div role="tablist" aria-label="Governed run details">${detailTabs}</div><div tabindex="0" role="tabpanel" aria-label="${escapeHtml(detailLabel(this.selectedDetail))} details"><table><thead><tr><th>Observed</th><th>Owner</th><th>Event</th><th>Safe code</th></tr></thead><tbody>${timelineRows || '<tr><td colspan="4">No matching safe timeline entries.</td></tr>'}</tbody></table></div></section>` : ''}
       <section><h3>Active</h3><div class="kogg-package-list">${this.snapshotValue.active.length ? this.snapshotValue.active.map(operation => item(operation, true)).join('') : '<p>No active operations.</p>'}</div></section>
       <section><h3>Recent</h3><div class="kogg-package-list">${this.snapshotValue.recent.length ? this.snapshotValue.recent.map(operation => item(operation, false)).join('') : '<p>No recent operations.</p>'}</div></section></div>`;
     this.node.querySelector<HTMLElement>('[data-refresh]')?.addEventListener('click', () => void this.refresh());
     this.node.querySelector<HTMLElement>('[data-diagnostics]')?.addEventListener('click', () => void this.commands.executeCommand('kogg.diagnostics.run'));
     this.node.querySelector<HTMLElement>('[data-support]')?.addEventListener('click', () => void this.exportSupport());
     this.node.querySelectorAll<HTMLElement>('[data-select-run]').forEach(button => button.addEventListener('click', () => void this.selectRun(button.dataset.selectRun!)));
+    this.node.querySelector<HTMLElement>('[data-diagnose-run]')?.addEventListener('click', () => void this.diagnoseSelectedRun());
     this.node.querySelectorAll<HTMLElement>('[data-detail-tab]').forEach(button => button.addEventListener('click', () => { this.selectedDetail = button.dataset.detailTab as RunDetailTab; this.render(); }));
     this.node.querySelectorAll<HTMLElement>('[data-cancel]').forEach(button => button.addEventListener('click', () => void this.cancel(button.dataset.cancel!)));
   }
@@ -92,6 +94,17 @@ export class OperationsWidget extends BaseWidget {
     try { this.timeline = (await this.readModel.timelinePage(runId, undefined, 200)).items; }
     catch (error) { console.error('[kogg:operations:widget] timeline.failed', { runId, errorType: errorName(error) }); void this.messages.error('The safe operations timeline could not be loaded.'); }
     finally { this.render(); }
+  }
+  private async diagnoseSelectedRun(): Promise<void> {
+    const runId = this.selectedRunId; const expectedProjectionSequence = this.projection?.changeSequence;
+    if (!runId || !expectedProjectionSequence || this.projection?.lifecycle !== 'current') return;
+    this.diagnosingRun = true; this.render();
+    try {
+      const receipt = await this.readModel.requestAction({ requestId: crypto.randomUUID(), action: 'diagnose', runId, expectedProjectionSequence });
+      if (receipt.status === 'forwarded') void this.messages.info('Diagnostics completed for the selected run.');
+      else void this.messages.warn(`Diagnostics were not started (${receipt.safeCode}).`);
+    } catch (error) { console.error('[kogg:operations:widget] run.diagnose.failed', { runId, errorType: errorName(error) }); void this.messages.error('Diagnostics could not be completed for the selected run.'); }
+    finally { this.diagnosingRun = false; await this.scheduleProjectionSync(); this.render(); }
   }
   private async exportSupport(): Promise<void> {
     const choice = await this.messages.warn(`Export a private, redacted support bundle${this.selectedRunId ? ' for the selected run' : ''}? It expires after 24 hours.`, 'Export bundle', 'Cancel');

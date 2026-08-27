@@ -5,6 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 import { DatabaseSync } from 'node:sqlite';
+import type { KoggDiagnosticsService } from '@kogg/contracts';
 import { OWNER_KINDS, type OwnerEventV1, type OwnerKind, type SafeCorrelationsV1, type SafeOwnerPayloadV1 } from '../common/operations-read-model-protocol';
 import { OperationsReadModel, ProjectionFault } from './operations-read-model';
 import { OperationsSupportExporter } from './operations-support-export';
@@ -297,9 +298,9 @@ test('routes exact cancel authority once without optimistic lifecycle mutation',
     fixture.model.ingest(fixture.owner('workflow').event('run.started', { runId }, { lifecycle: 'active' }));
     fixture.model.ingest(fixture.owner('operation').event('process.reserved', { runId, operationId, processId }, { processKind: 'governed-command', cleanupState: 'required' }));
     const operations = { async cancel(request: { requestId: string; operationId: string }) { calls++; assert.equal(request.operationId, operationId); return { schemaVersion: 1, revision: 1, admission: 'enabled', active: [], recent: [] }; } } as unknown as OperationRegistryApi;
-    const router = new OperationsActionRouter(fixture.model, operations); const request = { requestId: randomUUID(), action: 'cancel' as const, runId, operationId, expectedProjectionSequence: fixture.model.snapshot().changeSequence };
+    const router = new OperationsActionRouter(fixture.model, operations, diagnostics()); const request = { requestId: randomUUID(), action: 'cancel' as const, runId, operationId, expectedProjectionSequence: fixture.model.snapshot().changeSequence };
     const first = await router.request(request); assert.equal(first.status, 'forwarded'); assert.equal(first.safeCode, 'ACTION_OWNER_ACCEPTED');
-    assert.deepEqual(router.diagnostics(), { cancelRouteAvailable: true, unsynchronizedOutcomeCount: 0 });
+    assert.deepEqual(router.diagnostics(), { cancelRouteAvailable: true, diagnoseRouteAvailable: true, unsynchronizedOutcomeCount: 0 });
     assert.equal(fixture.model.snapshot().runs[0]?.lifecycle, 'active');
     assert.deepEqual(await router.request(request), first); assert.equal(calls, 1);
     await assert.rejects(router.request({ ...request, action: 'retry' }), /ACTION_REQUEST_REPLAY_MISMATCH/u);
@@ -313,11 +314,38 @@ test('keeps failed owner action outcome unknown and never retries it automatical
     fixture.model.ingest(fixture.owner('workflow').event('run.started', { runId }, { lifecycle: 'active' }));
     fixture.model.ingest(fixture.owner('operation').event('process.reserved', { runId, operationId, processId }, { processKind: 'governed-command', cleanupState: 'required' }));
     const operations = { async cancel(): Promise<never> { calls++; throw new Error('transport lost after send'); } } as unknown as OperationRegistryApi;
-    const router = new OperationsActionRouter(fixture.model, operations); const request = { requestId: randomUUID(), action: 'cancel' as const, runId, operationId, expectedProjectionSequence: fixture.model.snapshot().changeSequence };
+    const router = new OperationsActionRouter(fixture.model, operations, diagnostics()); const request = { requestId: randomUUID(), action: 'cancel' as const, runId, operationId, expectedProjectionSequence: fixture.model.snapshot().changeSequence };
     await assert.rejects(router.request(request), /transport lost/u); const replay = await router.request(request);
     assert.equal(replay.status, 'unknown'); assert.equal(replay.safeCode, 'ACTION_OUTCOME_UNKNOWN'); assert.equal(calls, 1);
-    assert.deepEqual(router.diagnostics(), { cancelRouteAvailable: true, unsynchronizedOutcomeCount: 1 });
+    assert.deepEqual(router.diagnostics(), { cancelRouteAvailable: true, diagnoseRouteAvailable: true, unsynchronizedOutcomeCount: 1 });
   } finally { await fixture.close(); }
+});
+
+test('routes selected-run diagnostics once and keeps the projection unchanged until owner facts arrive', async () => {
+  const fixture = await createFixture(); let calls = 0; let router!: OperationsActionRouter;
+  try {
+    const runId = randomUUID(); fixture.model.ingest(fixture.owner('workflow').event('run.started', { runId }, { lifecycle: 'active' }));
+    const owner = diagnostics(async () => { calls++; assert.equal(router.diagnostics().unsynchronizedOutcomeCount, 0); });
+    router = new OperationsActionRouter(fixture.model, { cancel: async () => { throw new Error('unused'); } } as unknown as OperationRegistryApi, owner);
+    const request = { requestId: randomUUID(), action: 'diagnose' as const, runId, expectedProjectionSequence: fixture.model.snapshot().changeSequence };
+    const first = await router.request(request); assert.equal(first.status, 'forwarded'); assert.equal(first.safeCode, 'ACTION_OWNER_ACCEPTED');
+    assert.equal(fixture.model.snapshot().runs[0]?.lifecycle, 'active'); assert.deepEqual(await router.request(request), first); assert.equal(calls, 1);
+    const unsupported = await router.request({ ...request, requestId: randomUUID(), action: 'pause', expectedProjectionSequence: fixture.model.snapshot().changeSequence });
+    assert.equal(unsupported.status, 'refused'); assert.equal(unsupported.safeCode, 'ACTION_OWNER_UNAVAILABLE');
+  } finally { await fixture.close(); }
+});
+
+test('keeps a failed diagnose outcome unknown and recovers interrupted forwarding as unsynchronized', async () => {
+  const temporary = await mkdtemp(path.join(os.tmpdir(), 'kogg-operations-diagnose-recovery-test-')); const databasePath = path.join(temporary, 'projection.sqlite3');
+  const first = new OperationsReadModel(databasePath); let calls = 0;
+  try {
+    first.start(); const runId = randomUUID(); first.ingest(new OwnerBuilder('workflow').event('run.started', { runId }, { lifecycle: 'active' }));
+    const router = new OperationsActionRouter(first, { cancel: async () => { throw new Error('unused'); } } as unknown as OperationRegistryApi, diagnostics(async () => { calls++; throw new Error('diagnostic owner disconnected'); }));
+    const request = { requestId: randomUUID(), action: 'diagnose' as const, runId, expectedProjectionSequence: first.snapshot().changeSequence };
+    await assert.rejects(router.request(request), /disconnected/u); assert.equal((await router.request(request)).safeCode, 'ACTION_OUTCOME_UNKNOWN'); assert.equal(calls, 1);
+    const interrupted = { ...request, requestId: randomUUID() }; first.recordAction(interrupted, 'a'.repeat(64), 'unknown', 'ACTION_FORWARDING'); assert.equal(first.actionDiagnostics().unsynchronizedOutcomeCount, 1); first.stop();
+    const second = new OperationsReadModel(databasePath); second.start(); assert.equal(second.actionDiagnostics().unsynchronizedOutcomeCount, 2); assert.equal(second.actionReceipt(interrupted.requestId)?.safeCode, 'ACTION_OUTCOME_UNKNOWN'); second.stop();
+  } finally { first.stop(); await rm(temporary, { recursive: true, force: true }); }
 });
 
 test('projects the real durable operation owner lifecycle without copying process details', async () => {
@@ -354,4 +382,8 @@ class OwnerBuilder {
     const unsigned: Omit<OwnerEventV1, 'eventDigest'> = { ownerKind: this.kind, ownerInstanceId: this.instanceId, ownerSchemaVersion: 1, epochId: this.epochId, sequence: String(++this.sequence), eventId: randomUUID(), eventKind, factId: randomUUID(), factDigest: 'a'.repeat(64), previousEventDigest: this.previous, causalParents: causalParent ? [{ ownerInstanceId: causalParent.ownerInstanceId, epochId: causalParent.epochId, sequence: causalParent.sequence, eventDigest: causalParent.eventDigest }] : [], correlations, observedAt, safePayload };
     const event = { ...unsigned, eventDigest: OperationsReadModel.digest(unsigned) }; this.previous = event.eventDigest; return event;
   }
+}
+
+function diagnostics(run?: () => Promise<void>): KoggDiagnosticsService {
+  return { async run() { await run?.(); return { schemaVersion: 1, generatedAt: new Date().toISOString(), overall: 'pass', checks: [] }; }, async createSupportBundle() { throw new Error('unused'); } };
 }
