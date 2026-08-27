@@ -86,6 +86,19 @@ test('resumes bounded projection changes and requires resync after rebuild', asy
   } finally { fixture.model.setClient(undefined); await fixture.close(); }
 });
 
+test('broadcasts to independent windows and removes closed or failed clients', async () => {
+  const fixture = await createFixture(); const first: string[] = []; const second: string[] = []; let failedCalls = 0;
+  const closeFirst = fixture.model.addClient({ projectionChanged(change) { first.push(change.sequence); } });
+  fixture.model.addClient({ projectionChanged(change) { second.push(change.sequence); } });
+  fixture.model.addClient({ projectionChanged() { failedCalls++; throw new Error('window closed'); } });
+  try {
+    const owner = fixture.owner('workflow'); fixture.model.ingest(owner.event('run.queued', { runId: randomUUID() }, { lifecycle: 'queued' }));
+    assert.deepEqual(first, ['1']); assert.deepEqual(second, ['1']); assert.equal(failedCalls, 1);
+    closeFirst(); fixture.model.ingest(owner.event('run.started', { runId: randomUUID() }, { lifecycle: 'active' }));
+    assert.deepEqual(first, ['1']); assert.deepEqual(second, ['1', '2']); assert.equal(failedCalls, 1);
+  } finally { closeFirst(); await fixture.close(); }
+});
+
 test('refuses missing causal parents and content-shaped payload fields', async () => {
   const fixture = await createFixture();
   try {

@@ -12,7 +12,12 @@ export class OperationsReadModelService implements KoggOperationsReadModelServic
   constructor(@inject(OperationsReadModel) private readonly projection: OperationsReadModel,
     @inject(OperationsSupportExporter) private readonly support: OperationsSupportExporter,
     @inject(OperationsActionRouter) private readonly actions: OperationsActionRouter) {}
-  setClient(client?: KoggOperationsReadModelClient): void { this.projection.setClient(client); }
+  connect(client: KoggOperationsReadModelClient): KoggOperationsReadModelService {
+    const dispose = this.projection.addClient(client);
+    const connected = client as KoggOperationsReadModelClient & { onDidCloseConnection?: (listener: () => void) => { dispose(): void } };
+    connected.onDidCloseConnection?.(dispose);
+    return this;
+  }
   projectionSnapshot() { return this.projection.snapshot(); }
   listRuns(query: OperationsRunQueryV1) { return this.projection.listRuns(query); }
   timelinePage(runId: string, cursor?: string, limit?: number) { return this.projection.timelinePage(runId, cursor, limit); }

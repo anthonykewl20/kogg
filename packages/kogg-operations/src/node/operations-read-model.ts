@@ -49,7 +49,7 @@ export class ProjectionFault extends Error {
 export class OperationsReadModel implements BackendApplicationContribution {
   private database: DatabaseSync | undefined;
   private readonly databasePath: string;
-  private client: KoggOperationsReadModelClient | undefined;
+  private readonly clients = new Set<KoggOperationsReadModelClient>();
 
   constructor(@unmanaged() databasePath = path.join(process.env.KOGG_STATE_DIR ?? path.join(process.cwd(), '.kogg-state'), 'operations', 'projection.sqlite3')) {
     this.databasePath = databasePath;
@@ -86,6 +86,8 @@ export class OperationsReadModel implements BackendApplicationContribution {
 
   stop(): void {
     if (!this.database) return;
+    if (this.clients.size) console.info('[kogg:operations:stream] clients.closed', { clientCount: this.clients.size });
+    this.clients.clear();
     this.setLifecycle('stopped');
     this.database.close(); this.database = undefined;
   }
@@ -145,7 +147,13 @@ export class OperationsReadModel implements BackendApplicationContribution {
     return 'accepted';
   }
 
-  setClient(client?: KoggOperationsReadModelClient): void { this.client = client; }
+  setClient(client?: KoggOperationsReadModelClient): void { this.clients.clear(); if (client) this.addClient(client); }
+
+  addClient(client: KoggOperationsReadModelClient): () => void {
+    this.clients.add(client); console.info('[kogg:operations:stream] client.opened', { clientCount: this.clients.size });
+    let disposed = false;
+    return () => { if (disposed) return; disposed = true; this.clients.delete(client); console.info('[kogg:operations:stream] client.closed', { clientCount: this.clients.size }); };
+  }
 
   registerOwner(ownerKind: OwnerKind): void {
     this.start(); console.info('[kogg:operations:owners] owner.verify.started', { ownerKind, ownerSchemaVersion: 1 });
@@ -446,10 +454,19 @@ export class OperationsReadModel implements BackendApplicationContribution {
   private appendChange(db: DatabaseSync, kind: 'owner-event' | 'rebuild', runId: string | undefined, isProtected: boolean): void { const next = String(BigInt(String((db.prepare('SELECT change_sequence FROM projection_meta WHERE singleton=1').get() as Row).change_sequence)) + 1n); const size = 96 + (runId?.length ?? 0); db.prepare('INSERT INTO projection_changes(sequence,change_kind,run_id,protected,approximate_bytes) VALUES(?,?,?,?,?)').run(next, kind, runId ?? null, isProtected ? 1 : 0, size); db.prepare('UPDATE projection_meta SET change_sequence=? WHERE singleton=1').run(next); }
   private changeFromRow(row: Row): OperationsProjectionChangeV1 { return { projectionEpoch: String(this.meta().projection_epoch), sequence: String(row.sequence), kind: String(row.change_kind) as 'owner-event' | 'rebuild', ...(row.run_id ? { runId: String(row.run_id) } : {}), protected: Number(row.protected) === 1 }; }
   private notifyLatestChange(): void {
-    if (!this.client) return; const row = this.db().prepare('SELECT * FROM projection_changes ORDER BY CAST(sequence AS INTEGER) DESC LIMIT 1').get() as Row | undefined; if (!row) return;
-    try { const result = this.client.projectionChanged(this.changeFromRow(row)); if (result && typeof result.then === 'function') void result.catch(error => console.warn('[kogg:operations:stream] closed', { safeCode: 'STREAM_DELIVERY_FAILED', errorType: errorType(error) })); }
-    catch (error) { console.warn('[kogg:operations:stream] closed', { safeCode: 'STREAM_DELIVERY_FAILED', errorType: errorType(error) }); }
+    if (!this.clients.size) return; const row = this.db().prepare('SELECT * FROM projection_changes ORDER BY CAST(sequence AS INTEGER) DESC LIMIT 1').get() as Row | undefined; if (!row) return;
+    const change = this.changeFromRow(row);
+    for (const client of [...this.clients]) {
+      try {
+        const result = client.projectionChanged(change);
+        if (result && typeof result.then === 'function') void result.catch(error => this.dropClient(client, error));
+      } catch (error) {
+        // observability-exempt: dropClient emits the bounded client.failed event and removes the failed delivery target.
+        this.dropClient(client, error);
+      }
+    }
   }
+  private dropClient(client: KoggOperationsReadModelClient, error: unknown): void { this.clients.delete(client); console.warn('[kogg:operations:stream] client.failed', { clientCount: this.clients.size, safeCode: 'STREAM_DELIVERY_FAILED', errorType: errorType(error) }); }
   private meta(): Row { return this.db().prepare('SELECT * FROM projection_meta WHERE singleton=1').get() as Row; }
   private ownerCount(): number { return this.count('SELECT count(DISTINCT owner_kind) AS count FROM owner_cursors'); }
   private faultCount(): number { return this.count('SELECT count(*) AS count FROM projection_faults'); }

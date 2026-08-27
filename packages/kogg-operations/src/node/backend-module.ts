@@ -30,7 +30,7 @@ export default new ContainerModule(bind => {
   bind(BackendApplicationContribution).toService(OperationsOwnerWiring);
   bind(OperationsReadModelService).toSelf().inSingletonScope();
   bind(ConnectionHandler).toDynamicValue(context => new JsonRpcConnectionHandler<KoggOperationsReadModelClient>(
-    KoggOperationsReadModelServicePath, client => { const service = context.container.get(OperationsReadModelService); service.setClient(client); return service; }
+    KoggOperationsReadModelServicePath, client => context.container.get(OperationsReadModelService).connect(client)
   )).inSingletonScope();
   bind(ConnectionHandler).toDynamicValue(context => new JsonRpcConnectionHandler<KoggOperationsClient>(
     KoggOperationsServicePath,
