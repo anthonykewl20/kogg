@@ -5,7 +5,7 @@ import { createHash } from 'node:crypto';
 import { mkdtemp, rm } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { canonicalKernelJson, KERNEL_SCHEMA_SET_DIGEST, KOGG_RANEX_COMMIT, KOGG_RANEX_PROTOCOL_VERSION, KOGG_RANEX_TREE, type CheckExecutionV1, type EvidenceManifestV1, type FrozenSuiteV1, type GateEvaluationExpectationV1, type GateRequirementV1, type KernelJson, type ProducerBindingV1, type RepositoryStateV1, type TaskExecutionBindingV1 } from '@kogg/contracts';
+import { canonicalKernelJson, KERNEL_SCHEMA_SET_DIGEST, KOGG_RANEX_COMMIT, KOGG_RANEX_PROTOCOL_VERSION, KOGG_RANEX_TREE, type CheckExecutionV1, type EvidenceManifestV1, type FrozenSuiteV1, type GateEvaluationExpectationV1, type GateRequirementV1, type KernelJson, type ProducerBindingV1, type RepositoryStateV1, type TaskExecutionBindingV1, type VerdictReadExpectationV1 } from '@kogg/contracts';
 import { OperationRegistry } from '@kogg/operations/lib/node/operation-registry';
 import type { ILogger } from '@theia/core/lib/common/logger';
 import { ProcessManager } from '@theia/process/lib/node/process-manager';
@@ -20,7 +20,7 @@ test('handshakes with the pinned Ranex kernel and fails closed on missing journa
     const capabilities = await bridge.start();
     assert.equal(capabilities.ranexCommit, KOGG_RANEX_COMMIT);
     assert.equal(capabilities.protocolVersion, KOGG_RANEX_PROTOCOL_VERSION);
-    assert.deepEqual(capabilities.operations.map(operation => operation.operation), ['kernel.handshake', 'kernel.health', 'execution.qualify', 'task.bind', 'producer.dispatch', 'suite.freeze', 'suite.execute', 'evidence.admit', 'gate.evaluate']);
+    assert.deepEqual(capabilities.operations.map(operation => operation.operation), ['kernel.handshake', 'kernel.health', 'execution.qualify', 'task.bind', 'producer.dispatch', 'suite.freeze', 'suite.execute', 'evidence.admit', 'gate.evaluate', 'verdict.read']);
     const verification = await bridge.verifyJournal();
     assert.equal(verification.valid, false);
     assert.equal(verification.reason, 'missing');
@@ -36,6 +36,7 @@ test('handshakes with the pinned Ranex kernel and fails closed on missing journa
     assert.equal((await bridge.execute('suite.execute', {})).safeCode, 'KERNEL_AUTHORITY_INVALID');
     assert.equal((await bridge.execute('evidence.admit', {})).safeCode, 'KERNEL_AUTHORITY_INVALID');
     assert.equal((await bridge.execute('gate.evaluate', {})).safeCode, 'KERNEL_AUTHORITY_INVALID');
+    assert.equal((await bridge.execute('verdict.read', {})).safeCode, 'KERNEL_AUTHORITY_INVALID');
     const committed = await bridge.bindTask(fixtureBinding());
     assert.equal(committed.status, 'succeeded');
     assert.equal(committed.safeCode, 'KERNEL_OK');
@@ -121,10 +122,24 @@ test('handshakes with the pinned Ranex kernel and fails closed on missing journa
     assert.equal(evaluated.projection?.decision, 'pass'); assert.equal(evaluated.projection?.evidenceCount, 1);
     const gateReplay = await bridge.evaluateGate(expectation, execution.subjectState);
     assert.deepEqual(gateReplay, { ...evaluated, requestId: gateReplay.requestId, operationId: gateReplay.operationId });
+    const verdictRead = fixtureVerdictRead(expectation, evaluated.projection!.verdictDigest);
+    const currentVerdict = await bridge.readVerdict(verdictRead, execution.subjectState);
+    assert.equal(currentVerdict.status, 'succeeded'); assert.equal(currentVerdict.journal, null);
+    assert.deepEqual(currentVerdict.projection, {
+      verdictId: expectation.verdictId, verdictDigest: evaluated.projection!.verdictDigest,
+      historicalDecision: 'pass', currentness: 'current', currentDecision: 'pass'
+    });
+    const subjectChanged = await bridge.readVerdict(verdictRead, { ...execution.subjectState, treeObjectId: '4'.repeat(40) });
+    assert.equal(subjectChanged.status, 'succeeded'); assert.equal(subjectChanged.projection?.currentness, 'stale');
+    assert.equal(subjectChanged.projection?.historicalDecision, 'pass'); assert.equal(subjectChanged.projection?.currentDecision, null);
+    const substitutedVerdict = await bridge.readVerdict({ ...verdictRead, verdictDigest: `sha256:${'0'.repeat(64)}` }, execution.subjectState);
+    assert.equal(substitutedVerdict.status, 'refused'); assert.equal(substitutedVerdict.safeCode, 'KERNEL_VERDICT_STALE');
     const duplicateVerdict = await bridge.evaluateGate({ ...expectation, evaluatedAt: new Date(Date.now() + 1_000).toISOString() }, execution.subjectState);
     assert.equal(duplicateVerdict.status, 'refused'); assert.equal(duplicateVerdict.safeCode, 'KERNEL_IDEMPOTENCY_CONFLICT');
     const incompleteSuite = fixtureSuite(committed.projection!.taskBindingDigest, true);
     const incompleteFrozen = await bridge.freezeSuite(incompleteSuite); assert.equal(incompleteFrozen.status, 'succeeded');
+    const superseded = await bridge.readVerdict(verdictRead, execution.subjectState);
+    assert.equal(superseded.status, 'succeeded'); assert.equal(superseded.projection?.currentness, 'stale');
     const blocked = await bridge.evaluateGate(fixtureGateExpectation(committed.projection!.taskBindingDigest, incompleteFrozen.projection!.suiteDigest, subjectStateDigest, incompleteSuite), execution.subjectState);
     assert.equal(blocked.status, 'succeeded'); assert.equal(blocked.projection?.decision, 'blocked'); assert.equal(blocked.projection?.evidenceCount, 0);
     assert.equal((await bridge.verifyJournal()).valid, true);
@@ -158,7 +173,7 @@ test('maps a structurally invalid operation to a closed protocol refusal', async
       protocol: 'kogg.ranex/v2', requestId: '11111111-1111-4111-8111-111111111111',
       operationId: '22222222-2222-4222-8222-222222222222', idempotencyKey: `sha256:${'0'.repeat(64)}`,
       operation: {}, operationVersion: 1, ranexCommit: KOGG_RANEX_COMMIT,
-      schemaSetDigest: `sha256:72d3744f64fa150f4e0b4bed73ff5ad305e75a21f99f28e44eb3bbcf33ef0899`,
+      schemaSetDigest: `sha256:e01e21f24260bf2808cf7828a908ca67d76391055872f750fa34f979476e9019`,
       bodyDigest: `sha256:${'0'.repeat(64)}`, body: {}
     };
     const payload = Buffer.from(JSON.stringify(request), 'utf8');
@@ -194,6 +209,14 @@ function fixtureBinding(): TaskExecutionBindingV1 {
     protectedSource: repository, worktreeId: '55555555-5555-4555-8555-555555555555',
     worktreeIdentityDigest: repository.worktreeIdentity, baseState: repository,
     executionProfileDigest: `sha256:${'5'.repeat(64)}`, expiresAt: '2099-08-27T07:30:00.000Z'
+  };
+}
+
+function fixtureVerdictRead(expectation: GateEvaluationExpectationV1, verdictDigest: `sha256:${string}`): VerdictReadExpectationV1 {
+  return {
+    verdictId: expectation.verdictId, verdictDigest, taskBindingDigest: expectation.taskBindingDigest,
+    subjectStateDigest: expectation.subjectStateDigest, gateCatalogDigest: expectation.gateCatalogDigest,
+    authorityDigest: expectation.authorityDigest, ranexProvenanceDigest: expectation.ranexProvenanceDigest
   };
 }
 
