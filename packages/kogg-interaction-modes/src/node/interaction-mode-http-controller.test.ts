@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { mkdtemp, rm } from 'node:fs/promises';
-import { createServer, request as httpRequest, type IncomingHttpHeaders } from 'node:http';
+import { Agent, createServer, request as httpRequest, type IncomingHttpHeaders } from 'node:http';
 import type { Socket } from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
@@ -46,12 +46,15 @@ async function post(url: string, body: unknown, authority: { cookie: string; ori
 interface HttpResult { readonly status: number; readonly headers: IncomingHttpHeaders; readonly bytes: Buffer; json(): unknown; }
 function exchange(url: string, method: 'GET' | 'POST', headers: Readonly<Record<string, string>>, body?: string): Promise<HttpResult> {
   return new Promise((resolve, reject) => {
-    const request = httpRequest(url, { method, agent: false, headers: { ...headers, connection: 'close', ...(body === undefined ? {} : { 'content-length': String(Buffer.byteLength(body)) }) } }, response => {
-      const chunks: Buffer[] = []; response.on('data', chunk => chunks.push(Buffer.from(chunk))); response.once('error', reject); response.once('end', () => {
-        const bytes = Buffer.concat(chunks); response.destroy(); request.destroy(); resolve({ status: response.statusCode ?? 0, headers: response.headers, bytes, json: () => JSON.parse(bytes.toString('utf8')) as unknown });
+    const agent = new Agent({ keepAlive: false, maxSockets: 1 }); let closed = false; let result: HttpResult | undefined; let settled = false;
+    const finish = (): void => { if (!settled && closed && result) { settled = true; agent.destroy(); resolve(result); } };
+    const fail = (error: Error): void => { if (!settled) { settled = true; agent.destroy(); reject(error); } };
+    const request = httpRequest(url, { method, agent, headers: { ...headers, connection: 'close', ...(body === undefined ? {} : { 'content-length': String(Buffer.byteLength(body)) }) } }, response => {
+      const chunks: Buffer[] = []; response.on('data', chunk => chunks.push(Buffer.from(chunk))); response.once('error', fail); response.once('end', () => {
+        const bytes = Buffer.concat(chunks); result = { status: response.statusCode ?? 0, headers: response.headers, bytes, json: () => JSON.parse(bytes.toString('utf8')) as unknown }; response.destroy(); request.destroy(); finish();
       });
     });
-    request.setTimeout(5_000, () => request.destroy(new Error('HTTP test request timed out'))); request.once('error', reject); request.end(body);
+    request.once('close', () => { closed = true; finish(); }); request.setTimeout(5_000, () => request.destroy(new Error('HTTP test request timed out'))); request.once('error', fail); request.end(body);
   });
 }
 function restore(name: string, value: string | undefined): void { if (value === undefined) delete process.env[name]; else process.env[name] = value; }
