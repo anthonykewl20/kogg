@@ -9,6 +9,7 @@ import { OperationsReadModel, ProjectionFault } from './operations-read-model';
 import { OperationsSupportExporter } from './operations-support-export';
 import { OperationsActionRouter } from './operations-action-router';
 import type { OperationRegistryApi } from '../common/operations-protocol';
+import { OperationRegistry } from './operation-registry';
 
 // diagnostic-coverage: operations.projection, operations.owners, operations.correlations, operations.timeline, operations.processes, operations.metrics, operations.source-maps
 
@@ -159,6 +160,20 @@ test('keeps failed owner action outcome unknown and never retries it automatical
     await assert.rejects(router.request(request), /transport lost/u); const replay = await router.request(request);
     assert.equal(replay.status, 'unknown'); assert.equal(replay.safeCode, 'ACTION_OUTCOME_UNKNOWN'); assert.equal(calls, 1);
   } finally { await fixture.close(); }
+});
+
+test('projects the real durable operation owner lifecycle without copying process details', async () => {
+  const temporary = await mkdtemp(path.join(os.tmpdir(), 'kogg-operation-owner-adapter-test-')); process.env.KOGG_STATE_DIR = temporary;
+  const registry = new OperationRegistry(); const model = new OperationsReadModel(path.join(temporary, 'operations', 'projection.sqlite3'));
+  try {
+    await registry.onStart(); model.start(); registry.setOwnerSink(model);
+    const runId = randomUUID(); const operation = await registry.startOperation({ kind: 'test', correlations: { runId } }); operation.start();
+    const processLease = operation.registerProcess({ kind: 'test', owner: 'kogg-supervisor' }); processLease.spawning(); processLease.failed('PROCESS_SPAWN_FAILED', 'Error'); processLease.cleanup();
+    await operation.cleanup(); operation.fail('PROCESS_SPAWN_FAILED', 'Error');
+    const run = model.snapshot().runs.find(item => item.runId === runId); assert(run); assert.equal(run.lifecycle, 'unknown'); assert.equal(run.liveProcessCount, 0); assert.equal(run.abnormalProcessCount, 0);
+    assert(model.timeline(runId).some(event => event.eventKind === 'process.spawn-failed')); assert(model.timeline(runId).some(event => event.eventKind === 'process.cleaned'));
+    assert.equal(model.diagnostics().ownerCount, 1); assert.doesNotMatch(JSON.stringify(model.snapshot()), /pid|argv|command|environment|Error/u);
+  } finally { registry.setOwnerSink(undefined); await registry.onStop(); model.stop(); await rm(temporary, { recursive: true, force: true }); }
 });
 
 test('production operations read model emits a TypeScript source map', async () => {

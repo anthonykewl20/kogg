@@ -2,6 +2,7 @@ import type { KoggDiagnosticCheck, KoggDiagnosticContributor } from '@kogg/contr
 import { inject, injectable } from '@theia/core/shared/inversify';
 import { OperationsReadModel } from './operations-read-model';
 import { OperationsSupportExporter } from './operations-support-export';
+import { OWNER_KINDS } from '../common/operations-read-model-protocol';
 
 // diagnostic-coverage: operations.projection, operations.owners, operations.correlations, operations.timeline, operations.processes, operations.stream, operations.metrics, operations.support, operations.actions, operations.source-maps
 
@@ -15,7 +16,7 @@ export class OperationsReadModelDiagnosticContributor implements KoggDiagnosticC
       const result = this.projection.diagnostics();
       const support = await this.support.diagnostics();
       const projectionReady = result.integrity && result.foreignKeys && this.projection.storagePermissionsValid() && result.lifecycle !== 'failed';
-      const ownersReady = result.ownerCount > 0 && result.lifecycle === 'current';
+      const ownersReady = result.ownerCount === OWNER_KINDS.length && result.lifecycle === 'current';
       return [
         { id: 'operations.projection', status: projectionReady ? 'pass' : 'fail', summary: projectionReady ? 'The disposable operations projection is structurally valid.' : 'The operations projection store or lifecycle failed verification.' },
         { id: 'operations.owners', status: ownersReady ? 'pass' : 'fail', summary: ownersReady ? 'Owner cursors are verified and current.' : 'No current verified owner projection is available.', details: { ownerCount: result.ownerCount, faultCount: result.faultCount } },

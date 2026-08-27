@@ -10,6 +10,7 @@ import { OperationsReadModelDiagnosticContributor } from './operations-read-mode
 import { OperationsReadModelService } from './operations-read-model-service';
 import { OperationsSupportExporter } from './operations-support-export';
 import { OperationsActionRouter } from './operations-action-router';
+import { OperationsOwnerWiring } from './operations-owner-wiring';
 import { KoggOperationsReadModelServicePath, type KoggOperationsReadModelClient } from '../common/operations-read-model-protocol';
 
 export default new ContainerModule(bind => {
@@ -24,6 +25,8 @@ export default new ContainerModule(bind => {
   bind(KoggDiagnosticContribution).toService(OperationsReadModelDiagnosticContributor);
   bind(OperationsSupportExporter).toSelf().inSingletonScope();
   bind(OperationsActionRouter).toSelf().inSingletonScope();
+  bind(OperationsOwnerWiring).toSelf().inSingletonScope();
+  bind(BackendApplicationContribution).toService(OperationsOwnerWiring);
   bind(OperationsReadModelService).toSelf().inSingletonScope();
   bind(ConnectionHandler).toDynamicValue(context => new JsonRpcConnectionHandler<KoggOperationsReadModelClient>(
     KoggOperationsReadModelServicePath, client => { const service = context.container.get(OperationsReadModelService); service.setClient(client); return service; }

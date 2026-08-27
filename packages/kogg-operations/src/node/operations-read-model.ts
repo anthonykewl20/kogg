@@ -23,7 +23,7 @@ const SAFE_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/u;
 const SEQUENCE = /^(0|[1-9][0-9]{0,19})$/u;
 const CLOSED_PAYLOAD_KEYS = new Set(['lifecycle', 'safeCode', 'processKind', 'processState', 'cleanupState', 'terminalClass', 'abnormalClass', 'resultClass', 'decisionClass', 'freshness', 'knownState', 'count', 'retryOrdinal', 'durationMs', 'value', 'unit']);
 const CLOSED_STRING_VALUES: Readonly<Record<string, ReadonlySet<string>>> = {
-  lifecycle: new Set(['draft', 'frozen', 'active', 'archived', 'queued', 'waiting', 'retrying', 'blocked', 'failed', 'cancelling', 'cleaning', 'cancelled', 'recovered', 'completed', 'unknown', 'requested', 'started', 'refused', 'admitted', 'quarantined', 'available', 'unavailable']),
+  lifecycle: new Set(['draft', 'frozen', 'active', 'archived', 'queued', 'waiting', 'retrying', 'blocked', 'failed', 'stalled', 'cancelling', 'cleaning', 'cancelled', 'timed-out', 'recovered', 'completed', 'unknown', 'requested', 'started', 'refused', 'admitted', 'quarantined', 'available', 'unavailable']),
   processKind: new Set(['git', 'ranex-kernel', 'provider-cli', 'governed-command', 'check', 'build', 'test', 'debug-adapter', 'delegated-theia', 'unknown']),
   processState: new Set(['reserved', 'spawning', 'started', 'ready', 'exited', 'cancelling', 'cleaning', 'cleaned', 'spawn-failed', 'timed-out', 'residual', 'lost', 'quarantined', 'inventory-unknown']),
   cleanupState: new Set(['required', 'cleaning', 'cleaned', 'failed', 'unknown']),
@@ -73,8 +73,8 @@ export class OperationsReadModel implements BackendApplicationContribution {
       this.setLifecycle('replaying');
       console.info('[kogg:operations:projection] replay.started', { ownerCount: this.ownerCount() });
       this.rebuildDerived(false);
-      this.setLifecycle(this.faultCount() ? 'degraded' : 'current');
-      if (this.faultCount()) console.warn('[kogg:operations:projection] degraded', { ownerCount: this.ownerCount(), faultCount: this.faultCount() });
+      this.reevaluateLifecycle();
+      if (this.meta().lifecycle === 'degraded') console.warn('[kogg:operations:projection] degraded', { ownerCount: this.ownerCount(), faultCount: this.faultCount() });
       else console.info('[kogg:operations:projection] current', { ownerCount: this.ownerCount(), faultCount: 0 });
     } catch (error) {
       console.error('[kogg:operations:projection] failed', { safeCode: 'PROJECTION_STORE_FAILED', errorType: errorType(error) });
@@ -133,17 +133,28 @@ export class OperationsReadModel implements BackendApplicationContribution {
       db.prepare(`INSERT INTO owner_cursors(owner_kind,owner_instance_id,epoch_id,sequence,event_digest,schema_version,status)
         VALUES(?,?,?,?,?,1,'available') ON CONFLICT(owner_instance_id) DO UPDATE SET sequence=excluded.sequence,event_digest=excluded.event_digest,status='available'`)
         .run(validated.ownerKind, validated.ownerInstanceId, validated.epochId, validated.sequence, validated.eventDigest);
+      db.prepare("UPDATE configured_owners SET status='available' WHERE owner_kind=?").run(validated.ownerKind);
       this.projectEvent(db, validated);
       this.projectMetrics(db, validated);
       this.appendChange(db, 'owner-event', validated.correlations.runId, protectedEvent(validated.eventKind));
     });
     console.info('[kogg:operations:owners] cursor.advanced', { ownerKind: validated.ownerKind, ownerSequence: validated.sequence });
+    this.reevaluateLifecycle();
     console.debug('[kogg:operations:timeline] projection.updated', { ownerKind: validated.ownerKind, eventKind: validated.eventKind, runId: validated.correlations.runId });
     this.notifyLatestChange();
     return 'accepted';
   }
 
   setClient(client?: KoggOperationsReadModelClient): void { this.client = client; }
+
+  registerOwner(ownerKind: OwnerKind): void {
+    this.start(); console.info('[kogg:operations:owners] owner.verify.started', { ownerKind, ownerSchemaVersion: 1 });
+    const known = this.db().prepare('SELECT 1 FROM owner_cursors WHERE owner_kind=? LIMIT 1').get(ownerKind);
+    this.db().prepare(`INSERT INTO configured_owners(owner_kind,schema_version,status) VALUES(?,1,?) ON CONFLICT(owner_kind) DO UPDATE SET schema_version=1,status=excluded.status`).run(ownerKind, known ? 'available' : 'unavailable');
+    this.reevaluateLifecycle();
+    if (known) console.info('[kogg:operations:owners] available', { ownerKind, ownerSchemaVersion: 1 });
+    else console.warn('[kogg:operations:owners] unavailable', { ownerKind, ownerSchemaVersion: 1, safeCode: 'OWNER_NOT_YET_OBSERVED' });
+  }
 
   subscribe(resumeCursor?: string): OperationsStreamSubscriptionV1 {
     this.start(); const queryDigest = createHash('sha256').update('operations-stream-v1').digest('hex');
@@ -235,7 +246,7 @@ export class OperationsReadModel implements BackendApplicationContribution {
     this.setLifecycle('rebuilding');
     this.rebuildDerived(true);
     this.transaction(db => this.appendChange(db, 'rebuild', undefined, true));
-    this.setLifecycle(this.faultCount() ? 'degraded' : 'current');
+    this.reevaluateLifecycle();
     console.info('[kogg:operations:projection] completed', { ownerCount: this.ownerCount(), faultCount: this.faultCount() });
     this.notifyLatestChange();
   }
@@ -410,6 +421,7 @@ export class OperationsReadModel implements BackendApplicationContribution {
     this.db().exec(`
       CREATE TABLE IF NOT EXISTS projection_meta(singleton INTEGER PRIMARY KEY CHECK(singleton=1),schema_version INTEGER NOT NULL CHECK(schema_version=1),projection_epoch TEXT NOT NULL,cursor_key TEXT NOT NULL,lifecycle TEXT NOT NULL CHECK(lifecycle IN ('stopped','verifying','replaying','current','degraded','rebuilding','failed')),change_sequence TEXT NOT NULL) STRICT;
       CREATE TABLE IF NOT EXISTS owner_cursors(owner_kind TEXT NOT NULL,owner_instance_id TEXT PRIMARY KEY,epoch_id TEXT NOT NULL,sequence TEXT NOT NULL,event_digest TEXT NOT NULL,schema_version INTEGER NOT NULL,status TEXT NOT NULL) STRICT;
+      CREATE TABLE IF NOT EXISTS configured_owners(owner_kind TEXT PRIMARY KEY,schema_version INTEGER NOT NULL,status TEXT NOT NULL CHECK(status IN ('available','unavailable'))) STRICT;
       CREATE TABLE IF NOT EXISTS accepted_events(owner_kind TEXT NOT NULL,owner_instance_id TEXT NOT NULL,owner_schema_version INTEGER NOT NULL,epoch_id TEXT NOT NULL,sequence TEXT NOT NULL,event_id TEXT NOT NULL UNIQUE,event_kind TEXT NOT NULL,fact_id TEXT NOT NULL,fact_digest TEXT NOT NULL,previous_event_digest TEXT NOT NULL,correlations_json TEXT NOT NULL,observed_at TEXT NOT NULL,safe_payload_json TEXT NOT NULL,event_digest TEXT NOT NULL UNIQUE,UNIQUE(owner_instance_id,epoch_id,sequence)) STRICT;
       CREATE TABLE IF NOT EXISTS causal_edges(event_digest TEXT NOT NULL REFERENCES accepted_events(event_digest),parent_digest TEXT NOT NULL REFERENCES accepted_events(event_digest),PRIMARY KEY(event_digest,parent_digest)) STRICT;
       CREATE TABLE IF NOT EXISTS run_projection(run_id TEXT PRIMARY KEY,task_id TEXT,project_id TEXT,lifecycle TEXT NOT NULL,owner_lifecycle TEXT NOT NULL,lifecycle_code TEXT,attempt_count INTEGER NOT NULL,retry_count INTEGER NOT NULL,live_process_count INTEGER NOT NULL,abnormal_process_count INTEGER NOT NULL,check_summary TEXT NOT NULL,evidence_summary TEXT NOT NULL,verdict_summary TEXT NOT NULL,merge_summary TEXT NOT NULL,freshness TEXT NOT NULL,degraded_owners_json TEXT NOT NULL) STRICT;
@@ -430,6 +442,7 @@ export class OperationsReadModel implements BackendApplicationContribution {
     if (!this.storagePermissionsValid()) throw new ProjectionFault('PROJECTION_PERMISSIONS_INVALID');
   }
   private setLifecycle(lifecycle: ProjectionLifecycle): void { this.db().prepare('UPDATE projection_meta SET lifecycle=? WHERE singleton=1').run(lifecycle); }
+  private reevaluateLifecycle(): void { const unavailable = this.count("SELECT count(*) AS count FROM configured_owners WHERE status='unavailable'"); this.setLifecycle(this.faultCount() || unavailable ? 'degraded' : 'current'); }
   private appendChange(db: DatabaseSync, kind: 'owner-event' | 'rebuild', runId: string | undefined, isProtected: boolean): void { const next = String(BigInt(String((db.prepare('SELECT change_sequence FROM projection_meta WHERE singleton=1').get() as Row).change_sequence)) + 1n); const size = 96 + (runId?.length ?? 0); db.prepare('INSERT INTO projection_changes(sequence,change_kind,run_id,protected,approximate_bytes) VALUES(?,?,?,?,?)').run(next, kind, runId ?? null, isProtected ? 1 : 0, size); db.prepare('UPDATE projection_meta SET change_sequence=? WHERE singleton=1').run(next); }
   private changeFromRow(row: Row): OperationsProjectionChangeV1 { return { projectionEpoch: String(this.meta().projection_epoch), sequence: String(row.sequence), kind: String(row.change_kind) as 'owner-event' | 'rebuild', ...(row.run_id ? { runId: String(row.run_id) } : {}), protected: Number(row.protected) === 1 }; }
   private notifyLatestChange(): void {
@@ -438,7 +451,7 @@ export class OperationsReadModel implements BackendApplicationContribution {
     catch (error) { console.warn('[kogg:operations:stream] closed', { safeCode: 'STREAM_DELIVERY_FAILED', errorType: errorType(error) }); }
   }
   private meta(): Row { return this.db().prepare('SELECT * FROM projection_meta WHERE singleton=1').get() as Row; }
-  private ownerCount(): number { return this.count('SELECT count(*) AS count FROM owner_cursors'); }
+  private ownerCount(): number { return this.count('SELECT count(DISTINCT owner_kind) AS count FROM owner_cursors'); }
   private faultCount(): number { return this.count('SELECT count(*) AS count FROM projection_faults'); }
   private count(sql: string): number { return Number((this.db().prepare(sql).get() as Row).count); }
   private db(): DatabaseSync { if (!this.database) throw new ProjectionFault('PROJECTION_STORE_UNAVAILABLE'); return this.database; }

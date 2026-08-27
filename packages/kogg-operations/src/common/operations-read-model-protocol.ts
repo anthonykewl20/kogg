@@ -2,6 +2,7 @@
 
 export const KoggOperationsReadModelServicePath = '/services/kogg-operations-read-model';
 export const KoggOperationsReadModelService = Symbol('KoggOperationsReadModelService');
+export const KoggOperationsOwnerSink = Symbol('KoggOperationsOwnerSink');
 
 export const OWNER_KINDS = ['task', 'workflow', 'adapter', 'execution', 'operation', 'project', 'check', 'ranex', 'verdict', 'merge', 'diagnostic'] as const;
 export type OwnerKind = typeof OWNER_KINDS[number];
@@ -11,7 +12,7 @@ export const OWNER_EVENT_KINDS = {
   workflow: ['run.queued', 'run.started', 'run.waiting', 'run.retrying', 'run.blocked', 'run.cancelling', 'run.cleaning', 'run.failed', 'run.cancelled', 'run.recovered', 'run.completed', 'node.started', 'node.terminal'],
   adapter: ['attempt.requested', 'attempt.started', 'attempt.failed', 'attempt.cancelled', 'attempt.completed', 'usage.observed'],
   execution: ['execution.admitted', 'execution.refused', 'execution.started', 'execution.failed', 'execution.completed', 'execution.quarantined'],
-  operation: ['process.reserved', 'process.spawning', 'process.started', 'process.ready', 'process.activity', 'process.exited', 'process.cancelling', 'process.cleaning', 'process.cleaned', 'process.spawn-failed', 'process.timed-out', 'process.residual', 'process.lost', 'process.quarantined', 'process.inventory-unknown'],
+  operation: ['operation.requested', 'operation.started', 'operation.active', 'operation.waiting', 'operation.stalled', 'operation.cancelling', 'operation.cleaning', 'operation.completed', 'operation.failed', 'operation.timed-out', 'operation.cancelled', 'operation.refused', 'operation.recovered', 'process.reserved', 'process.spawning', 'process.started', 'process.ready', 'process.activity', 'process.exited', 'process.cancelling', 'process.cleaning', 'process.cleaned', 'process.spawn-failed', 'process.timed-out', 'process.residual', 'process.lost', 'process.quarantined', 'process.inventory-unknown'],
   project: ['project.available', 'project.unavailable', 'repository.changed'],
   check: ['check.requested', 'check.started', 'check.failed', 'check.passed', 'check.cleaned'],
   ranex: ['evidence.requested', 'evidence.admitted', 'evidence.refused', 'gate.decided'],
@@ -77,6 +78,8 @@ export interface OwnerEventV1 {
   readonly safePayload: SafeOwnerPayloadV1;
   readonly eventDigest: string;
 }
+
+export interface OperationsOwnerSink { ingest(event: OwnerEventV1): 'accepted' | 'duplicate'; }
 
 export type ProjectionLifecycle = 'stopped' | 'verifying' | 'replaying' | 'current' | 'degraded' | 'rebuilding' | 'failed';
 export type RunLifecycle = 'queued' | 'active' | 'waiting' | 'retrying' | 'blocked' | 'failed' | 'cancelling' | 'cleaning' | 'recovered' | 'completed' | 'unknown';

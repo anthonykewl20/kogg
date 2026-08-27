@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, chmodSync, statSync } from 'node:fs';
 import path from 'node:path';
 import { DatabaseSync, type SQLOutputValue } from 'node:sqlite';
@@ -18,6 +18,8 @@ import type {
   StartOperation,
   StartProcess
 } from '../common/operations-protocol';
+import type { OperationsOwnerSink, OwnerEventV1, SafeOwnerPayloadV1 } from '../common/operations-read-model-protocol';
+import { OperationsReadModel } from './operations-read-model';
 
 // diagnostic-coverage: operations.registry, operations.recovery, operations.processes, operations.cleanup, operations.admission
 
@@ -64,6 +66,7 @@ export class OperationRegistry implements OperationRegistryApi, BackendApplicati
   private readonly activityState = new Map<string, { lastPersisted: number; pending: number }>();
   private readonly instanceId = randomUUID();
   private readonly databasePath = path.join(stateRoot(), 'operations', 'registry.sqlite3');
+  private ownerSink: OperationsOwnerSink | undefined;
 
   constructor(@unmanaged() private readonly cleanupTimeoutMs = 10_000) {}
 
@@ -151,6 +154,7 @@ export class OperationRegistry implements OperationRegistryApi, BackendApplicati
   }
 
   setClient(client?: KoggOperationsClient): void { this.client = client; }
+  setOwnerSink(sink?: OperationsOwnerSink): void { this.ownerSink = sink; if (sink && this.database) this.publishOwnerEvents(); }
 
   diagnostics(): OperationDiagnostics {
     const database = this.requireDatabase();
@@ -346,15 +350,17 @@ export class OperationRegistry implements OperationRegistryApi, BackendApplicati
   private migrate(): void {
     console.info('[kogg:operations:registry] registry.migration.started', { schemaVersion: 1 });
     this.requireDatabase().exec(`
-      CREATE TABLE IF NOT EXISTS operation_meta(singleton INTEGER PRIMARY KEY CHECK(singleton=1),schema_version INTEGER NOT NULL CHECK(schema_version=1),revision INTEGER NOT NULL CHECK(revision>=1),instance_id TEXT NOT NULL,admission TEXT NOT NULL CHECK(admission IN ('enabled','recovering','blocked')));
+      CREATE TABLE IF NOT EXISTS operation_meta(singleton INTEGER PRIMARY KEY CHECK(singleton=1),schema_version INTEGER NOT NULL CHECK(schema_version=1),revision INTEGER NOT NULL CHECK(revision>=1),instance_id TEXT NOT NULL,owner_id TEXT NOT NULL,owner_epoch_id TEXT NOT NULL,admission TEXT NOT NULL CHECK(admission IN ('enabled','recovering','blocked')));
       CREATE TABLE IF NOT EXISTS operations(id TEXT PRIMARY KEY,kind TEXT NOT NULL CHECK(kind IN ('application-start','application-stop','recovery','diagnostics','support-export','project-mutation','repository-probe','project-switch','worktree','marketplace','provider-connection','provider-session','ranex-bridge','ranex-request','task','agent-dispatch','check','build','test','debug','evidence','verdict','merge')),state TEXT NOT NULL CHECK(state IN ('requested','refused','starting','active','waiting','stalled','cancelling','completed','failed','timed-out','cancelled','recovery-required','recovering','recovered')),cleanup_state TEXT NOT NULL CHECK(cleanup_state IN ('not-required','required','cleaning','cleaned','failed')),safe_code TEXT,project_id TEXT,task_id TEXT,run_id TEXT,attempt_id TEXT,session_id TEXT,worktree_id TEXT,owner_instance_id TEXT NOT NULL,requested_at TEXT NOT NULL,updated_at TEXT NOT NULL,last_activity_at TEXT,activity_count INTEGER NOT NULL CHECK(activity_count>=0),error_type TEXT,revision INTEGER NOT NULL CHECK(revision>=1));
       CREATE TABLE IF NOT EXISTS processes(id TEXT PRIMARY KEY,operation_id TEXT NOT NULL REFERENCES operations(id),kind TEXT NOT NULL CHECK(kind IN ('git','ranex-kernel','provider-cli','governed-command','check','build','test','debug-adapter','delegated-theia')),owner TEXT NOT NULL CHECK(owner IN ('kogg-supervisor','theia-task','theia-terminal','theia-debug','theia-plugin-host','ranex')),state TEXT NOT NULL CHECK(state IN ('registered','spawning','started','ready','spawn-failed','exited','signalled','possible-residual')),cleanup_state TEXT NOT NULL CHECK(cleanup_state IN ('required','cleaning','cleaned','failed')),owner_instance_id TEXT NOT NULL,pid INTEGER CHECK(pid IS NULL OR pid>0),identity_fingerprint TEXT,safe_code TEXT,error_type TEXT,exit_class TEXT,updated_at TEXT);
       CREATE TABLE IF NOT EXISTS operation_events(sequence INTEGER PRIMARY KEY AUTOINCREMENT,operation_id TEXT NOT NULL REFERENCES operations(id),process_id TEXT,event_name TEXT NOT NULL,created_at TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS request_results(request_id TEXT PRIMARY KEY,request_digest TEXT NOT NULL,operation_id TEXT NOT NULL,safe_code TEXT NOT NULL,created_at TEXT NOT NULL);
       CREATE INDEX IF NOT EXISTS operation_active_idx ON operations(state,cleanup_state);
       CREATE INDEX IF NOT EXISTS process_operation_idx ON processes(operation_id);
-      INSERT OR IGNORE INTO operation_meta(singleton,schema_version,revision,instance_id,admission) VALUES(1,1,1,'bootstrap','recovering');
+      INSERT OR IGNORE INTO operation_meta(singleton,schema_version,revision,instance_id,owner_id,owner_epoch_id,admission) VALUES(1,1,1,'bootstrap','${randomUUID()}','${randomUUID()}','recovering');
     `);
+    ensureTextColumn(this.requireDatabase(), 'operation_meta', 'owner_id', randomUUID());
+    ensureTextColumn(this.requireDatabase(), 'operation_meta', 'owner_epoch_id', randomUUID());
     const meta = this.requireDatabase().prepare('SELECT schema_version FROM operation_meta WHERE singleton=1').get() as SqlRow;
     if (Number(meta.schema_version) !== 1) throw new Error('Unsupported operation registry schema');
     console.info('[kogg:operations:registry] registry.migration.completed', { schemaVersion: 1 });
@@ -456,12 +462,23 @@ export class OperationRegistry implements OperationRegistryApi, BackendApplicati
   }
 
   private changed(): void {
+    this.publishOwnerEvents();
     if (!this.client) return;
     try {
       const update = this.client.changed(this.readSnapshot());
       if (update) void update.catch(error => console.warn('[kogg:operations:registry] client.update.failed', { errorType: errorType(error) }));
     }
     catch (error) { console.warn('[kogg:operations:registry] client.update.failed', { errorType: errorType(error) }); }
+  }
+  publishOwnerEvents(): void {
+    if (!this.ownerSink || !this.database) return;
+    const database = this.requireDatabase(); const meta = database.prepare('SELECT owner_id,owner_epoch_id FROM operation_meta WHERE singleton=1').get() as SqlRow;
+    let previous = '0'.repeat(64);
+    for (const row of database.prepare('SELECT * FROM operation_events ORDER BY sequence').all() as SqlRow[]) {
+      const mapped = mapOwnerEvent(database, row, String(meta.owner_id), String(meta.owner_epoch_id), previous); previous = mapped.eventDigest;
+      try { this.ownerSink.ingest(mapped); }
+      catch (error) { console.warn('[kogg:operations:owners] owner.publish.failed', { ownerKind: 'operation', ownerSequence: mapped.sequence, safeCode: error instanceof Error ? error.message.slice(0, 64) : 'OWNER_PUBLISH_FAILED', errorType: errorType(error) }); break; }
+    }
   }
   private appendEvent(database: DatabaseSync, operationId: string, processId: string | null, eventName: string): void {
     database.prepare('INSERT INTO operation_events(operation_id,process_id,event_name,created_at) VALUES(?,?,?,?)').run(operationId, processId, eventName, new Date().toISOString());
@@ -525,6 +542,30 @@ class DurableProcessLease implements ProcessLease {
   async cancel(): Promise<void> { await this.cancelRun?.(); this.cleanup(); }
 }
 
+function mapOwnerEvent(database: DatabaseSync, row: SqlRow, ownerInstanceId: string, epochId: string, previousEventDigest: string): OwnerEventV1 {
+  const operationId = String(row.operation_id); const processId = row.process_id ? String(row.process_id) : undefined;
+  const operation = database.prepare('SELECT * FROM operations WHERE id=?').get(operationId) as SqlRow;
+  const processRow = processId ? database.prepare('SELECT * FROM processes WHERE id=?').get(processId) as SqlRow | undefined : undefined;
+  const sourceEvent = String(row.event_name); const eventKind = ownerEventKind(sourceEvent, Boolean(processId)); const safePayload: SafeOwnerPayloadV1 = processId
+    ? { processKind: String(processRow?.kind ?? 'unknown'), processState: eventKind.slice('process.'.length), cleanupState: processCleanupFor(eventKind), ...(processSafeCodeEvent(sourceEvent) && processRow?.safe_code ? { safeCode: String(processRow.safe_code) } : {}) }
+    : { lifecycle: eventKind.slice('operation.'.length), ...(operationSafeCodeEvent(sourceEvent) && operation.safe_code ? { safeCode: String(operation.safe_code) } : {}) };
+  const sequence = String(row.sequence); const eventId = `operation-event-${sequence}`;
+  const factDigest = createHash('sha256').update(JSON.stringify([sequence, operationId, processId ?? null, eventKind, String(row.created_at)])).digest('hex');
+  const unsigned: Omit<OwnerEventV1, 'eventDigest'> = { ownerKind: 'operation', ownerInstanceId, ownerSchemaVersion: 1, epochId, sequence, eventId, eventKind, factId: `${operationId}:${sequence}`, factDigest, previousEventDigest, causalParents: [], correlations: { ...(operation.project_id ? { projectId: String(operation.project_id) } : {}), ...(operation.task_id ? { taskId: String(operation.task_id) } : {}), ...(operation.run_id ? { runId: String(operation.run_id) } : {}), ...(operation.attempt_id ? { attemptId: String(operation.attempt_id) } : {}), operationId, ...(processId ? { processId } : {}) }, observedAt: String(row.created_at), safePayload };
+  return { ...unsigned, eventDigest: OperationsReadModel.digest(unsigned) };
+}
+function ownerEventKind(eventName: string, processEvent: boolean): string {
+  if (processEvent) return ({ 'process.registered': 'process.reserved', 'process.spawn.started': 'process.spawning', 'process.started': 'process.started', 'process.ready': 'process.ready', 'process.activity': 'process.activity', 'process.failed': 'process.spawn-failed', 'process.exit': 'process.exited', 'cleanup.started': 'process.cleaning', 'cleanup.completed': 'process.cleaned', 'recovery.process.observed': 'process.ready', 'recovery.completed': 'process.cleaned', 'process.possible-residual': 'process.residual' } as Record<string, string>)[eventName] ?? 'process.inventory-unknown';
+  return ({ 'operation.requested': 'operation.requested', 'operation.started': 'operation.started', 'operation.active': 'operation.active', 'operation.waiting': 'operation.waiting', 'operation.stalled': 'operation.stalled', 'operation.cancelling': 'operation.cancelling', 'operation.completed': 'operation.completed', 'operation.failed': 'operation.failed', 'operation.timeout': 'operation.timed-out', 'operation.cancelled': 'operation.cancelled', 'operation.refused': 'operation.refused', 'cleanup.started': 'operation.cleaning', 'cleanup.completed': 'operation.completed', 'recovery.started': 'operation.started', 'recovery.completed': 'operation.recovered', 'recovery.failed': 'operation.failed' } as Record<string, string>)[eventName] ?? 'operation.failed';
+}
+function processCleanupFor(eventKind: string): SafeOwnerPayloadV1['cleanupState'] { if (eventKind === 'process.cleaned') return 'cleaned'; if (eventKind === 'process.cleaning') return 'cleaning'; if (['process.residual', 'process.lost', 'process.quarantined', 'process.inventory-unknown'].includes(eventKind)) return 'failed'; return 'required'; }
+function processSafeCodeEvent(sourceEvent: string): boolean { return ['process.failed', 'process.possible-residual'].includes(sourceEvent); }
+function operationSafeCodeEvent(sourceEvent: string): boolean { return ['operation.completed', 'operation.failed', 'operation.timeout', 'operation.cancelled', 'operation.refused', 'recovery.failed', 'recovery.completed'].includes(sourceEvent); }
+function ensureTextColumn(database: DatabaseSync, table: 'operation_meta', column: 'owner_id' | 'owner_epoch_id', value: string): void {
+  const exists = (database.prepare(`PRAGMA table_info(${table})`).all() as SqlRow[]).some(row => String(row.name) === column);
+  if (!exists) database.exec(`ALTER TABLE ${table} ADD COLUMN ${column} TEXT`);
+  database.prepare(`UPDATE ${table} SET ${column}=? WHERE ${column} IS NULL OR ${column}=''`).run(value);
+}
 function stateRoot(): string { return path.resolve(process.env.KOGG_STATE_DIR ?? path.join(process.env.KOGG_ROOT ? path.resolve(process.env.KOGG_ROOT) : process.cwd(), '.kogg', 'state')); }
 function validateStartOperation(request: StartOperation): void {
   const allowed = new Set(['id', 'kind', 'correlations', 'absoluteTimeoutMs', 'idleTimeoutMs', 'cancellable']);
