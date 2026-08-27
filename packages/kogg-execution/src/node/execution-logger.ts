@@ -9,6 +9,9 @@ type Fields = {
   'qualification.failed': { targetId: string; safeCode: ExecutionQualificationCode; errorType: string };
   'qualification.authorization.completed': { targetId: string; qualificationId: string };
   'qualification.authorization.refused': { targetId: string; qualificationId: string; safeCode: ExecutionQualificationCode };
+  'target-binding.requested': { targetId: string };
+  'target-binding.completed': { targetId: string; qualificationId: string };
+  'target-binding.refused': { targetId: string; safeCode: ExecutionQualificationCode };
   'diagnostics.failed': { errorType: string };
   'seal.started': { eventVersion: 1; operationId: string; runId: string; attemptId: string; worktreeId: string };
   'seal.completed': { eventVersion: 1; operationId: string; runId: string; attemptId: string; worktreeId: string; candidateCommit: string; candidateTree: string };
@@ -33,6 +36,9 @@ const ALLOWED: { [K in keyof Fields]: readonly (keyof Fields[K])[] } = {
   'qualification.failed': ['targetId', 'safeCode', 'errorType'],
   'qualification.authorization.completed': ['targetId', 'qualificationId'],
   'qualification.authorization.refused': ['targetId', 'qualificationId', 'safeCode'],
+  'target-binding.requested': ['targetId'],
+  'target-binding.completed': ['targetId', 'qualificationId'],
+  'target-binding.refused': ['targetId', 'safeCode'],
   'diagnostics.failed': ['errorType'],
   'seal.started': ['eventVersion', 'operationId', 'runId', 'attemptId', 'worktreeId'],
   'seal.completed': ['eventVersion', 'operationId', 'runId', 'attemptId', 'worktreeId', 'candidateCommit', 'candidateTree'],
@@ -68,6 +74,9 @@ export function executionLog<K extends keyof Fields>(event: K, fields: Fields[K]
   else if (event === 'qualification.completed') console.info('[kogg:execution:target] qualification.completed', fields);
   else if (event === 'qualification.authorization.completed') console.info('[kogg:execution:target] qualification.authorization.completed', fields);
   else if (event === 'qualification.authorization.refused') console.warn('[kogg:execution:target] qualification.authorization.refused', fields);
+  else if (event === 'target-binding.requested') console.debug('[kogg:execution:target] target-binding.requested', fields);
+  else if (event === 'target-binding.completed') console.info('[kogg:execution:target] target-binding.completed', fields);
+  else if (event === 'target-binding.refused') console.warn('[kogg:execution:target] target-binding.refused', fields);
   else if (event === 'qualification.invalidated') console.warn('[kogg:execution:target] qualification.invalidated', fields);
   else if (event === 'qualification.failed') console.error('[kogg:execution:target] qualification.failed', fields);
   else console.error('[kogg:execution:target] diagnostics.failed', fields);

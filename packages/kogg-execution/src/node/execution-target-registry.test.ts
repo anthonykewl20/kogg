@@ -62,6 +62,27 @@ test('requalifies immediately before allocation and authorizes only the exact im
   assert.equal(calls, 6);
 });
 
+test('mints an exact internal target binding only from a fresh qualified owner fact', async () => {
+  const privateDigest = `sha256:${'c'.repeat(64)}` as const; const fact = { ...qualification(), profileDigest: privateDigest }; let calls = 0;
+  const logs: string[] = []; const original = { debug: console.debug, info: console.info, warn: console.warn };
+  console.debug = (...values: unknown[]) => { logs.push(JSON.stringify(values)); };
+  console.info = (...values: unknown[]) => { logs.push(JSON.stringify(values)); };
+  console.warn = (...values: unknown[]) => { logs.push(JSON.stringify(values)); };
+  const registry = new ExecutionTargetRegistry(bridge(async () => { calls++; return fact; }), { platform: 'linux', arch: 'x64' });
+  try {
+    await registry.onStart();
+    assert.deepEqual(await registry.resolveTargetBinding(), {
+      targetId: fact.targetId, qualificationId: fact.qualificationId, qualificationDigest: qualificationDigest(fact),
+      profileId: fact.profileId, profileDigest: fact.profileDigest
+    });
+    assert.equal(calls, 2); assert.equal(logs.join('\n').includes(privateDigest), false);
+
+    const unsupported = new ExecutionTargetRegistry({ capabilities: async () => { throw new Error('must not call'); } } as unknown as KernelBridge, { platform: 'darwin', arch: 'arm64' });
+    await unsupported.onStart();
+    assert.equal(await unsupported.resolveTargetBinding(), undefined);
+  } finally { console.debug = original.debug; console.info = original.info; console.warn = original.warn; }
+});
+
 test('invalid, expired, and failed owner results remain unqualified with closed failures', async () => {
   const invalid = new ExecutionTargetRegistry(bridge(async () => ({ ...qualification(), extra: 'private' } as never)), { platform: 'linux', arch: 'x64' }); await invalid.onStart(); assert.equal(invalid.projection().safeCode, 'QUALIFICATION_PROTOCOL_INVALID');
   const unknownRefusal = new ExecutionTargetRegistry(bridge(async () => ({ ...qualification(), status: 'refused', refusalCodes: ['PRIVATE_REASON'] } as never)), { platform: 'linux', arch: 'x64' }); await unknownRefusal.onStart(); assert.equal(unknownRefusal.projection().safeCode, 'QUALIFICATION_PROTOCOL_INVALID');

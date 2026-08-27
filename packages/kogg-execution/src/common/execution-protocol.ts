@@ -2,6 +2,7 @@
 // diagnostic-exempt: Pure declarations have no independent runtime state.
 export const KoggExecutionServicePath = '/services/kogg-execution';
 export const KoggExecutionService = Symbol('KoggExecutionService');
+export const ExecutionTargetBindingAuthority = Symbol('ExecutionTargetBindingAuthority');
 
 export type ExecutionQualificationCode = 'EXECUTION_OK' | 'QUALIFICATION_PLATFORM_UNSUPPORTED'
   | 'QUALIFICATION_PROFILE_UNAVAILABLE' | 'QUALIFICATION_PROTOCOL_INVALID' | 'QUALIFICATION_EXPIRED'
@@ -32,6 +33,11 @@ export interface ExecutionBindingV1 {
   readonly targetId: string; readonly qualificationId: string; readonly qualificationDigest: string;
   readonly profileId: 'kogg-writable-agent-v1'; readonly profileDigest: string;
 }
+export interface ExecutionTargetBindingV1 {
+  readonly targetId: string; readonly qualificationId: string; readonly qualificationDigest: string;
+  readonly profileId: 'kogg-writable-agent-v1'; readonly profileDigest: string;
+}
+export interface ExecutionTargetBindingAuthority { resolveTargetBinding(): Promise<ExecutionTargetBindingV1 | undefined>; }
 export interface ReserveExecutionAllocationV1 {
   readonly requestId: string; readonly binding: ExecutionBindingV1;
   readonly quotaBytes: string; readonly quotaInodes: string;
