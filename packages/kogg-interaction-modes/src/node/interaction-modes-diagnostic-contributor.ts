@@ -20,7 +20,9 @@ export class InteractionModesDiagnosticContributor implements KoggDiagnosticCont
       return [
         check('interaction-modes.registry', healthy, healthy ? 'The durable mode registry and event chain are valid.' : 'The durable mode registry requires recovery.'),
         check('interaction-modes.authority', healthy && value.degradedCount === 0, value.degradedCount ? 'One or more task mode bindings are degraded.' : 'Stored task mode bindings are internally consistent.'),
-        check('interaction-modes.transitions', false, 'Production transition and confirmation authority is not connected.'),
+        check('interaction-modes.transitions', false, value.pendingTransitionCount
+          ? 'A durable transition is pending; confirmation, cleanup, and commit owners are not connected.'
+          : 'Durable intent and backend-only actor envelopes are available; confirmation, cleanup, and commit owners are not connected.'),
         check('interaction-modes.operations', healthy && value.admission === 'enabled', 'Closed operation authorization is available.'),
         check('interaction-modes.restoration', healthy && value.admission === 'enabled', 'Mode startup restoration is complete.'),
         check('interaction-modes.worktrees', false, 'Build and Kogg worktree transition ownership is not connected.'),

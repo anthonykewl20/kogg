@@ -13,11 +13,12 @@ export type ModeOperationV1 = 'research' | 'plan-save' | 'plan-approval-request'
 export type ModeSafeCodeV1 = 'MODE_OK' | 'MODE_PROTOCOL_INVALID' | 'MODE_TASK_STALE' | 'MODE_TASK_UNAVAILABLE'
   | 'MODE_REQUEST_CONFLICT' | 'MODE_AUTHORITY_REFUSED' | 'PLAN_MUTATION_REFUSED' | 'BUILD_EVIDENCE_REFUSED'
   | 'BUILD_VERDICT_REFUSED' | 'BUILD_MERGE_REFUSED' | 'MODE_RESTORE_DEGRADED' | 'MODE_REGISTRY_UNAVAILABLE'
-  | 'MODE_REGISTRY_INTEGRITY_FAILED';
+  | 'MODE_REGISTRY_INTEGRITY_FAILED' | 'MODE_EXPANSION_CONFIRMATION_REQUIRED' | 'MODE_TRANSITION_CONFLICT'
+  | 'MODE_ACTIVE_OPERATION' | 'MODE_TRANSITION_EXPIRED';
 export interface ModeProjectionV1 {
   readonly schemaVersion: 1; readonly taskId: string; readonly projectId: string; readonly repositoryId: string;
   readonly taskRevision: string; readonly selectedMode: InteractionModeV1; readonly effectiveCapabilities: readonly ModeCapabilityV1[];
-  readonly sequence: string; readonly state: 'ready' | 'restore-degraded' | 'quarantined'; readonly activeStage: string;
+  readonly sequence: string; readonly state: 'ready' | 'transition-pending' | 'restore-degraded' | 'quarantined'; readonly activeStage: string;
   readonly safeCode: ModeSafeCodeV1;
 }
 export interface ModeReadRequestV1 { readonly requestId: string; readonly taskId: string; }

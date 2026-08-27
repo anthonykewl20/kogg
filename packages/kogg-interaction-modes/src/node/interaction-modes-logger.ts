@@ -10,13 +10,27 @@ type Fields = {
   'mode.operation.requested': { requestId: string; taskId: string; selectedMode: InteractionModeV1; operation: ModeOperationV1 };
   'mode.operation.approved': { requestId: string; taskId: string; selectedMode: InteractionModeV1; operation: ModeOperationV1; safeCode: ModeSafeCodeV1 };
   'mode.operation.refused': { requestId: string; taskId: string; selectedMode: InteractionModeV1; operation: ModeOperationV1; safeCode: ModeSafeCodeV1 };
+  'mode.transition.requested': { requestId: string; taskId: string; fromMode: InteractionModeV1; toMode: InteractionModeV1 };
+  'mode.transition.awaiting-confirmation': { requestId: string; taskId: string; fromMode: InteractionModeV1; toMode: InteractionModeV1; safeCode: ModeSafeCodeV1 };
+  'mode.transition.cleanup-pending': { requestId: string; taskId: string; fromMode: InteractionModeV1; toMode: InteractionModeV1; safeCode: ModeSafeCodeV1 };
+  'mode.transition.committed': { requestId: string; taskId: string; fromMode: InteractionModeV1; toMode: InteractionModeV1; safeCode: ModeSafeCodeV1 };
+  'mode.transition.cancelled': { requestId: string; taskId: string; fromMode: InteractionModeV1; toMode: InteractionModeV1; safeCode: ModeSafeCodeV1 };
+  'mode.transition.expired': { taskId: string; fromMode: InteractionModeV1; toMode: InteractionModeV1; safeCode: ModeSafeCodeV1 };
+  'mode.transition.refused': { requestId: string; taskId: string; fromMode: InteractionModeV1; toMode: InteractionModeV1; safeCode: ModeSafeCodeV1 };
 };
 const FIELDS: { [K in keyof Fields]: readonly (keyof Fields[K])[] } = {
   'registry.start.requested': [], 'registry.start.completed': ['restoredCount'], 'registry.start.failed': ['safeCode', 'errorType'],
   'mode.selected': ['requestId', 'taskId', 'selectedMode', 'safeCode'], 'mode.restored': ['requestId', 'taskId', 'selectedMode', 'safeCode'],
   'mode.operation.requested': ['requestId', 'taskId', 'selectedMode', 'operation'],
   'mode.operation.approved': ['requestId', 'taskId', 'selectedMode', 'operation', 'safeCode'],
-  'mode.operation.refused': ['requestId', 'taskId', 'selectedMode', 'operation', 'safeCode']
+  'mode.operation.refused': ['requestId', 'taskId', 'selectedMode', 'operation', 'safeCode'],
+  'mode.transition.requested': ['requestId', 'taskId', 'fromMode', 'toMode'],
+  'mode.transition.awaiting-confirmation': ['requestId', 'taskId', 'fromMode', 'toMode', 'safeCode'],
+  'mode.transition.cleanup-pending': ['requestId', 'taskId', 'fromMode', 'toMode', 'safeCode'],
+  'mode.transition.committed': ['requestId', 'taskId', 'fromMode', 'toMode', 'safeCode'],
+  'mode.transition.cancelled': ['requestId', 'taskId', 'fromMode', 'toMode', 'safeCode'],
+  'mode.transition.expired': ['taskId', 'fromMode', 'toMode', 'safeCode'],
+  'mode.transition.refused': ['requestId', 'taskId', 'fromMode', 'toMode', 'safeCode']
 };
 let violations = 0;
 export function modeLog<K extends keyof Fields>(event: K, fields: Fields[K]): void {
@@ -24,6 +38,7 @@ export function modeLog<K extends keyof Fields>(event: K, fields: Fields[K]): vo
     violations++; console.error('[kogg:interaction-modes:service] logging.schema.violation', { event }); return;
   }
   if (event.endsWith('failed') || event.endsWith('refused')) console.error('[kogg:interaction-modes:service]', event, fields);
+  else if (event.endsWith('expired')) console.warn('[kogg:interaction-modes:service]', event, fields);
   else console.info('[kogg:interaction-modes:service]', event, fields);
 }
 export function modeLoggingDiagnostics(): { readonly violationCount: number } { return { violationCount: violations }; }
