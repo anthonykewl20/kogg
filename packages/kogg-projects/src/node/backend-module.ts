@@ -2,7 +2,7 @@ import { KoggDiagnosticContribution } from '@kogg/contracts';
 import { BackendApplicationContribution } from '@theia/core/lib/node';
 import { ConnectionHandler, JsonRpcConnectionHandler } from '@theia/core/lib/common/messaging';
 import { ContainerModule } from '@theia/core/shared/inversify';
-import { KoggProjectsServicePath, ProjectBindingAuthority, type KoggProjectsService } from '../common/projects-protocol';
+import { KoggProjectsServicePath, ProjectBindingAuthority, ProjectSourceBindingAuthority, type KoggProjectsService } from '../common/projects-protocol';
 import { ProjectDiagnosticContributor } from './project-diagnostic-contributor';
 import { ProjectRegistry } from './project-registry';
 import { ProjectRepositoryProbe } from './project-repository-probe';
@@ -14,6 +14,7 @@ export default new ContainerModule(bind => {
   bind(ProjectWorkspaceProjection).toSelf().inSingletonScope();
   bind(ProjectRegistry).toSelf().inSingletonScope();
   bind(ProjectBindingAuthority).toService(ProjectRegistry);
+  bind(ProjectSourceBindingAuthority).toService(ProjectRegistry);
   bind(BackendApplicationContribution).toService(ProjectRegistry);
   bind(ProjectOperationsOwnerWiring).toSelf().inSingletonScope();
   bind(BackendApplicationContribution).toService(ProjectOperationsOwnerWiring);

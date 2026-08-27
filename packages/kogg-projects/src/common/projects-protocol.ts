@@ -12,6 +12,7 @@ import type {
 export const KoggProjectsServicePath = '/services/kogg-projects';
 export const KoggProjectsService = Symbol('KoggProjectsService');
 export const ProjectBindingAuthority = Symbol('ProjectBindingAuthority');
+export const ProjectSourceBindingAuthority = Symbol('ProjectSourceBindingAuthority');
 
 export interface ProjectBindingSnapshot {
   readonly projectId: string;
@@ -27,6 +28,12 @@ export interface ProjectBindingSnapshot {
 
 export interface ProjectBindingAuthority {
   resolveBinding(projectId: string, repositoryId: string): Promise<ProjectBindingSnapshot | undefined>;
+}
+export interface ProjectSourceBindingSnapshot extends ProjectBindingSnapshot {
+  readonly gitDirectoryUri: string; readonly baseCommit: string; readonly baseTree: string; readonly gitObjectFormat: 'sha1' | 'sha256';
+}
+export interface ProjectSourceBindingAuthority {
+  resolveSourceBinding(projectId: string, repositoryId: string): Promise<ProjectSourceBindingSnapshot | undefined>;
 }
 
 export interface KoggProjectsService {

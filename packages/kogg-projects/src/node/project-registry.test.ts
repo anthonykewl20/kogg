@@ -46,6 +46,12 @@ test('persists projects, settings, roles, switching, and restart restoration aga
     const reconciliation = await runtime.registry.reconcileWorkspace({ requestId: randomUUID(), currentWorkspaceUri: ticket.workspaceUri });
     assert.equal(reconciliation.snapshot.activeProjectId, projectId);
     assert.equal(reconciliation.action, 'none');
+    const source = await runtime.registry.resolveSourceBinding(projectId, repositoryId);
+    assert.equal(source?.gitObjectFormat, 'sha1');
+    assert.equal(source?.baseCommit, git(fixture.repository, 'HEAD^{commit}'));
+    assert.equal(source?.baseTree, git(fixture.repository, 'HEAD^{tree}'));
+    assert.equal(source?.registryRevision, reconciliation.snapshot.revision);
+    assert.match(source?.gitDirectoryUri ?? '', /^file:/u);
     const workspacePath = path.join(fixture.state, 'projects', 'workspaces', `${projectId}.theia-workspace`);
     const workspace = JSON.parse(await readFile(workspacePath, 'utf8')) as { folders: Array<{ path: string }> };
     assert.equal(workspace.folders.length, 1);
@@ -267,6 +273,9 @@ test('registers the real Git process before start and emits bounded cleanup with
     const probe = new ProjectRepositoryProbe(processManager, logger(), operationRegistry());
     const result = await probe.probe(fixture.repository, randomUUID(), randomUUID());
     assert.match(result.rootUri, /^file:/u);
+    const source = await probe.measureSource(fixture.repository, randomUUID());
+    assert.equal(source.baseCommit, git(fixture.repository, 'HEAD^{commit}'));
+    assert.equal(source.baseTree, git(fixture.repository, 'HEAD^{tree}'));
     assert.equal(probe.activeCount(), 0);
     const trace = lines.join('\n');
     const registered = trace.indexOf('repository.process.registered');
@@ -274,6 +283,9 @@ test('registers the real Git process before start and emits bounded cleanup with
     const completed = trace.indexOf('repository.validate.completed');
     const cleanup = trace.indexOf('repository.process.cleanup.completed');
     assert(registered >= 0 && registered < started && started < completed && completed < cleanup);
+    assert.equal((trace.match(/repository\.source\.measurement\.started/gu) ?? []).length, 2);
+    assert.equal((trace.match(/repository\.source\.measurement\.completed/gu) ?? []).length, 2);
+    assert.equal((trace.match(/repository\.process\.cleanup\.completed/gu) ?? []).length, 3);
     assert.equal(trace.includes(fixture.repository), false);
     assert.equal(trace.includes('rev-parse'), false);
     processManager.onStop();
@@ -281,6 +293,21 @@ test('registers the real Git process before start and emits bounded cleanup with
     console.info = original.info; console.warn = original.warn; console.error = original.error;
     await rm(fixture.root, { recursive: true, force: true });
   }
+});
+
+test('refuses a source binding when the registered repository changes during measurement', async () => {
+  const fixture = await createFixture();
+  try {
+    const runtime = runtimeFor(fixture.state); await runtime.registry.onStart();
+    const created = await runtime.registry.createProject({ requestId: randomUUID(), expectedRegistryRevision: 1, displayName: 'Drift', repositoryPath: fixture.repository });
+    const projectId = created.projects[0]!.id; const repositoryId = created.projects[0]!.repositories[0]!.id;
+    const ticket = await runtime.registry.requestSwitch({ requestId: randomUUID(), expectedRegistryRevision: created.revision, projectId });
+    await runtime.registry.reconcileWorkspace({ requestId: randomUUID(), currentWorkspaceUri: ticket.workspaceUri });
+    const original = runtime.probe.measureSource.bind(runtime.probe); const moved = `${fixture.repository}-moved`;
+    runtime.probe.measureSource = async (...args) => { const result = await original(...args); await rename(fixture.repository, moved); return result; };
+    assert.equal(await runtime.registry.resolveSourceBinding(projectId, repositoryId), undefined);
+    await rename(moved, fixture.repository); await runtime.registry.onStop();
+  } finally { await rm(fixture.root, { recursive: true, force: true }); }
 });
 
 test('times out and cancels real hanging Git children with terminal cleanup and no residual process', async () => {
@@ -300,6 +327,11 @@ test('times out and cancels real hanging Git children with terminal cleanup and 
       (error: unknown) => error instanceof ProjectError && error.code === 'PROJECT_REPOSITORY_PROBE_TIMEOUT');
     assert.equal(timeoutProbe.activeCount(), 0); timeoutManager.onStop();
 
+    const sourceTimeoutManager = new ProcessManager(logger()); const sourceTimeoutProbe = new ProjectRepositoryProbe(sourceTimeoutManager, logger(), operationRegistry(), 100);
+    await assert.rejects(sourceTimeoutProbe.measureSource(fixture.repository, randomUUID()),
+      (error: unknown) => error instanceof ProjectError && error.code === 'PROJECT_REPOSITORY_PROBE_TIMEOUT');
+    assert.equal(sourceTimeoutProbe.activeCount(), 0); sourceTimeoutManager.onStop();
+
     const cancelManager = new ProcessManager(logger()); const cancelProbe = new ProjectRepositoryProbe(cancelManager, logger(), operationRegistry(), 30_000);
     const pending = cancelProbe.probe(fixture.repository, randomUUID(), randomUUID());
     await new Promise(resolve => setTimeout(resolve, 50)); await cancelProbe.shutdown();
@@ -307,9 +339,10 @@ test('times out and cancels real hanging Git children with terminal cleanup and 
     assert.equal(cancelProbe.activeCount(), 0); cancelManager.onStop();
     const trace = lines.join('\n');
     assert.match(trace, /repository\.validate\.timeout/u);
+    assert.match(trace, /repository\.source\.measurement\.timeout/u);
     assert.match(trace, /repository\.validate\.cancelled/u);
     assert.match(trace, /"exitClass":"cancelled"/u);
-    assert.equal((trace.match(/repository\.process\.cleanup\.completed/gu) ?? []).length, 2);
+    assert.equal((trace.match(/repository\.process\.cleanup\.completed/gu) ?? []).length, 3);
     assert.equal(trace.includes(fixture.repository), false);
   } finally {
     process.env.PATH = previousPath;
@@ -329,9 +362,12 @@ async function initializeRepository(repository: string): Promise<void> {
   await mkdir(repository);
   const initialized = spawnSync('git', ['init', '--quiet', repository], { env: { PATH: process.env.PATH ?? '', LC_ALL: 'C' } });
   assert.equal(initialized.status, 0);
+  await writeFile(path.join(repository, 'README.md'), 'fixture\n', 'utf8');
+  assert.equal(spawnSync('git', ['-C', repository, 'add', 'README.md'], { env: { PATH: process.env.PATH ?? '', LC_ALL: 'C' } }).status, 0);
+  assert.equal(spawnSync('git', ['-C', repository, '-c', 'user.name=Kogg Fixture', '-c', 'user.email=fixture@kogg.invalid', 'commit', '--quiet', '-m', 'fixture'], { env: { PATH: process.env.PATH ?? '', LC_ALL: 'C' } }).status, 0);
 }
 
-function runtimeFor(state: string): { registry: ProjectRegistry } {
+function runtimeFor(state: string): { registry: ProjectRegistry; probe: ProjectRepositoryProbe } {
   process.env.KOGG_STATE_DIR = state;
   const processManager = new ProcessManager(logger());
   const probe = new ProjectRepositoryProbe(processManager, logger(), operationRegistry());
@@ -339,7 +375,12 @@ function runtimeFor(state: string): { registry: ProjectRegistry } {
   const providers = {
     getProvider: (id: string) => id === 'ollama' ? { id: 'ollama' } : undefined
   } as unknown as ProviderRegistry;
-  return { registry: new ProjectRegistry(probe, projection, providers, operationRegistry()) };
+  return { registry: new ProjectRegistry(probe, projection, providers, operationRegistry()), probe };
+}
+
+function git(repository: string, revision: string): string {
+  const result = spawnSync('git', ['-C', repository, 'rev-parse', '--verify', revision], { encoding: 'utf8', env: { PATH: process.env.PATH ?? '', LC_ALL: 'C' } });
+  assert.equal(result.status, 0); return result.stdout.trim();
 }
 
 function logger(): ILogger {
@@ -357,6 +398,7 @@ function operationRegistry(): OperationRegistryApi {
     async snapshot() { throw new Error('unused'); },
     async cancel() { throw new Error('unused'); },
     async recoveryResult() { return { status: 'missing' }; },
+    async processExecutionAttestation() { return undefined; },
     diagnostics() { throw new Error('unused'); }
   };
 }
