@@ -3,7 +3,7 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
-import type { ExecutionBindingV1, ReserveExecutionAllocationV1 } from '../common/execution-protocol';
+import type { ExecutionAllocationSummaryV1, ExecutionBindingV1, RecordPhysicalAllocationV1, ReserveExecutionAllocationV1 } from '../common/execution-protocol';
 import { CANDIDATE_MUTATION_POLICY_DIGEST } from './candidate-sealer';
 import { AllocationRegistryError, ExecutionAllocationRegistry } from './execution-allocation-registry';
 
@@ -94,7 +94,10 @@ test('persists only legal binding-and-revision-fenced state transitions with exa
   const root = await mkdtemp(path.join(os.tmpdir(), 'kogg-allocation-state-')); process.env.KOGG_STATE_DIR = root; const registry = allocationRegistry(); await registry.onStart();
   try {
     const allocation = await registry.reserve(allocationRequest()); const request = { requestId: '10000000-0000-4000-8000-00000000000c', worktreeId: allocation.worktreeId, expectedRevision: '1', bindingDigest: allocation.bindingDigest, nextState: 'allocated' as const, safeCode: 'ALLOCATION_OK' as const };
-    const advanced = await registry.advance(request); assert.equal(advanced.state, 'allocated'); assert.equal(advanced.revision, '2'); assert.deepEqual(await registry.advance(request), advanced);
+    await assert.rejects(() => registry.advance(request), (error: unknown) => error instanceof AllocationRegistryError && error.code === 'ALLOCATION_STATE_INVALID');
+    const proof = physicalAllocationProof(allocation, allocationRequest(), '10000000-0000-4000-8000-000000000019');
+    const advanced = await registry.recordPhysicalAllocation(proof); assert.equal(advanced.state, 'allocated'); assert.equal(advanced.revision, '2'); assert.deepEqual(await registry.recordPhysicalAllocation(proof), advanced);
+    await assert.rejects(() => registry.recordPhysicalAllocation({ ...proof, quotaProjectId: '8' }), (error: unknown) => error instanceof AllocationRegistryError && error.code === 'ALLOCATION_REQUEST_REPLAY_MISMATCH');
     await assert.rejects(() => registry.advance({ ...request, requestId: '10000000-0000-4000-8000-00000000000d', expectedRevision: '2', nextState: 'sealed' }), (error: unknown) => error instanceof AllocationRegistryError && error.code === 'ALLOCATION_STATE_INVALID');
     await assert.rejects(() => registry.advance({ ...request, requestId: '10000000-0000-4000-8000-00000000000e', expectedRevision: '1', nextState: 'seeding' }), (error: unknown) => error instanceof AllocationRegistryError && error.code === 'ALLOCATION_REVISION_CONFLICT');
     await assert.rejects(() => registry.advance({ ...request, requestId: '10000000-0000-4000-8000-00000000000f', expectedRevision: '2', bindingDigest: `sha256:${'b'.repeat(64)}`, nextState: 'seeding' }), (error: unknown) => error instanceof AllocationRegistryError && error.code === 'ALLOCATION_BINDING_MISMATCH');
@@ -186,15 +189,25 @@ function allocationRequest(): ReserveExecutionAllocationV1 {
   return { requestId: '10000000-0000-4000-8000-00000000000b', binding: binding(), quotaBytes: '1073741824', quotaInodes: '100000' };
 }
 function allocationRegistry(authorize: (binding: ExecutionBindingV1) => Promise<boolean> = async () => true): ExecutionAllocationRegistry {
-  return new ExecutionAllocationRegistry({ authorize } as never);
+  return new ExecutionAllocationRegistry({ authorize, authorizePhysicalAllocation: async (binding: ExecutionBindingV1) => authorize(binding) } as never);
 }
 async function advanceToStopping(registry: ExecutionAllocationRegistry) {
   return advanceRequestToStopping(registry, allocationRequest());
 }
 async function advanceRequestToStopping(registry: ExecutionAllocationRegistry, request: ReserveExecutionAllocationV1, requestNamespace = '20000000') {
-  let allocation = await registry.reserve(request); const states = ['allocated', 'seeding', 'verified', 'ready', 'leased', 'executing', 'stopping'] as const;
+  let allocation = await registry.reserve(request);
+  allocation = await registry.recordPhysicalAllocation(physicalAllocationProof(allocation, request, `${requestNamespace}-0000-4000-8000-0000000000fe`));
+  const states = ['seeding', 'verified', 'ready', 'leased', 'executing', 'stopping'] as const;
   for (let index = 0; index < states.length; index++) allocation = await registry.advance({ requestId: `${requestNamespace}-0000-4000-8000-00000000000${index}`, worktreeId: allocation.worktreeId, expectedRevision: allocation.revision, bindingDigest: allocation.bindingDigest, nextState: states[index]!, safeCode: 'ALLOCATION_OK' });
   return allocation;
+}
+function physicalAllocationProof(allocation: ExecutionAllocationSummaryV1, request: ReserveExecutionAllocationV1, requestId: string): RecordPhysicalAllocationV1 {
+  return {
+    requestId, worktreeId: allocation.worktreeId, expectedRevision: allocation.revision, bindingDigest: allocation.bindingDigest,
+    allocationName: allocation.allocationName, allocationNonceDigest: allocation.allocationNonceDigest,
+    filesystemDevice: '2049', filesystemInode: '4001', ownerUid: '1000', mode: '0700', mountId: '55', quotaProjectId: '7',
+    quotaBytes: request.quotaBytes, quotaInodes: request.quotaInodes, helperDigest: `sha256:${'8'.repeat(64)}`, mountQuotaDigest: `sha256:${'9'.repeat(64)}`
+  };
 }
 function candidateFor(allocation: Awaited<ReturnType<typeof advanceToStopping>>, candidateId: string) {
   const base = allocationRequest().binding;

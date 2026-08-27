@@ -35,6 +35,11 @@ export class ExecutionTargetRegistry implements BackendApplicationContribution {
     else executionLog('qualification.authorization.refused', { targetId: binding.targetId, qualificationId: binding.qualificationId, safeCode: current.qualified ? 'QUALIFICATION_PROTOCOL_INVALID' : current.safeCode });
     return authorized;
   }
+  async authorizePhysicalAllocation(binding: ExecutionBindingV1, helperDigest: string, mountQuotaDigest: string): Promise<boolean> {
+    if (!await this.authorize(binding)) return false;
+    const authority = this.authority;
+    return authority !== undefined && equal(authority.launcherDigest, helperDigest) && equal(authority.mountQuotaDigest, mountQuotaDigest);
+  }
   async refresh(): Promise<ExecutionQualificationProjection> {
     executionLog('qualification.started', { targetId: this.targetId });
     if (this.runtime.platform !== 'linux' || this.runtime.arch !== 'x64') return this.invalidate('QUALIFICATION_PLATFORM_UNSUPPORTED');

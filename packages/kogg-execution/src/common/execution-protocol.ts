@@ -42,6 +42,13 @@ export interface ExecutionAllocationSummaryV1 {
   readonly state: ExecutionState; readonly revision: string; readonly cleanupState: 'required' | 'cleaning' | 'cleaned' | 'failed';
   readonly safeCode: ExecutionLifecycleCode;
 }
+export interface RecordPhysicalAllocationV1 {
+  readonly requestId: string; readonly worktreeId: string; readonly expectedRevision: string; readonly bindingDigest: string;
+  readonly allocationName: string; readonly allocationNonceDigest: string; readonly filesystemDevice: string;
+  readonly filesystemInode: string; readonly ownerUid: string; readonly mode: '0700'; readonly mountId: string;
+  readonly quotaProjectId: string; readonly quotaBytes: string; readonly quotaInodes: string;
+  readonly helperDigest: string; readonly mountQuotaDigest: string;
+}
 export interface ExecutionRunProjectionV1 {
   readonly schemaVersion: 1; readonly projectId: string; readonly repositoryId: string;
   readonly runId: string; readonly attemptId: string; readonly state: ExecutionState; readonly revision: string;

@@ -31,12 +31,14 @@ test('accepts only a fresh closed exact qualification and reports every catalog 
 });
 
 test('requalifies immediately before allocation and authorizes only the exact immutable fact', async () => {
-  const facts = [qualification(), qualification(), qualification()]; let calls = 0;
-  const registry = new ExecutionTargetRegistry(bridge(async () => facts[calls++]!), { platform: 'linux', arch: 'x64' });
+  const fact = qualification(); let calls = 0;
+  const registry = new ExecutionTargetRegistry(bridge(async () => { calls++; return fact; }), { platform: 'linux', arch: 'x64' });
   await registry.onStart();
-  assert.equal(await registry.authorize(bindingFor(facts[1]!)), true);
-  assert.equal(await registry.authorize({ ...bindingFor(facts[2]!), qualificationDigest: `sha256:${'f'.repeat(64)}` }), false);
-  assert.equal(calls, 3);
+  assert.equal(await registry.authorize(bindingFor(fact)), true);
+  assert.equal(await registry.authorize({ ...bindingFor(fact), qualificationDigest: `sha256:${'f'.repeat(64)}` }), false);
+  assert.equal(await registry.authorizePhysicalAllocation(bindingFor(fact), fact.launcherDigest, fact.mountQuotaDigest), true);
+  assert.equal(await registry.authorizePhysicalAllocation(bindingFor(fact), `sha256:${'f'.repeat(64)}`, fact.mountQuotaDigest), false);
+  assert.equal(calls, 5);
 });
 
 test('invalid, expired, and failed owner results remain unqualified with closed failures', async () => {
