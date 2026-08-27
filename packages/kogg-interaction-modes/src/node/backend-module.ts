@@ -6,11 +6,13 @@ import { KoggInteractionModesServicePath, type KoggInteractionModesService } fro
 import { InteractionModeRegistry } from './interaction-mode-registry';
 import { ModeTransitionAuthority } from './mode-transition-authority';
 import { InteractionModesDiagnosticContributor } from './interaction-modes-diagnostic-contributor';
+import { InteractionModeHttpController } from './interaction-mode-http-controller';
 
 // diagnostic-coverage: interaction-modes.registry, interaction-modes.authority, interaction-modes.operations, interaction-modes.restoration
 export default new ContainerModule(bind => {
   bind(ModeTransitionAuthority).toSelf().inSingletonScope();
   bind(InteractionModeRegistry).toSelf().inSingletonScope(); bind(BackendApplicationContribution).toService(InteractionModeRegistry);
+  bind(InteractionModeHttpController).toSelf().inSingletonScope(); bind(BackendApplicationContribution).toService(InteractionModeHttpController);
   bind(InteractionModesDiagnosticContributor).toSelf().inSingletonScope(); bind(KoggDiagnosticContribution).toService(InteractionModesDiagnosticContributor);
   bind(ConnectionHandler).toDynamicValue(context => new JsonRpcConnectionHandler<KoggInteractionModesService>(KoggInteractionModesServicePath, () => context.container.get(InteractionModeRegistry))).inSingletonScope();
 });
