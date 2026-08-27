@@ -2,10 +2,12 @@ import assert from 'node:assert/strict';
 import { mkdtemp, rm } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
 import test from 'node:test';
 import type { ExecutionAllocationSummaryV1, ExecutionBindingV1, RecordPhysicalAllocationV1, ReserveExecutionAllocationV1 } from '../common/execution-protocol';
 import { CANDIDATE_MUTATION_POLICY_DIGEST } from './candidate-sealer';
 import { AllocationRegistryError, ExecutionAllocationRegistry } from './execution-allocation-registry';
+import { OperationsReadModel } from '@kogg/operations/lib/node/operations-read-model';
 
 // diagnostic-coverage: execution.worktree-registry, execution.capacity, execution.recovery
 test('reserves one opaque allocation identity before effects and replays only an identical request', async () => {
@@ -26,6 +28,32 @@ test('reserves one opaque allocation identity before effects and replays only an
     assert.equal(diagnostics.integrity, true); assert.equal(diagnostics.foreignKeys, true); assert.equal(diagnostics.permissions, true);
     assert.equal(logs.join('\n').includes('private-target-canary'), false);
   } finally { console.info = original.info; console.warn = original.warn; registry.onStop(); await rm(root, { recursive: true, force: true }); }
+});
+
+test('publishes restart-safe execution owner facts into the operations projection', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'kogg-allocation-owner-')); process.env.KOGG_STATE_DIR = root;
+  const projection = new OperationsReadModel(path.join(root, 'operations.sqlite3')); await projection.onStart(); projection.registerOwner('execution');
+  const first = allocationRegistry(); await first.onStart(); first.setOwnerSink(projection);
+  try {
+    let allocation = await first.reserve(allocationRequest());
+    allocation = await first.recordPhysicalAllocation(physicalAllocationProof(allocation, allocationRequest(), '10000000-0000-4000-8000-000000000019'));
+    allocation = await first.advance({ requestId: '10000000-0000-4000-8000-00000000001a', worktreeId: allocation.worktreeId, expectedRevision: allocation.revision, bindingDigest: allocation.bindingDigest, nextState: 'seeding', safeCode: 'ALLOCATION_OK' });
+    assert.deepEqual(projection.timeline(allocation.runId).map(event => event.eventKind), ['execution.admitted', 'execution.started', 'execution.started']);
+    assert.equal(projection.diagnostics().ownerCount, 1); assert.equal(projection.diagnostics().faultCount, 0);
+    first.onStop(); const recovered = allocationRegistry(); await recovered.onStart(); recovered.setOwnerSink(projection);
+    assert.equal(projection.timeline(allocation.runId).at(-1)?.eventKind, 'execution.quarantined');
+    assert.equal(projection.diagnostics().faultCount, 0); recovered.onStop();
+  } finally { first.onStop(); projection.onStop(); await rm(root, { recursive: true, force: true }); }
+});
+
+test('refuses startup when a durable execution owner fact is altered', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'kogg-allocation-owner-integrity-')); process.env.KOGG_STATE_DIR = root;
+  const first = allocationRegistry(); await first.onStart(); await first.reserve(allocationRequest()); first.onStop();
+  try {
+    const database = new DatabaseSync(path.join(root, 'execution', 'registry.sqlite3'));
+    database.exec('DROP TRIGGER execution_owner_events_update'); database.prepare("UPDATE allocation_events SET safe_code='CLEANUP_FAILED' WHERE sequence=1").run(); database.close();
+    await assert.rejects(allocationRegistry().onStart(), /integrity/u);
+  } finally { await rm(root, { recursive: true, force: true }); }
 });
 
 test('startup quarantines an ambiguous reserved allocation and blocks new admission without replaying effects', async () => {
