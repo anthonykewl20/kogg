@@ -6,6 +6,7 @@ import { BackendApplicationContribution } from '@theia/core/lib/node';
 import { inject, injectable } from '@theia/core/shared/inversify';
 import { KoggOperationRegistry, type OperationLease, type OperationRegistryApi } from '@kogg/operations/lib/common/operations-protocol';
 import { TaskAdmissionAuthority, type TaskAdmissionAuthority as AdmissionAuthority } from '@kogg/tasks/lib/common/tasks-protocol';
+import { KoggModeOperationAuthorizer, type ModeOperationAuthorizer } from '@kogg/interaction-modes/lib/common/interaction-modes-protocol';
 import { agentLog } from '../common/agent-logger';
 import { CredentialLeaseAuthority, type AdapterObservationV1, type AgentAdapterSession, type AgentBindingAuthorizationRequestV1, type AgentBindingAuthorizationResultV1, type AgentMutationResult, type AgentRegistrySnapshot, type AgentSafeCode, type AttemptProjectionV1, type AttemptState, type CancelAttemptRequestV1, type CreateRoleRevisionRequestV1, type CredentialLeaseAuthority as CredentialAuthority, type KoggAgentsClient, type KoggAgentsService, type OpaqueCredentialLease, type RoleRevisionV1, type StartAttemptRequestV1, type UsageProjectionV1 } from '../common/agents-protocol';
 import { AdapterRegistry, AdapterResolutionError } from './adapter-registry';
@@ -31,7 +32,8 @@ export class AgentRegistry implements KoggAgentsService, BackendApplicationContr
   constructor(@inject(TaskAdmissionAuthority) private readonly tasks: AdmissionAuthority,
     @inject(KoggOperationRegistry) private readonly operations: OperationRegistryApi,
     @inject(AdapterRegistry) private readonly adapters: AdapterRegistry,
-    @inject(CredentialLeaseAuthority) private readonly credentials: CredentialAuthority) {}
+    @inject(CredentialLeaseAuthority) private readonly credentials: CredentialAuthority,
+    @inject(KoggModeOperationAuthorizer) private readonly modes: ModeOperationAuthorizer) {}
 
   async onStart(): Promise<void> {
     agentLog('recovery.started', {});
@@ -105,10 +107,23 @@ export class AgentRegistry implements KoggAgentsService, BackendApplicationContr
       validateStart(request); const digest = requestDigest('start', request); const prior = this.replay(request.requestId, digest); if (prior) return prior;
       if (this.admission !== 'enabled') return this.refused(request.requestId, digest, 'start', 'RECOVERY_REQUIRED');
       if (this.registryRevision() !== Number(request.expectedRegistryRevision)) return this.conflict('REGISTRY_REVISION_CONFLICT');
-      const parent = request.parentAttemptId ? this.attempt(request.parentAttemptId) : undefined; attemptId = randomUUID(); const createdAttemptId = attemptId; const rootAttemptId = parent ? str(parent, 'root_attempt_id') : attemptId; const now = new Date().toISOString(); agentLog('attempt.requested', { requestId: request.requestId, attemptId, rootAttemptId, parentAttemptId: request.parentAttemptId });
+      const admission = await this.tasks.resolveAdmission(request.taskAdmissionId);
+      if (!admission) return { kind: 'refused', code: 'TASK_AUTHORITY_STALE', registryRevision: String(this.registryRevision()) };
+      const role = this.role(request.roleRevisionId);
+      const parent = request.parentAttemptId ? this.attempt(request.parentAttemptId) : undefined;
+      const authorityRole = parent ? this.role(str(parent, 'role_revision_id')) : role;
+      let mode: Awaited<ReturnType<ModeOperationAuthorizer['authorizeOperation']>>;
+      try { mode = await this.modes.authorizeOperation({ requestId: request.requestId, taskId: admission.taskId, operation: agentModeOperation(authorityRole) }); }
+      catch { // observability-exempt: the immediately following closed refusal log records MODE_AUTHORITY_REFUSED without leaking authority error details.
+        mode = { allowed: false, safeCode: 'MODE_AUTHORITY_REFUSED' } as Awaited<ReturnType<ModeOperationAuthorizer['authorizeOperation']>>;
+      }
+      if (!mode.allowed) {
+        agentLog('attempt.mode.refused', { requestId: request.requestId, taskId: admission.taskId, safeCode: mode.safeCode });
+        return { kind: 'refused', code: 'POLICY_REFUSED', registryRevision: String(this.registryRevision()) };
+      }
+      attemptId = randomUUID(); const createdAttemptId = attemptId; const rootAttemptId = parent ? str(parent, 'root_attempt_id') : attemptId; const now = new Date().toISOString(); agentLog('attempt.requested', { requestId: request.requestId, attemptId, rootAttemptId, parentAttemptId: request.parentAttemptId });
       this.transaction(() => { const revision = this.bumpRegistry(); this.db().prepare(`INSERT INTO attempts(attempt_id,root_attempt_id,parent_attempt_id,attempt_revision,registry_revision,task_admission_id,task_id,project_id,repository_id,specification_id,approval_id,run_id,role_revision_id,adapter_key,adapter_version,provider_id,requested_model_id,observed_model_id,state,terminal_code,activity_count,child_count,owned_resource_count,usage_json,requested_at,state_changed_at,last_observation_sequence) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(createdAttemptId, rootAttemptId, request.parentAttemptId ?? null, 1, revision, request.taskAdmissionId, '', '', '', '', '', '', request.roleRevisionId, request.adapterKey, request.adapterVersion, request.providerId, request.modelId, null, 'requested', null, 0, 0, 0, JSON.stringify({ status: 'unknown', source: 'none' }), now, now, 0); this.event(createdAttemptId, 'attempt.requested', 'AGENT_OK'); const result: AgentMutationResult = { kind: 'completed', code: 'AGENT_OK', registryRevision: String(revision), attempt: this.projection(this.attempt(createdAttemptId)) }; this.record(request.requestId, digest, 'start', createdAttemptId, result); });
-      const admission = await this.tasks.resolveAdmission(request.taskAdmissionId); if (!admission) { const result = this.terminalRefusal(attemptId, 'TASK_AUTHORITY_STALE'); this.updateRecordedResult(request.requestId, result); return result; }
-      this.updateBindings(attemptId, admission); const role = this.role(request.roleRevisionId); requireRolePolicy(role, request); if (parent) this.requireChild(parent, role, admission);
+      this.updateBindings(attemptId, admission); requireRolePolicy(role, request); if (parent) this.requireChild(parent, role, admission);
       this.transition(attemptId, 'admitted'); agentLog('attempt.admitted', { requestId: request.requestId, attemptId, roleRevisionId: request.roleRevisionId, projectId: admission.projectId, taskId: admission.taskId, runId: admission.runId, safeCode: 'AGENT_OK' });
       if (parent) this.attachChild(parent, attemptId);
       const factory = this.adapters.resolveExact({ adapterKey: request.adapterKey, adapterVersion: request.adapterVersion, providerId: request.providerId, modelId: request.modelId, requiredCapabilities: role.providerPolicy.requiredAdapterCapabilities });
@@ -217,6 +232,7 @@ function validateRoleRequest(request: CreateRoleRevisionRequestV1): void { if (r
 function validateStart(request: StartAttemptRequestV1): void { if (request.schemaVersion !== '1') throw new AgentError('AGENT_REGISTRY_SCHEMA_UNSUPPORTED'); [request.requestId, request.taskAdmissionId, request.roleRevisionId, request.parentAttemptId].filter(Boolean).forEach(value => uuid(value!)); decimal(request.expectedRegistryRevision); [request.providerId, request.modelId, request.adapterKey, request.deadlinePolicyId].forEach(symbolic); }
 function validateCancel(request: CancelAttemptRequestV1): void { if (request.schemaVersion !== '1') throw new AgentError('AGENT_REGISTRY_SCHEMA_UNSUPPORTED'); uuid(request.requestId); uuid(request.attemptId); decimal(request.expectedRegistryRevision); decimal(request.expectedAttemptRevision); }
 function requireRolePolicy(role: RoleRevisionV1, request: Pick<StartAttemptRequestV1, 'providerId' | 'modelId'>): void { if (!role.providerPolicy.permittedProviderIds.includes(request.providerId)) throw new AgentError('POLICY_REFUSED'); if (!role.providerPolicy.permittedModelIds.includes(request.modelId)) throw new AgentError('MODEL_MISMATCH'); }
+function agentModeOperation(role: RoleRevisionV1): 'research' | 'private-mutate' { return role.authority.toolPolicyIds.length === 1 && role.authority.toolPolicyIds[0] === 'read-only' ? 'research' : 'private-mutate'; }
 function normalizedAuthority(value: RoleRevisionV1['authority']): RoleRevisionV1['authority'] { return { ...value, capabilityIds: unique(value.capabilityIds), toolPolicyIds: unique(value.toolPolicyIds), permittedChildRoleKeys: unique(value.permittedChildRoleKeys) }; }
 function normalizedProvider(value: RoleRevisionV1['providerPolicy']): RoleRevisionV1['providerPolicy'] { return { permittedProviderIds: unique(value.permittedProviderIds), permittedModelIds: unique(value.permittedModelIds), requiredAdapterCapabilities: unique(value.requiredAdapterCapabilities) }; }
 function unique(values: readonly string[]): readonly string[] { return [...new Set(values)].sort(); }

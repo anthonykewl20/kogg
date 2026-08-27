@@ -9,6 +9,7 @@ import test from 'node:test';
 import type { EvidenceAdmissionProjectionV1, EvidenceManifestV1, GateEvaluationExpectationV1, GateEvaluationProjectionV1, KernelBridge, KernelResultV2, RepositoryStateV1, TaskBindingProjectionV1, TaskExecutionBindingV1, VerdictReadExpectationV1, VerdictReadProjectionV1 } from '@kogg/contracts';
 import { OperationRegistry } from '@kogg/operations/lib/node/operation-registry';
 import type { TaskAdmissionSnapshot, TaskKernelBindingAuthority, TaskKernelAuthoritySnapshot } from '@kogg/tasks/lib/common/tasks-protocol';
+import type { ModeOperationAuthorizer } from '@kogg/interaction-modes/lib/common/interaction-modes-protocol';
 import type { ILogger } from '@theia/core/lib/common/logger';
 import { ProcessManager } from '@theia/process/lib/node/process-manager';
 import { KernelTaskBindingService } from './kernel-task-binding-service';
@@ -17,6 +18,8 @@ import { KernelEvidenceAdmissionService } from './kernel-evidence-admission-serv
 import { KernelGateEvaluationService } from './kernel-gate-evaluation-service';
 import { KernelVerdictReadService } from './kernel-verdict-read-service';
 import { RanexOwnerIntegrityError } from './ranex-operations-owner';
+
+const MODE_AUTHORITY = { authorizeOperation: async () => ({ allowed: true, safeCode: 'MODE_OK' }) } as unknown as ModeOperationAuthorizer;
 
 test('measures a clean repository and binds only an exact live task authority snapshot', async () => {
   const temporary = await mkdtemp(path.join(os.tmpdir(), 'kogg-kernel-binding-test-'));
@@ -54,21 +57,28 @@ test('measures a clean repository and binds only an exact live task authority sn
     assert.equal((await operations.snapshot()).active.length, 0);
 
     const ranexOwner = { refresh() {} };
-    const evidenceService = new KernelEvidenceAdmissionService(authority, kernel as unknown as KernelBridge, operations, repositories, logger(), ranexOwner as never);
+    const evidenceService = new KernelEvidenceAdmissionService(authority, kernel as unknown as KernelBridge, operations, repositories, logger(), ranexOwner as never, MODE_AUTHORITY);
     const admitted = await evidenceService.admit(admission, fixtureEvidence());
     assert.equal(admitted.status, 'succeeded'); assert.equal(kernel.evidenceCalls, 1);
     assert.equal(kernel.currentSubject?.commitObjectId, kernel.binding?.protectedSource.commitObjectId);
-    const gateService = new KernelGateEvaluationService(authority, kernel as unknown as KernelBridge, operations, repositories, logger(), ranexOwner as never);
+    const gateService = new KernelGateEvaluationService(authority, kernel as unknown as KernelBridge, operations, repositories, logger(), ranexOwner as never, MODE_AUTHORITY);
     const evaluated = await gateService.evaluate(admission, fixtureGateExpectation());
     assert.equal(evaluated.projection?.decision, 'pass'); assert.equal(kernel.gateCalls, 1);
     const corruptOwner = { refresh() { throw new RanexOwnerIntegrityError(new Error('source corruption')); } };
-    const unknownEvidence = await new KernelEvidenceAdmissionService(authority, kernel as unknown as KernelBridge, operations, repositories, logger(), corruptOwner as never).admit(admission, fixtureEvidence());
+    const unknownEvidence = await new KernelEvidenceAdmissionService(authority, kernel as unknown as KernelBridge, operations, repositories, logger(), corruptOwner as never, MODE_AUTHORITY).admit(admission, fixtureEvidence());
     assert.equal(unknownEvidence.status, 'unknown'); assert.equal(unknownEvidence.safeCode, 'KERNEL_OUTCOME_UNKNOWN');
-    const unknownGate = await new KernelGateEvaluationService(authority, kernel as unknown as KernelBridge, operations, repositories, logger(), corruptOwner as never).evaluate(admission, fixtureGateExpectation());
+    const unknownGate = await new KernelGateEvaluationService(authority, kernel as unknown as KernelBridge, operations, repositories, logger(), corruptOwner as never, MODE_AUTHORITY).evaluate(admission, fixtureGateExpectation());
     assert.equal(unknownGate.status, 'unknown'); assert.equal(unknownGate.safeCode, 'KERNEL_OUTCOME_UNKNOWN');
-    const verdictService = new KernelVerdictReadService(authority, kernel as unknown as KernelBridge, operations, repositories, logger());
+    const verdictService = new KernelVerdictReadService(authority, kernel as unknown as KernelBridge, operations, repositories, logger(), MODE_AUTHORITY);
     const read = await verdictService.read(admission, fixtureVerdictRead());
     assert.equal(read.projection?.currentness, 'current'); assert.equal(kernel.verdictReadCalls, 1);
+
+    const deniedModes = { authorizeOperation: async () => ({ schemaVersion: 1, allowed: false, safeCode: 'BUILD_EVIDENCE_REFUSED', projection: {} as never }) } as ModeOperationAuthorizer;
+    const deniedEvidence = await new KernelEvidenceAdmissionService(authority, kernel as unknown as KernelBridge, operations, repositories, logger(), ranexOwner as never, deniedModes).admit(admission, fixtureEvidence());
+    const deniedGate = await new KernelGateEvaluationService(authority, kernel as unknown as KernelBridge, operations, repositories, logger(), ranexOwner as never, deniedModes).evaluate(admission, fixtureGateExpectation());
+    const deniedVerdict = await new KernelVerdictReadService(authority, kernel as unknown as KernelBridge, operations, repositories, logger(), deniedModes).read(admission, fixtureVerdictRead());
+    assert.equal(deniedEvidence.safeCode, 'KERNEL_AUTHORITY_INVALID'); assert.equal(deniedGate.safeCode, 'KERNEL_AUTHORITY_INVALID'); assert.equal(deniedVerdict.safeCode, 'KERNEL_AUTHORITY_INVALID');
+    assert.equal(kernel.evidenceCalls, 2); assert.equal(kernel.gateCalls, 2); assert.equal(kernel.verdictReadCalls, 1); assert.equal((await operations.snapshot()).active.length, 0);
 
     await writeFile(path.join(repository, 'fixture.txt'), 'changed fixture\n');
     const staleEvidence = await evidenceService.admit(admission, fixtureEvidence());

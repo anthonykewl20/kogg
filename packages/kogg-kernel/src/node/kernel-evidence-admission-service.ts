@@ -5,6 +5,7 @@ import {
   type KernelResultV2, KOGG_RANEX_PROTOCOL
 } from '@kogg/contracts';
 import { KoggOperationRegistry, type OperationRegistryApi } from '@kogg/operations/lib/common/operations-protocol';
+import { KoggModeOperationAuthorizer, type ModeOperationAuthorizer } from '@kogg/interaction-modes/lib/common/interaction-modes-protocol';
 import { TaskKernelBindingAuthority, type TaskAdmissionSnapshot, type TaskKernelBindingAuthority as TaskAuthority } from '@kogg/tasks/lib/common/tasks-protocol';
 import { ILogger } from '@theia/core/lib/common/logger';
 import { inject, injectable, named } from '@theia/core/shared/inversify';
@@ -21,10 +22,17 @@ export class KernelEvidenceAdmissionService {
     @inject(KoggOperationRegistry) private readonly operations: OperationRegistryApi,
     @inject(KernelRepositoryStateAuthority) private readonly repositories: KernelRepositoryStateAuthority,
     @inject(ILogger) @named('kogg:kernel:evidence') private readonly logger: ILogger,
-    @inject(RanexOperationsOwner) private readonly ranexOwner: RanexOperationsOwner
+    @inject(RanexOperationsOwner) private readonly ranexOwner: RanexOperationsOwner,
+    @inject(KoggModeOperationAuthorizer) private readonly modes: ModeOperationAuthorizer
   ) {}
 
   async admit(admission: TaskAdmissionSnapshot, evidence: EvidenceManifestV1): Promise<KernelResultV2<EvidenceAdmissionProjectionV1>> {
+    try {
+      const mode = await this.modes.authorizeOperation({ requestId: randomUUID(), taskId: admission.taskId, operation: 'evidence-request' });
+      if (!mode.allowed) { this.logger.warn('evidence.admit.mode-refused', { taskId: admission.taskId, runId: admission.runId, safeCode: mode.safeCode }); return refused('KERNEL_AUTHORITY_INVALID'); }
+    } catch (error) {
+      this.logger.warn('evidence.admit.mode-refused', { taskId: admission.taskId, runId: admission.runId, safeCode: 'MODE_AUTHORITY_REFUSED', errorType: errorName(error) }); return refused('KERNEL_AUTHORITY_INVALID');
+    }
     const operation = await this.operations.startOperation({
       kind: 'evidence', cancellable: true, absoluteTimeoutMs: 30_000,
       correlations: { taskId: admission.taskId, runId: admission.runId }

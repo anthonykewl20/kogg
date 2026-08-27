@@ -50,18 +50,19 @@ test('makes operation and transition request receipts immutable and requires eve
   } finally { first.onStop(); if (prior === undefined) delete process.env.KOGG_STATE_DIR; else process.env.KOGG_STATE_DIR = prior; await rm(root, { recursive: true, force: true }); }
 });
 
-test('removes effective authority when the exact task binding drifts', async () => {
+test('safely rebinds least-privilege Plan authority after an exact task revision advances', async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), 'kogg-interaction-drift-')); const prior = process.env.KOGG_STATE_DIR; process.env.KOGG_STATE_DIR = root;
   const authority = new TaskAuthority(); const registry = createRegistry(authority); await registry.onStart();
   try {
     await registry.get({ requestId: '20000000-0000-4000-8000-000000000001', taskId: TASK.taskId });
     const priorAllowedRequest = { requestId: '20000000-0000-4000-8000-000000000004', taskId: TASK.taskId, operation: 'research' as const };
     assert.equal((await registry.authorizeOperation(priorAllowedRequest)).allowed, true); authority.revision = '2';
-    const degraded = await registry.get({ requestId: '20000000-0000-4000-8000-000000000002', taskId: TASK.taskId });
-    assert.equal(degraded.state, 'restore-degraded'); assert.equal(degraded.safeCode, 'MODE_RESTORE_DEGRADED'); assert.deepEqual(degraded.effectiveCapabilities, []);
-    const refused = await registry.authorizeOperation({ requestId: '20000000-0000-4000-8000-000000000003', taskId: TASK.taskId, operation: 'research' });
-    assert.equal(refused.allowed, false); assert.equal(refused.safeCode, 'MODE_RESTORE_DEGRADED');
-    const replayAfterDrift = await registry.authorizeOperation(priorAllowedRequest); assert.equal(replayAfterDrift.allowed, false); assert.equal(replayAfterDrift.safeCode, 'MODE_RESTORE_DEGRADED');
+    const restored = await registry.get({ requestId: '20000000-0000-4000-8000-000000000002', taskId: TASK.taskId });
+    assert.equal(restored.state, 'ready'); assert.equal(restored.safeCode, 'MODE_OK'); assert.equal(restored.taskRevision, '2'); assert.equal(restored.sequence, '0');
+    const allowed = await registry.authorizeOperation({ requestId: '20000000-0000-4000-8000-000000000003', taskId: TASK.taskId, operation: 'research' });
+    assert.equal(allowed.allowed, true); assert.equal(allowed.safeCode, 'MODE_OK');
+    const replayAfterDrift = await registry.authorizeOperation(priorAllowedRequest); assert.equal(replayAfterDrift.allowed, false); assert.equal(replayAfterDrift.safeCode, 'MODE_TASK_STALE');
+    registry.onStop(); await registry.onStart(); assert.equal((await registry.get({ requestId: '20000000-0000-4000-8000-000000000005', taskId: TASK.taskId })).state, 'ready');
   } finally { registry.onStop(); if (prior === undefined) delete process.env.KOGG_STATE_DIR; else process.env.KOGG_STATE_DIR = prior; await rm(root, { recursive: true, force: true }); }
 });
 

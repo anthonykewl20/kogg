@@ -5,6 +5,7 @@ import {
   type VerdictReadExpectationV1, type VerdictReadProjectionV1
 } from '@kogg/contracts';
 import { KoggOperationRegistry, type OperationRegistryApi } from '@kogg/operations/lib/common/operations-protocol';
+import { KoggModeOperationAuthorizer, type ModeOperationAuthorizer } from '@kogg/interaction-modes/lib/common/interaction-modes-protocol';
 import { TaskKernelBindingAuthority, type TaskAdmissionSnapshot, type TaskKernelBindingAuthority as TaskAuthority } from '@kogg/tasks/lib/common/tasks-protocol';
 import { ILogger } from '@theia/core/lib/common/logger';
 import { inject, injectable, named } from '@theia/core/shared/inversify';
@@ -19,10 +20,17 @@ export class KernelVerdictReadService {
     @inject(KernelBridgeToken) private readonly kernel: KernelBridge,
     @inject(KoggOperationRegistry) private readonly operations: OperationRegistryApi,
     @inject(KernelRepositoryStateAuthority) private readonly repositories: KernelRepositoryStateAuthority,
-    @inject(ILogger) @named('kogg:kernel:verdict') private readonly logger: ILogger
+    @inject(ILogger) @named('kogg:kernel:verdict') private readonly logger: ILogger,
+    @inject(KoggModeOperationAuthorizer) private readonly modes: ModeOperationAuthorizer
   ) {}
 
   async read(admission: TaskAdmissionSnapshot, expectation: VerdictReadExpectationV1): Promise<KernelResultV2<VerdictReadProjectionV1>> {
+    try {
+      const mode = await this.modes.authorizeOperation({ requestId: randomUUID(), taskId: admission.taskId, operation: 'verdict-observe-current' });
+      if (!mode.allowed) { this.logger.warn('verdict.read.mode-refused', { taskId: admission.taskId, runId: admission.runId, safeCode: mode.safeCode }); return refused('KERNEL_AUTHORITY_INVALID'); }
+    } catch (error) {
+      this.logger.warn('verdict.read.mode-refused', { taskId: admission.taskId, runId: admission.runId, safeCode: 'MODE_AUTHORITY_REFUSED', errorType: errorName(error) }); return refused('KERNEL_AUTHORITY_INVALID');
+    }
     const operation = await this.operations.startOperation({ kind: 'verdict', cancellable: true, absoluteTimeoutMs: 30_000, correlations: { taskId: admission.taskId, runId: admission.runId } });
     operation.start(); this.logger.info('verdict.read.started', { operationId: operation.id, taskId: admission.taskId, runId: admission.runId });
     try {

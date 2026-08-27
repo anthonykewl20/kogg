@@ -64,7 +64,7 @@ async function setup(mode: 'success' | 'refusal' | 'cleanup-refusal') {
   await writeFile(binary, source); await chmod(binary, 0o500); const helperDigest = `sha256:${createHash('sha256').update(source).digest('hex')}`;
   await writeFile(manifest, `${JSON.stringify({ schemaVersion: 1, platform: 'linux', architecture: 'x64', sourceDigest: `sha256:${'1'.repeat(64)}`, artifactDigest: helperDigest })}\n`); await chmod(manifest, 0o400);
   const authorized = { authorize: async () => true, authorizePhysicalAllocation: async (_binding: ExecutionBindingV1, candidate: string, mount: string) => candidate === helperDigest && mount === `sha256:${'2'.repeat(64)}` };
-  const allocations = new ExecutionAllocationRegistry(authorized as never); const operations = new OperationRegistry();
+  const allocations = new ExecutionAllocationRegistry(authorized as never, { authorizeOperation: async () => ({ allowed: true, safeCode: 'MODE_OK' }) } as never); const operations = new OperationRegistry();
   await operations.onStart(); await allocations.onStart();
   const targets = { physicalAllocationAuthority: async () => ({ helperDigest, mountQuotaDigest: `sha256:${'2'.repeat(64)}` }) };
   const controller = new NativeAllocationController(allocations, targets, operations, { platform: 'linux', arch: 'x64', allocationRoot, binary, manifest, timeoutMs: 5_000 }); controller.onStart();

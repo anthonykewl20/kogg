@@ -9,6 +9,7 @@ import type { ExecutionAllocationSummaryV1, ExecutionBindingV1, RecordPhysicalAl
 import { CANDIDATE_MUTATION_POLICY_DIGEST } from './candidate-sealer';
 import { AllocationRegistryError, ExecutionAllocationRegistry } from './execution-allocation-registry';
 import { OperationsReadModel } from '@kogg/operations/lib/node/operations-read-model';
+import type { ModeOperationAuthorizer } from '@kogg/interaction-modes/lib/common/interaction-modes-protocol';
 
 // diagnostic-coverage: execution.worktree-registry, execution.process-cleanup, execution.capacity, execution.recovery, execution.retention
 test('reserves one opaque allocation identity before effects and replays only an identical request', async () => {
@@ -92,6 +93,16 @@ test('revalidates the exact live qualification before reserving any allocation i
       (error: unknown) => error instanceof AllocationRegistryError && error.code === 'ALLOCATION_QUALIFICATION_INVALID');
     assert.deepEqual(observed, request.binding);
     assert.equal(registry.diagnostics().reservationCount, 0);
+  } finally { registry.onStop(); await rm(root, { recursive: true, force: true }); }
+});
+
+test('refuses worktree reservation by durable mode authority before qualification or durable allocation state', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'kogg-allocation-mode-')); process.env.KOGG_STATE_DIR = root; let qualificationCalls = 0;
+  const modes = { authorizeOperation: async (request: { taskId: string; operation: string }) => { assert.equal(request.taskId, allocationRequest().binding.taskId); assert.equal(request.operation, 'worktree-create'); return { schemaVersion: 1, allowed: false, safeCode: 'PLAN_MUTATION_REFUSED', projection: {} as never }; } } as ModeOperationAuthorizer;
+  const registry = allocationRegistry(async () => { qualificationCalls++; return true; }, modes); await registry.onStart();
+  try {
+    await assert.rejects(() => registry.reserve(allocationRequest()), (error: unknown) => error instanceof AllocationRegistryError && error.code === 'ALLOCATION_ADMISSION_BLOCKED');
+    assert.equal(qualificationCalls, 0); assert.equal(registry.diagnostics().reservationCount, 0);
   } finally { registry.onStop(); await rm(root, { recursive: true, force: true }); }
 });
 
@@ -344,9 +355,10 @@ test('startup retains an ambiguous import intent and quarantines its allocation 
 function allocationRequest(): ReserveExecutionAllocationV1 {
   return { requestId: '10000000-0000-4000-8000-00000000000b', binding: binding(), quotaBytes: '1073741824', quotaInodes: '100000' };
 }
-function allocationRegistry(authorize: (binding: ExecutionBindingV1) => Promise<boolean> = async () => true): ExecutionAllocationRegistry {
-  return new ExecutionAllocationRegistry({ authorize, authorizePhysicalAllocation: async (binding: ExecutionBindingV1) => authorize(binding) } as never);
+function allocationRegistry(authorize: (binding: ExecutionBindingV1) => Promise<boolean> = async () => true, modes: ModeOperationAuthorizer = MODE_AUTHORITY): ExecutionAllocationRegistry {
+  return new ExecutionAllocationRegistry({ authorize, authorizePhysicalAllocation: async (binding: ExecutionBindingV1) => authorize(binding) } as never, modes);
 }
+const MODE_AUTHORITY = { authorizeOperation: async () => ({ allowed: true, safeCode: 'MODE_OK' }) } as unknown as ModeOperationAuthorizer;
 async function advanceToStopping(registry: ExecutionAllocationRegistry) {
   return advanceRequestToStopping(registry, allocationRequest());
 }
