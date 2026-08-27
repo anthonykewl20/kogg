@@ -7,6 +7,7 @@ import test from 'node:test';
 import type { ProjectBindingAuthority, ProjectBindingSnapshot } from '@kogg/projects/lib/common/projects-protocol';
 import { TaskDiagnosticContributor } from './task-diagnostic-contributor';
 import { TaskRegistry } from './task-registry';
+import { OperationsReadModel } from '@kogg/operations/lib/node/operations-read-model';
 
 const PROJECT = '11111111-1111-4111-8111-111111111111';
 const REPOSITORY = '22222222-2222-4222-8222-222222222222';
@@ -75,6 +76,21 @@ test('fails every task diagnostic safely when registry inspection fails', async 
   const checks = await contributor.diagnose();
   assert.equal(checks.length, 4);
   assert.ok(checks.every(check => check.status === 'fail'));
+});
+
+test('publishes immutable safe task facts into the disposable operations projection', async () => {
+  const temporary = await mkdtemp(path.join(os.tmpdir(), 'kogg-task-owner-projection-test-')); const original = process.env.KOGG_STATE_DIR; process.env.KOGG_STATE_DIR = temporary;
+  const registry = new TaskRegistry(new FixtureAuthority()); const projection = new OperationsReadModel(path.join(temporary, 'operations', 'projection.sqlite3'));
+  try {
+    await registry.onStart(); projection.start(); projection.registerOwner('task'); registry.setOwnerSink(projection);
+    const created = await registry.create({ requestId: crypto.randomUUID(), projectId: PROJECT, repositoryId: REPOSITORY, content: 'never copy this task content' }); const taskId = created.projection!.taskId;
+    const frozen = await registry.freeze(expectation(created.projection!, taskId)); const review = await registry.beginApprovalReview({ requestId: crypto.randomUUID(), taskId, sessionId: SESSION });
+    const approved = await registry.approve({ ...expectation(frozen.projection!, taskId), sessionId: SESSION, challenge: review.challenge! }); const runId = crypto.randomUUID();
+    const admitted = await registry.authorizeAdmission({ ...expectation(approved.projection!, taskId), runId }); assert.equal(admitted.kind, 'completed');
+    const run = projection.snapshot().runs.find(item => item.runId === runId); assert.equal(run?.taskId, taskId); assert.equal(run?.lifecycle, 'unknown');
+    assert(projection.timeline(runId).some(event => event.eventKind === 'admission.authorized')); assert.equal(projection.diagnostics().ownerCount, 1);
+    assert.doesNotMatch(JSON.stringify(projection.snapshot()), /never copy this task content/u);
+  } finally { registry.setOwnerSink(undefined); await registry.onStop(); projection.stop(); if (original === undefined) delete process.env.KOGG_STATE_DIR; else process.env.KOGG_STATE_DIR = original; await rm(temporary, { recursive: true, force: true }); }
 });
 
 test('refuses startup when immutable specification bytes no longer match their digest', async () => {

@@ -109,6 +109,16 @@ try {
         process.exit(0);
     }
 
+    if (process.env.KOGG_E2E_OPERATIONS_ONLY === '1') {
+        await exerciseOperationsStream(page);
+        process.stdout.write('Kogg browser operations-stream E2E passed.\n');
+        await browser.close(); browser = undefined;
+        await stop(backend); backend = undefined;
+        await stop(registry); registry = undefined;
+        await rm(temporary, { recursive: true, force: true });
+        process.exit(0);
+    }
+
     await openCommand(page, 'Kogg: Run Diagnostics');
     await page.getByText(/Diagnostics: FAIL.*kernel\.checks/su).first().waitFor({ timeout: 15_000 });
     await page.keyboard.press('Escape');
@@ -243,6 +253,7 @@ try {
     await createInteractionModeFixture(page);
     await exerciseInteractionModes(page);
     await exerciseOperations(page);
+    await exerciseOperationsStream(page);
 
     for (let cycle = 0; cycle < 25; cycle++) {
         await page.reload({ waitUntil: 'domcontentloaded' });
@@ -864,13 +875,7 @@ async function createInteractionModeFixture(page) {
 }
 
 async function exerciseOperations(page) {
-    const widgets = page.locator('.kogg-operations-widget');
-    if (!await widgets.count()) {
-        await openCommand(page, 'Kogg: Show Operations');
-        await widgets.first().waitFor({ state: 'attached', timeout: 10_000 });
-    }
-    const active = await renderedWidget(widgets);
-    const operations = widgets.nth(active.index);
+    const operations = await ensureOperationsWidget(page);
     await operations.getByRole('button', { name: 'Refresh' }).click();
     await operations.getByText('Admission: enabled').waitFor({ timeout: 10_000 });
     await operations.getByText('ranex-bridge').first().waitFor({ timeout: 10_000 });
@@ -882,6 +887,85 @@ async function exerciseOperations(page) {
         assert.match(visibleOperations, new RegExp(kind, 'u'));
     }
     assert.doesNotMatch(visibleOperations, /pid|argv|environment|prompt|source code/iu);
+}
+
+async function exerciseOperationsStream(page) {
+    const first = await ensureOperationsWidget(page);
+    const secondPage = await page.context().newPage();
+    await secondPage.goto(page.url(), { waitUntil: 'domcontentloaded' });
+    await secondPage.locator('body.kogg-application').waitFor({ timeout: 20_000 });
+    let second = await ensureOperationsWidget(secondPage);
+    const initialSequence = await synchronizeStreamSequences(first, second);
+
+    await openCommand(page, 'Kogg: Run Diagnostics');
+    const advancedFirst = await waitForStreamAdvance(first, initialSequence);
+    const advancedSecond = await waitForStreamAdvance(second, initialSequence);
+    const diagnosticMessage = page.getByText(/Diagnostics: (?:FAIL|WARN|PASS)/u).filter({ visible: true }).first();
+    await diagnosticMessage.waitFor({ timeout: 15_000 });
+    assert.doesNotMatch(await diagnosticMessage.innerText(), /operations\.stream/u);
+    await clearNotifications(page);
+
+    await secondPage.reload({ waitUntil: 'domcontentloaded' });
+    await secondPage.locator('body.kogg-application').waitFor({ timeout: 20_000 });
+    second = await ensureOperationsWidget(secondPage);
+    const reloadedSecond = await streamSequence(second);
+    assert(reloadedSecond >= advancedSecond);
+    const reloadedFirst = await waitForStreamAtLeast(first, reloadedSecond);
+    await openCommand(page, 'Kogg: Run Diagnostics');
+    const resumedFirst = await waitForStreamAdvance(first, reloadedFirst);
+    const resumedSecond = await waitForStreamAdvance(second, reloadedSecond);
+    await clearNotifications(page);
+
+    await secondPage.evaluate(() => sessionStorage.setItem('kogg.operations.stream.cursor.v1', 'corrupt-e2e-cursor'));
+    await secondPage.reload({ waitUntil: 'domcontentloaded' });
+    await secondPage.locator('body.kogg-application').waitFor({ timeout: 20_000 });
+    second = await ensureOperationsWidget(secondPage);
+    await second.getByRole('status').filter({ hasText: /Stream: current/u }).waitFor({ timeout: 10_000 });
+    const recoveredSecond = await streamSequence(second);
+    assert(recoveredSecond >= resumedSecond);
+    await waitForStreamAtLeast(first, recoveredSecond);
+    assert.match(logs.join('\n'), /\[kogg:operations:stream\] resync-required/u);
+    await secondPage.close();
+}
+
+async function ensureOperationsWidget(page) {
+    const widgets = page.locator('.kogg-operations-widget');
+    if (!await widgets.count()) {
+        await openCommand(page, 'Kogg: Show Operations');
+        await widgets.first().waitFor({ state: 'attached', timeout: 10_000 });
+    }
+    const active = await renderedWidget(widgets);
+    assert(active.area > 0);
+    const widget = widgets.nth(active.index);
+    await widget.getByRole('status').filter({ hasText: /Stream: current/u }).waitFor({ timeout: 10_000 });
+    return widget;
+}
+
+async function streamSequence(widget) {
+    const status = await widget.getByRole('status').filter({ hasText: /Stream:/u }).innerText();
+    const match = /sequence (\d+)/u.exec(status);
+    assert(match, `Missing operations stream sequence in: ${status}`);
+    return BigInt(match[1]);
+}
+
+async function synchronizeStreamSequences(first, second) {
+    const expected = [await streamSequence(first), await streamSequence(second)].reduce((maximum, current) => current > maximum ? current : maximum, 0n);
+    await Promise.all([waitForStreamAtLeast(first, expected), waitForStreamAtLeast(second, expected)]);
+    return expected;
+}
+
+async function waitForStreamAdvance(widget, previous) {
+    return waitForStreamAtLeast(widget, previous + 1n);
+}
+
+async function waitForStreamAtLeast(widget, expected) {
+    const deadline = Date.now() + 15_000;
+    while (Date.now() < deadline) {
+        const current = await streamSequence(widget);
+        if (current >= expected) return current;
+        await new Promise(resolve => setTimeout(resolve, 50));
+    }
+    throw new Error(`Timed out waiting for operations stream sequence ${expected}`);
 }
 
 async function renderedWidget(widgets) {

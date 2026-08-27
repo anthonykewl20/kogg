@@ -7,6 +7,8 @@ import { inject, injectable } from '@theia/core/shared/inversify';
 import { ProjectBindingAuthority, type ProjectBindingAuthority as BindingAuthority, type ProjectBindingSnapshot } from '@kogg/projects/lib/common/projects-protocol';
 import type { ApprovalProjection, KoggTasksService, MutationPrecondition, ReviewProjection, TaskAdmissionAuthority, TaskAdmissionSnapshot, TaskMutationResult, TaskProjection, TaskSafeCode, TaskSummary } from '../common/tasks-protocol';
 import { canonicalRequestDigest, canonicalSpecification, SpecificationValidationError } from '../common/canonical-specification';
+import type { OperationsOwnerSink, OwnerEventV1, SafeOwnerPayloadV1 } from '@kogg/operations/lib/common/operations-read-model-protocol';
+import { OperationsReadModel } from '@kogg/operations/lib/node/operations-read-model';
 
 // diagnostic-coverage: tasks.registry, tasks.revisions, tasks.bindings, tasks.approvals
 
@@ -20,6 +22,7 @@ export class TaskRegistry implements KoggTasksService, TaskAdmissionAuthority, B
   private database: DatabaseSync | undefined;
   private readonly challenges = new Map<string, Challenge>();
   private readonly databasePath = path.join(stateRoot(), 'tasks', 'registry.sqlite3');
+  private ownerSink: OperationsOwnerSink | undefined;
 
   constructor(@inject(ProjectBindingAuthority) private readonly projects: BindingAuthority) {}
 
@@ -46,6 +49,15 @@ export class TaskRegistry implements KoggTasksService, TaskAdmissionAuthority, B
     this.challenges.clear();
     try { this.database?.close(); this.database = undefined; console.info('[kogg:tasks:registry] registry.stop.completed'); }
     catch (error) { console.error('[kogg:tasks:registry] registry.stop.failed', { errorType: errorName(error) }); throw error; }
+  }
+  setOwnerSink(sink?: OperationsOwnerSink): void { this.ownerSink = sink; if (sink && this.database) this.publishOwnerEvents(); }
+  publishOwnerEvents(): void {
+    if (!this.ownerSink || !this.database) return; const db = this.db(); const meta = db.prepare('SELECT owner_id,owner_epoch_id FROM registry_meta WHERE singleton=1').get() as Row; let previous = '0'.repeat(64);
+    for (const row of db.prepare('SELECT e.*,t.project_id FROM task_events e JOIN tasks t ON t.task_id=e.task_id ORDER BY e.event_sequence').all() as Row[]) {
+      const mapped = mapOwnerEvent(row, str(meta, 'owner_id'), str(meta, 'owner_epoch_id'), previous); previous = mapped.eventDigest;
+      try { this.ownerSink.ingest(mapped); }
+      catch (error) { console.warn('[kogg:tasks:registry] owner.publish.failed', { ownerKind: 'task', ownerSequence: mapped.sequence, safeCode: 'OWNER_PUBLISH_FAILED', errorType: errorName(error) }); break; }
+    }
   }
 
   async list(projectId?: string): Promise<readonly TaskSummary[]> {
@@ -179,9 +191,9 @@ export class TaskRegistry implements KoggTasksService, TaskAdmissionAuthority, B
     const result = await this.mutate('admission', input, await this.binding(input.taskId), (db, task, current, revision) => {
       const approval = optional(task, 'current_approval_id');
       if (!approval || str(current, 'lifecycle') !== 'frozen') throw new Refusal('ADMISSION_NOT_AUTHORIZED');
-      const next = num(task, 'task_revision') + 1; const taskAdmissionId = randomUUID(); db.prepare('UPDATE tasks SET task_revision=? WHERE task_id=?').run(next, input.taskId);
-      this.event(db, input.taskId, next, revision, 'admission.authorized', taskAdmissionId);
-      admission = { taskAdmissionId, taskId: input.taskId, specificationId: str(current, 'specification_id'), approvalId: approval,
+      const next = num(task, 'task_revision') + 1; db.prepare('UPDATE tasks SET task_revision=? WHERE task_id=?').run(next, input.taskId);
+      this.event(db, input.taskId, next, revision, 'admission.authorized', approval, input.runId);
+      admission = { taskId: input.taskId, specificationId: str(current, 'specification_id'), approvalId: approval,
         projectId: str(task, 'project_id'), repositoryId: str(task, 'repository_id'), bindingRevision: dec(task, 'binding_revision'),
         registryRevision: String(revision), taskRevision: String(next), runId: input.runId };
       db.prepare('INSERT INTO task_admissions VALUES(?,?,?,?,?,?,?,?,?,?,?)').run(taskAdmissionId, input.taskId, str(current, 'specification_id'), approval, str(task, 'project_id'), str(task, 'repository_id'), num(task, 'binding_revision'), revision, next, input.runId, new Date().toISOString());
@@ -279,7 +291,7 @@ export class TaskRegistry implements KoggTasksService, TaskAdmissionAuthority, B
       }
       const result = action(db);
       db.prepare('INSERT INTO idempotency(request_id,request_digest,operation_type,result_projection) VALUES(?,?,?,?)').run(requestId, digest, operation, JSON.stringify(result));
-      db.exec('COMMIT'); return result;
+      db.exec('COMMIT'); this.publishOwnerEvents(); return result;
     } catch (error) {
       try { db.exec('ROLLBACK'); } catch (rollbackError) { console.error('[kogg:tasks:registry] mutation.rollback.failed', { requestId, operation, errorType: errorName(rollbackError) }); }
       throw normalize(error);
@@ -288,14 +300,11 @@ export class TaskRegistry implements KoggTasksService, TaskAdmissionAuthority, B
 
   private migrate(): void {
     const db = this.db();
-    db.exec(`CREATE TABLE IF NOT EXISTS registry_meta(singleton INTEGER PRIMARY KEY CHECK(singleton=1),schema_version INTEGER NOT NULL,registry_revision INTEGER NOT NULL,installation_principal_id TEXT NOT NULL);
+    db.exec(`CREATE TABLE IF NOT EXISTS registry_meta(singleton INTEGER PRIMARY KEY CHECK(singleton=1),schema_version INTEGER NOT NULL,registry_revision INTEGER NOT NULL,installation_principal_id TEXT NOT NULL,owner_id TEXT NOT NULL,owner_epoch_id TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS tasks(task_id TEXT PRIMARY KEY,project_id TEXT NOT NULL,repository_id TEXT NOT NULL,binding_revision INTEGER NOT NULL,task_revision INTEGER NOT NULL,lifecycle TEXT NOT NULL CHECK(lifecycle IN ('active','archived')),current_specification_id TEXT NOT NULL,current_approval_id TEXT,created_at TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS specifications(specification_id TEXT PRIMARY KEY,task_id TEXT NOT NULL REFERENCES tasks(task_id),sequence INTEGER NOT NULL,parent_specification_id TEXT,lifecycle TEXT NOT NULL CHECK(lifecycle IN ('draft','frozen')),encoding_version TEXT NOT NULL,content BLOB NOT NULL,byte_length INTEGER NOT NULL,specification_digest TEXT NOT NULL,created_at TEXT NOT NULL,UNIQUE(task_id,sequence));
       CREATE TABLE IF NOT EXISTS approvals(approval_id TEXT PRIMARY KEY,task_id TEXT NOT NULL REFERENCES tasks(task_id),specification_id TEXT NOT NULL REFERENCES specifications(specification_id),approval_digest TEXT NOT NULL UNIQUE,created_at TEXT NOT NULL);
-      CREATE TABLE IF NOT EXISTS admissions(run_id TEXT PRIMARY KEY,task_id TEXT NOT NULL REFERENCES tasks(task_id),task_revision INTEGER NOT NULL,
-        specification_id TEXT NOT NULL REFERENCES specifications(specification_id),approval_id TEXT NOT NULL REFERENCES approvals(approval_id),project_id TEXT NOT NULL,
-        repository_id TEXT NOT NULL,binding_revision INTEGER NOT NULL,registry_revision INTEGER NOT NULL,authorized_at TEXT NOT NULL,expires_at TEXT NOT NULL,admission_digest TEXT NOT NULL UNIQUE);
-      CREATE TABLE IF NOT EXISTS task_events(event_sequence INTEGER PRIMARY KEY AUTOINCREMENT,event_id TEXT NOT NULL UNIQUE,task_id TEXT NOT NULL REFERENCES tasks(task_id),task_revision INTEGER NOT NULL,registry_revision INTEGER NOT NULL UNIQUE,event_type TEXT NOT NULL,subject_id TEXT NOT NULL,previous_event_digest TEXT NOT NULL,event_digest TEXT NOT NULL UNIQUE);
+      CREATE TABLE IF NOT EXISTS task_events(event_sequence INTEGER PRIMARY KEY AUTOINCREMENT,event_id TEXT NOT NULL UNIQUE,task_id TEXT NOT NULL REFERENCES tasks(task_id),task_revision INTEGER NOT NULL,registry_revision INTEGER NOT NULL UNIQUE,event_type TEXT NOT NULL,subject_id TEXT NOT NULL,run_id TEXT,observed_at TEXT NOT NULL,previous_event_digest TEXT NOT NULL,event_digest TEXT NOT NULL UNIQUE);
       CREATE TABLE IF NOT EXISTS idempotency(request_id TEXT PRIMARY KEY,request_digest TEXT NOT NULL,operation_type TEXT NOT NULL,result_projection TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS task_admissions(task_admission_id TEXT PRIMARY KEY,task_id TEXT NOT NULL REFERENCES tasks(task_id),specification_id TEXT NOT NULL REFERENCES specifications(specification_id),approval_id TEXT NOT NULL REFERENCES approvals(approval_id),project_id TEXT NOT NULL,repository_id TEXT NOT NULL,binding_revision INTEGER NOT NULL,registry_revision INTEGER NOT NULL,task_revision INTEGER NOT NULL,run_id TEXT NOT NULL,created_at TEXT NOT NULL);
       CREATE TRIGGER IF NOT EXISTS tasks_immutable_specifications_update BEFORE UPDATE ON specifications BEGIN SELECT RAISE(ABORT,'immutable specification'); END;
@@ -305,10 +314,9 @@ export class TaskRegistry implements KoggTasksService, TaskAdmissionAuthority, B
       CREATE TRIGGER IF NOT EXISTS tasks_immutable_admissions_update BEFORE UPDATE ON admissions BEGIN SELECT RAISE(ABORT,'immutable admission'); END;
       CREATE TRIGGER IF NOT EXISTS tasks_immutable_admissions_delete BEFORE DELETE ON admissions BEGIN SELECT RAISE(ABORT,'immutable admission'); END;
       CREATE TRIGGER IF NOT EXISTS tasks_immutable_events_update BEFORE UPDATE ON task_events BEGIN SELECT RAISE(ABORT,'immutable event'); END;
-      CREATE TRIGGER IF NOT EXISTS tasks_immutable_events_delete BEFORE DELETE ON task_events BEGIN SELECT RAISE(ABORT,'immutable event'); END;
-      CREATE TRIGGER IF NOT EXISTS tasks_immutable_admissions_update BEFORE UPDATE ON task_admissions BEGIN SELECT RAISE(ABORT,'immutable admission'); END;
-      CREATE TRIGGER IF NOT EXISTS tasks_immutable_admissions_delete BEFORE DELETE ON task_admissions BEGIN SELECT RAISE(ABORT,'immutable admission'); END;`);
-    if (!db.prepare('SELECT 1 FROM registry_meta WHERE singleton=1').get()) db.prepare('INSERT INTO registry_meta VALUES(1,1,0,?)').run(randomUUID());
+      CREATE TRIGGER IF NOT EXISTS tasks_immutable_events_delete BEFORE DELETE ON task_events BEGIN SELECT RAISE(ABORT,'immutable event'); END;`);
+    ensureTaskOwnerColumns(db);
+    if (!db.prepare('SELECT 1 FROM registry_meta WHERE singleton=1').get()) db.prepare('INSERT INTO registry_meta VALUES(1,1,0,?,?,?)').run(randomUUID(), randomUUID(), randomUUID());
     if (num(db.prepare('SELECT schema_version FROM registry_meta WHERE singleton=1').get() as Row, 'schema_version') !== 1) throw new Failure('SCHEMA_UNSUPPORTED');
   }
 
@@ -349,12 +357,12 @@ export class TaskRegistry implements KoggTasksService, TaskAdmissionAuthority, B
     db.prepare(`INSERT INTO specifications(specification_id,task_id,sequence,parent_specification_id,lifecycle,encoding_version,content,byte_length,specification_digest,created_at)
       VALUES(?,?,?,?,?,'utf-8-exact-v1',?,?,?,?)`).run(id, taskId, sequence, parent ?? null, lifecycle, canonical.bytes, canonical.bytes.length, canonical.digest, createdAt);
   }
-  private event(db: DatabaseSync, taskId: string, taskRevision: number, registryRevision: number, type: string, subject: string): void {
+  private event(db: DatabaseSync, taskId: string, taskRevision: number, registryRevision: number, type: string, subject: string, runId?: string): void {
     const last = db.prepare('SELECT event_digest FROM task_events ORDER BY event_sequence DESC LIMIT 1').get() as Row | undefined;
     const previous = last ? str(last, 'event_digest') : ''; const eventId = randomUUID();
     const digest = canonicalRequestDigest({ eventId, taskId, taskRevision: String(taskRevision), registryRevision: String(registryRevision), eventType: type, subjectId: subject, previousDigest: previous });
-    db.prepare('INSERT INTO task_events(event_id,task_id,task_revision,registry_revision,event_type,subject_id,previous_event_digest,event_digest) VALUES(?,?,?,?,?,?,?,?)')
-      .run(eventId, taskId, taskRevision, registryRevision, type, subject, previous, digest);
+    db.prepare('INSERT INTO task_events(event_id,task_id,task_revision,registry_revision,event_type,subject_id,run_id,observed_at,previous_event_digest,event_digest) VALUES(?,?,?,?,?,?,?,?,?,?)')
+      .run(eventId, taskId, taskRevision, registryRevision, type, subject, runId ?? null, new Date().toISOString(), previous, digest);
   }
   private requireActiveDraft(task: Row, current: Row): void {
     if (str(task, 'lifecycle') !== 'active') throw new Refusal('TASK_ARCHIVED');
@@ -403,6 +411,27 @@ export class TaskRegistry implements KoggTasksService, TaskAdmissionAuthority, B
 class Refusal extends Error { constructor(readonly code: TaskSafeCode) { super(code); } }
 class Failure extends Error { constructor(readonly code: TaskSafeCode) { super(code); } }
 class Conflict extends Error { constructor(readonly code: TaskSafeCode, readonly registry: number, readonly task: number) { super(code); } }
+function mapOwnerEvent(row: Row, ownerInstanceId: string, epochId: string, previousEventDigest: string): OwnerEventV1 {
+  const eventKind = str(row, 'event_type'); const safePayload: SafeOwnerPayloadV1 = eventKind === 'task.created' ? { lifecycle: 'active' }
+    : eventKind === 'task.archived' ? { lifecycle: 'archived' }
+      : eventKind === 'specification.frozen' ? { lifecycle: 'frozen' }
+        : eventKind.startsWith('specification.') ? { lifecycle: 'draft' }
+          : eventKind === 'approval.recorded' ? { resultClass: 'passed' }
+            : eventKind === 'approval.revoked' ? { resultClass: 'cancelled' }
+              : eventKind === 'admission.authorized' ? { decisionClass: 'accepted' } : { lifecycle: 'active' };
+  const runId = optional(row, 'run_id'); const observedAt = str(row, 'observed_at');
+  const unsigned: Omit<OwnerEventV1, 'eventDigest'> = { ownerKind: 'task', ownerInstanceId, ownerSchemaVersion: 1, epochId, sequence: dec(row, 'event_sequence'), eventId: str(row, 'event_id'), eventKind, factId: str(row, 'subject_id'), factDigest: canonicalRequestDigest({ sourceEventDigest: str(row, 'event_digest'), runId: runId ?? '', observedAt }), previousEventDigest, causalParents: [], correlations: { taskId: str(row, 'task_id'), projectId: str(row, 'project_id'), ...(runId ? { runId } : {}) }, observedAt, safePayload };
+  return { ...unsigned, eventDigest: OperationsReadModel.digest(unsigned) };
+}
+function ensureTaskOwnerColumns(db: DatabaseSync): void {
+  const meta = new Set((db.prepare('PRAGMA table_info(registry_meta)').all() as Row[]).map(row => str(row, 'name')));
+  if (!meta.has('owner_id')) db.exec('ALTER TABLE registry_meta ADD COLUMN owner_id TEXT');
+  if (!meta.has('owner_epoch_id')) db.exec('ALTER TABLE registry_meta ADD COLUMN owner_epoch_id TEXT');
+  const events = new Set((db.prepare('PRAGMA table_info(task_events)').all() as Row[]).map(row => str(row, 'name')));
+  if (!events.has('run_id')) db.exec('ALTER TABLE task_events ADD COLUMN run_id TEXT');
+  if (!events.has('observed_at')) db.exec("ALTER TABLE task_events ADD COLUMN observed_at TEXT NOT NULL DEFAULT '1970-01-01T00:00:00.000Z'");
+  db.prepare("UPDATE registry_meta SET owner_id=COALESCE(owner_id,?),owner_epoch_id=COALESCE(owner_epoch_id,?) WHERE singleton=1").run(randomUUID(), randomUUID());
+}
 function done(projection: TaskProjection): TaskMutationResult { return { kind: 'completed', code: 'TASK_OK', projection }; }
 function matches(task: Row, binding: ProjectBindingSnapshot | undefined): boolean { return Boolean(binding?.available && binding.active && binding.projectId === str(task, 'project_id') && binding.repositoryId === str(task, 'repository_id') && binding.bindingRevision === num(task, 'binding_revision')); }
 function uuid(value: string): void { if (!UUID.test(value)) throw new Failure('TASK_NOT_AVAILABLE'); }

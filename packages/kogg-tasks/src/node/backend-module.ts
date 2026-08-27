@@ -5,12 +5,14 @@ import { ContainerModule } from '@theia/core/shared/inversify';
 import { KoggTasksServicePath, TaskProjectionAuthority, type KoggTasksService } from '../common/tasks-protocol';
 import { TaskDiagnosticContributor } from './task-diagnostic-contributor';
 import { TaskRegistry } from './task-registry';
+import { TaskOperationsOwnerWiring } from './task-operations-owner-wiring';
 
 export default new ContainerModule(bind => {
   bind(TaskRegistry).toSelf().inSingletonScope();
   bind(TaskProjectionAuthority).toService(TaskRegistry);
   bind(BackendApplicationContribution).toService(TaskRegistry);
-  bind(TaskAdmissionAuthority).toService(TaskRegistry);
+  bind(TaskOperationsOwnerWiring).toSelf().inSingletonScope();
+  bind(BackendApplicationContribution).toService(TaskOperationsOwnerWiring);
   bind(TaskDiagnosticContributor).toSelf().inSingletonScope();
   bind(KoggDiagnosticContribution).toService(TaskDiagnosticContributor);
   bind(ConnectionHandler).toDynamicValue(context => new JsonRpcConnectionHandler<KoggTasksService>(
