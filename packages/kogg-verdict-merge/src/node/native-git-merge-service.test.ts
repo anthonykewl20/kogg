@@ -39,12 +39,28 @@ test('refuses destination drift before construction and never updates the ref', 
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 
+test('startup recovery never retries CAS and classifies exact old, exact new, and third-ref drift', { timeout: 30_000 }, async () => {
+  const root = await repository();
+  try {
+    const base = await git(root, 'rev-parse', 'refs/heads/main'); const subject = await git(root, 'rev-parse', 'refs/heads/subject'); const tree = await git(root, 'rev-parse', `${subject}^{tree}`); const value = intent(base, subject, tree);
+    const first = new FixtureRegistry(value); const executor = new NativeGitMergeService(first as unknown as MergeAuthorizationRegistry, projects(root), operations(), logger()); await executor.execute(value.mergeId); const merged = await git(root, 'rev-parse', 'refs/heads/main');
+    first.state = 'recovery-required'; first.expectedMergeOid = merged; first.recover = true; await executor.onStart(); assert.equal(first.state, 'completed');
+    await git(root, 'update-ref', value.destinationRef, base, merged);
+    const old = new FixtureRegistry(value, true); old.state = 'cas-started'; old.expectedMergeOid = merged; await new NativeGitMergeService(old as unknown as MergeAuthorizationRegistry, projects(root), operations(), logger()).onStart(); assert.equal(old.state, 'refused'); assert.equal(await git(root, 'rev-parse', value.destinationRef), base);
+    await git(root, 'update-ref', value.destinationRef, subject, base);
+    const drift = new FixtureRegistry(value, true); drift.state = 'recovery-required'; drift.expectedMergeOid = merged; await new NativeGitMergeService(drift as unknown as MergeAuthorizationRegistry, projects(root), operations(), logger()).onStart(); assert.equal(drift.state, 'quarantined'); assert.equal(await git(root, 'rev-parse', value.destinationRef), subject);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
 class FixtureRegistry {
   state = 'preflight-pending';
-  constructor(readonly value: PrivateMergeIntent) {}
+  expectedMergeOid: string | undefined; recover: boolean;
+  constructor(readonly value: PrivateMergeIntent, recover = false) { this.recover = recover; }
   pendingIntent(): PrivateMergeIntent | undefined { return this.state === 'preflight-pending' ? this.value : undefined; }
   revalidateIntent(): Promise<boolean> { return Promise.resolve(true); }
   transitionMerge(_mergeId: string, state: MergeLifecycleState, expected: string | readonly string[]): void { const allowed = typeof expected === 'string' ? [expected] : expected; assert(allowed.includes(this.state)); this.state = state; }
+  mergeState(): string { return this.state; }
+  recoveryCandidates(): readonly { intent: PrivateMergeIntent; state: string; expectedMergeOid?: string }[] { return this.recover ? [{ intent: this.value, state: this.state, ...(this.expectedMergeOid ? { expectedMergeOid: this.expectedMergeOid } : {}) }] : []; }
 }
 
 async function repository(): Promise<string> {

@@ -4,6 +4,7 @@ import { access, realpath } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { ILogger } from '@theia/core/lib/common/logger';
+import { BackendApplicationContribution } from '@theia/core/lib/node';
 import { inject, injectable, named, unmanaged } from '@theia/core/shared/inversify';
 import { KoggOperationRegistry, type OperationLease, type OperationRegistryApi } from '@kogg/operations/lib/common/operations-protocol';
 import { ProjectBindingAuthority, type ProjectBindingAuthority as BindingAuthority } from '@kogg/projects/lib/common/projects-protocol';
@@ -12,7 +13,7 @@ import { MergeAuthorizationRegistry, type MergeLifecycleState, type PrivateMerge
 // Native Git owns merge calculation and the single exact ref CAS; Kogg never reads repository content into logs.
 // diagnostic-coverage: merge.preflight, merge.processes, merge.atomicity, merge.recovery
 @injectable()
-export class NativeGitMergeService {
+export class NativeGitMergeService implements BackendApplicationContribution {
   private readonly active = new Set<string>();
 
   constructor(
@@ -22,6 +23,13 @@ export class NativeGitMergeService {
     @inject(ILogger) @named('kogg:merge:git') private readonly logger: ILogger,
     @unmanaged() private readonly timeoutMs = 15_000
   ) {}
+
+  async onStart(): Promise<void> {
+    const candidates = this.registry.recoveryCandidates();
+    console.info('[kogg:merge:recovery] recovery.started', { candidateCount: candidates.length });
+    for (const candidate of candidates) await this.recover(candidate.intent, candidate.state, candidate.expectedMergeOid);
+    console.info('[kogg:merge:recovery] recovery.completed', { candidateCount: candidates.length });
+  }
 
   start(mergeId: string): void {
     if (this.active.has(mergeId)) return;
@@ -106,6 +114,38 @@ export class NativeGitMergeService {
     }
   }
 
+  private async recover(intent: PrivateMergeIntent, state: string, expectedMergeOid?: string): Promise<void> {
+    if (!intent.projectId || !intent.repositoryId) { this.registry.transitionMerge(intent.mergeId, 'quarantined', state); return; }
+    const operation = await this.operations.startOperation({ kind: 'recovery', cancellable: false, absoluteTimeoutMs: 60_000, correlations: { projectId: intent.projectId, taskId: intent.taskId } }); operation.start();
+    console.info('[kogg:merge:recovery] process.reconciled', { mergeId: intent.mergeId, operationId: operation.id, activeProcessCount: 0 });
+    try {
+      const binding = await this.projects.resolveBinding(intent.projectId, intent.repositoryId);
+      if (!binding?.available || normalizeDigest(binding.repositoryIdentityDigest) !== normalizeDigest(intent.repositoryIdentityDigest)) throw new MergeGitError('MERGE_OUTCOME_UNKNOWN');
+      const root = await realpath(fileURLToPath(binding.rootUri)); const git = (args: readonly string[]) => this.git(root, args, operation);
+      await this.qualify(root, git);
+      const observed = oneLine(await git(['rev-parse', '--verify', intent.destinationRef]));
+      if (observed === intent.expectedOldOid) {
+        this.registry.transitionMerge(intent.mergeId, 'refused', state);
+        await operation.cleanup(); operation.complete();
+        console.info('[kogg:merge:recovery] not-committed', { mergeId: intent.mergeId, operationId: operation.id, safeCode: 'MERGE_NOT_COMMITTED' }); return;
+      }
+      if (expectedMergeOid && observed === expectedMergeOid) {
+        await this.verifyRecoveredCommit(git, expectedMergeOid, intent);
+        this.registry.transitionMerge(intent.mergeId, 'post-verifying', state, expectedMergeOid);
+        this.registry.transitionMerge(intent.mergeId, 'committed', 'post-verifying', expectedMergeOid);
+        this.registry.transitionMerge(intent.mergeId, 'cleaning', 'committed', expectedMergeOid);
+        await operation.cleanup(); this.registry.transitionMerge(intent.mergeId, 'completed', 'cleaning', expectedMergeOid); operation.complete();
+        console.info('[kogg:merge:recovery] committed', { mergeId: intent.mergeId, operationId: operation.id, safeCode: 'MERGE_COMPLETED' }); return;
+      }
+      throw new MergeGitError('MERGE_OUTCOME_UNKNOWN');
+    } catch (error) {
+      await operation.cleanup().catch(() => undefined);
+      try { this.registry.transitionMerge(intent.mergeId, 'quarantined', this.registry.mergeState(intent.mergeId), expectedMergeOid); } catch { /* observability-exempt: an already terminal durable state remains authoritative. */ }
+      operation.fail('RECOVERY_FAILED', errorName(error));
+      console.error('[kogg:merge:recovery] quarantined', { mergeId: intent.mergeId, operationId: operation.id, safeCode: 'MERGE_QUARANTINED', errorType: errorName(error) });
+    }
+  }
+
   private async requireCurrent(intent: PrivateMergeIntent): Promise<void> { if (!await this.registry.revalidateIntent(intent)) throw new MergeGitError('VERDICT_STALE'); }
   private async requireCurrentAfterCas(intent: PrivateMergeIntent, commit: string, git: (args: readonly string[]) => Promise<string>): Promise<void> {
     const binding = await this.projects.resolveBinding(intent.projectId!, intent.repositoryId!);
@@ -117,6 +157,11 @@ export class NativeGitMergeService {
     if (headers[0] !== `tree ${tree}` || headers[1] !== `parent ${intent.expectedOldOid}` || headers[2] !== `parent ${intent.subjectOid}`
       || !headers[3]?.startsWith('author Kogg <kogg@localhost.invalid> ') || !headers[4]?.startsWith('committer Kogg <kogg@localhost.invalid> ')
       || !raw.endsWith('\n\nKogg controlled merge\n')) throw new MergeGitError('GIT_OBJECT_INVALID');
+  }
+  private async verifyRecoveredCommit(git: (args: readonly string[]) => Promise<string>, commit: string, intent: PrivateMergeIntent): Promise<void> {
+    const raw = await git(['cat-file', '-p', commit]); const tree = raw.split('\n', 1)[0]?.slice(5);
+    if (!tree || !oid(tree)) throw new MergeGitError('GIT_OBJECT_INVALID');
+    await this.verifyCommit(git, commit, tree, intent);
   }
 
   private async git(root: string, args: readonly string[], operation: OperationLease, input?: string, timestamp?: string): Promise<string> {
