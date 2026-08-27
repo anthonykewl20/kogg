@@ -14,7 +14,7 @@ import {
   type RunLifecycle, type SafeOwnerPayloadV1
 } from '../common/operations-read-model-protocol';
 
-// diagnostic-coverage: operations.projection, operations.owners, operations.correlations, operations.timeline, operations.processes, operations.metrics
+// diagnostic-coverage: operations.projection, operations.owners, operations.correlations, operations.timeline, operations.processes, operations.metrics, operations.retention
 
 type Row = Record<string, SQLOutputValue>;
 const ZERO_DIGEST = '0'.repeat(64);
@@ -64,6 +64,9 @@ const METRIC_CONTRACTS: Readonly<Record<string, { readonly kind: OperationsMetri
 };
 const STREAM_CHANGE_LIMIT = 1_000;
 const STREAM_BYTE_LIMIT = 1_048_576;
+const DETAIL_RETENTION_MS = 30 * 24 * 60 * 60_000;
+const HOLD_ACQUIRE: Readonly<Record<string, string>> = { 'task.retention-held': 'task', 'evidence.requested': 'evidence', 'evidence.admitted': 'evidence', 'verdict.requested': 'verdict', 'verdict.accepted': 'verdict', 'verdict.rejected': 'verdict', 'merge.requested': 'merge', 'merge.quarantined': 'quarantine', 'execution.quarantined': 'quarantine', 'process.quarantined': 'quarantine', 'process.residual': 'incident', 'process.lost': 'incident', 'process.inventory-unknown': 'incident' };
+const HOLD_RELEASE: Readonly<Record<string, string>> = { 'task.retention-released': 'task', 'evidence.retention-released': 'evidence', 'verdict.retention-released': 'verdict', 'merge.retention-released': 'merge', 'quarantine.retention-released': 'quarantine', 'incident.retention-released': 'incident' };
 
 export class ProjectionFault extends Error {
   constructor(readonly safeCode: string) { super(safeCode); this.name = 'ProjectionFault'; }
@@ -97,6 +100,7 @@ export class OperationsReadModel implements BackendApplicationContribution {
       this.setLifecycle('replaying');
       console.info('[kogg:operations:projection] replay.started', { ownerCount: this.ownerCount() });
       this.rebuildDerived(false);
+      this.applyRetention();
       this.reevaluateLifecycle();
       if (this.meta().lifecycle === 'degraded') console.warn('[kogg:operations:projection] degraded', { ownerCount: this.ownerCount(), faultCount: this.faultCount() });
       else console.info('[kogg:operations:projection] current', { ownerCount: this.ownerCount(), faultCount: 0 });
@@ -284,10 +288,23 @@ export class OperationsReadModel implements BackendApplicationContribution {
     console.info('[kogg:operations:projection] rebuild.started', { ownerCount: this.ownerCount() });
     this.setLifecycle('rebuilding');
     this.rebuildDerived(true);
+    this.applyRetention();
     this.transaction(db => this.appendChange(db, 'rebuild', undefined, true));
     this.reevaluateLifecycle();
     console.info('[kogg:operations:projection] completed', { ownerCount: this.ownerCount(), faultCount: this.faultCount() });
     this.notifyLatestChange();
+  }
+
+  applyRetention(now = Date.now()): number {
+    this.start(); if (!Number.isFinite(now)) throw new ProjectionFault('PROJECTION_RETENTION_INVALID');
+    console.info('[kogg:operations:projection] retention.started'); const cutoff = new Date(now - DETAIL_RETENTION_MS).toISOString();
+    try {
+      const rows = this.db().prepare(`SELECT r.run_id FROM run_projection r WHERE r.lifecycle IN ('failed','recovered','completed') AND r.live_process_count=0 AND r.abnormal_process_count=0
+        AND COALESCE((SELECT max(display_time) FROM timeline t WHERE t.run_id=r.run_id),'9999-12-31T23:59:59.999Z')<=?
+        AND NOT EXISTS(SELECT 1 FROM retention_holds h WHERE h.run_id=r.run_id AND h.active=1) ORDER BY r.run_id`).all(cutoff) as Row[];
+      if (rows.length) this.transaction(db => { for (const row of rows) { const runId = String(row.run_id); db.prepare('DELETE FROM timeline WHERE run_id=?').run(runId); db.prepare('DELETE FROM process_projection WHERE run_id=?').run(runId); db.prepare('DELETE FROM retention_holds WHERE run_id=?').run(runId); db.prepare('DELETE FROM run_projection WHERE run_id=?').run(runId); this.appendChange(db, 'retention', runId, true); } this.refreshGauges(db); });
+      console.info('[kogg:operations:projection] retention.completed', { expiredCount: rows.length }); if (rows.length) this.notifyLatestChange(); return rows.length;
+    } catch (error) { console.error('[kogg:operations:projection] retention.failed', { safeCode: 'PROJECTION_RETENTION_FAILED', errorType: errorType(error) }); throw error; }
   }
 
   diagnostics(): OperationsProjectionDiagnosticsV1 {
@@ -300,7 +317,9 @@ export class OperationsReadModel implements BackendApplicationContribution {
       ownerCount: this.ownerCount(), acceptedEventCount: this.count('SELECT count(*) AS count FROM accepted_events'), faultCount: this.faultCount(),
       causalGapCount: this.count("SELECT count(*) AS count FROM projection_faults WHERE safe_code LIKE 'CAUSAL_%'"),
       processAbnormalCount: this.count('SELECT count(*) AS count FROM process_projection WHERE abnormal=1'),
-      metricViolationCount: metricViolationCount(this.metricRows(String(this.meta().projection_epoch)))
+      metricViolationCount: metricViolationCount(this.metricRows(String(this.meta().projection_epoch))),
+      activeRetentionHoldCount: this.count('SELECT count(*) AS count FROM retention_holds WHERE active=1'),
+      retentionViolationCount: this.count('SELECT count(*) AS count FROM retention_holds h LEFT JOIN run_projection r ON r.run_id=h.run_id WHERE h.active=1 AND r.run_id IS NULL')
     };
   }
 
@@ -379,9 +398,17 @@ export class OperationsReadModel implements BackendApplicationContribution {
     if (event.ownerKind === 'ranex') db.prepare('UPDATE run_projection SET evidence_summary=? WHERE run_id=?').run(summary(event.eventKind), runId);
     if (event.ownerKind === 'verdict') db.prepare('UPDATE run_projection SET verdict_summary=? WHERE run_id=?').run(summary(event.eventKind), runId);
     if (event.ownerKind === 'merge') db.prepare('UPDATE run_projection SET merge_summary=? WHERE run_id=?').run(summary(event.eventKind), runId);
+    this.projectRetentionHold(db, event);
     this.deriveRunLifecycle(db, runId);
     db.prepare(`INSERT INTO timeline(entry_id,run_id,owner_kind,owner_sequence,event_kind,safe_code,attempt_id,process_id,display_time,event_digest)
       VALUES(?,?,?,?,?,?,?,?,?,?)`).run(event.eventId, runId, event.ownerKind, event.sequence, event.eventKind, event.safePayload.safeCode ?? null, event.correlations.attemptId ?? null, event.correlations.processId ?? null, event.observedAt, event.eventDigest);
+  }
+
+  private projectRetentionHold(db: DatabaseSync, event: OwnerEventV1): void {
+    const runId = event.correlations.runId; if (!runId) return;
+    const acquired = HOLD_ACQUIRE[event.eventKind]; const released = HOLD_RELEASE[event.eventKind];
+    if (acquired) db.prepare(`INSERT INTO retention_holds(run_id,hold_kind,owner_kind,owner_instance_id,fact_digest,active,updated_at) VALUES(?,?,?,?,?,1,?) ON CONFLICT(run_id,hold_kind) DO UPDATE SET owner_kind=excluded.owner_kind,owner_instance_id=excluded.owner_instance_id,fact_digest=excluded.fact_digest,active=1,updated_at=excluded.updated_at`).run(runId, acquired, event.ownerKind, event.ownerInstanceId, event.factDigest, event.observedAt);
+    if (released) db.prepare('UPDATE retention_holds SET active=0,fact_digest=?,updated_at=? WHERE run_id=? AND hold_kind=? AND owner_kind=? AND owner_instance_id=?').run(event.factDigest, event.observedAt, runId, released, event.ownerKind, event.ownerInstanceId);
   }
 
   private projectProcess(db: DatabaseSync, event: OwnerEventV1): void {
@@ -436,7 +463,7 @@ export class OperationsReadModel implements BackendApplicationContribution {
 
   private rebuildDerived(changeEpoch: boolean): void {
     this.transaction(database => {
-      database.exec('DELETE FROM timeline; DELETE FROM process_projection; DELETE FROM run_projection; DELETE FROM projection_changes; DELETE FROM metric_values;');
+      database.exec('DELETE FROM timeline; DELETE FROM process_projection; DELETE FROM retention_holds; DELETE FROM run_projection; DELETE FROM projection_changes; DELETE FROM metric_values;');
       if (changeEpoch) database.prepare('UPDATE projection_meta SET projection_epoch=?,change_sequence=0 WHERE singleton=1').run(randomUUID());
       else database.prepare('UPDATE projection_meta SET change_sequence=0 WHERE singleton=1').run();
       for (const row of database.prepare('SELECT * FROM accepted_events ORDER BY rowid').all() as Row[]) { const event = rowToEvent(database, row); this.projectEvent(database, event); this.projectMetrics(database, event); }
@@ -485,6 +512,7 @@ export class OperationsReadModel implements BackendApplicationContribution {
       CREATE TABLE IF NOT EXISTS projection_changes(sequence TEXT PRIMARY KEY,change_kind TEXT NOT NULL,run_id TEXT,protected INTEGER NOT NULL CHECK(protected IN (0,1)),approximate_bytes INTEGER NOT NULL CHECK(approximate_bytes>0)) STRICT;
       CREATE TABLE IF NOT EXISTS metric_values(projection_epoch TEXT NOT NULL,metric_name TEXT NOT NULL,metric_kind TEXT NOT NULL,labels_json TEXT NOT NULL,bucket_upper_bound INTEGER NOT NULL CHECK(bucket_upper_bound>=-1),value INTEGER NOT NULL CHECK(value>=0),PRIMARY KEY(projection_epoch,metric_name,labels_json,bucket_upper_bound)) STRICT;
       CREATE TABLE IF NOT EXISTS projection_faults(fault_sequence INTEGER PRIMARY KEY AUTOINCREMENT,fault_id TEXT NOT NULL UNIQUE,owner_kind TEXT NOT NULL,owner_instance_id TEXT NOT NULL,epoch_id TEXT NOT NULL,owner_sequence TEXT NOT NULL,safe_code TEXT NOT NULL,created_at TEXT NOT NULL) STRICT;
+      CREATE TABLE IF NOT EXISTS retention_holds(run_id TEXT NOT NULL,hold_kind TEXT NOT NULL CHECK(hold_kind IN ('task','incident','evidence','verdict','merge','quarantine')),owner_kind TEXT NOT NULL,owner_instance_id TEXT NOT NULL,fact_digest TEXT NOT NULL,active INTEGER NOT NULL CHECK(active IN (0,1)),updated_at TEXT NOT NULL,PRIMARY KEY(run_id,hold_kind)) STRICT;
       CREATE TABLE IF NOT EXISTS action_requests(request_id TEXT PRIMARY KEY,request_digest TEXT NOT NULL,action_kind TEXT NOT NULL,run_id TEXT NOT NULL,operation_id TEXT,projection_sequence TEXT NOT NULL,status TEXT NOT NULL CHECK(status IN ('forwarded','refused','unknown')),safe_code TEXT NOT NULL,created_at TEXT NOT NULL) STRICT;
       INSERT OR IGNORE INTO projection_meta(singleton,schema_version,projection_epoch,cursor_key,lifecycle,change_sequence) VALUES(1,1,'${randomUUID()}','${randomBytes(32).toString('hex')}','stopped','0');
     `);
@@ -498,7 +526,7 @@ export class OperationsReadModel implements BackendApplicationContribution {
   }
   private setLifecycle(lifecycle: ProjectionLifecycle): void { this.db().prepare('UPDATE projection_meta SET lifecycle=? WHERE singleton=1').run(lifecycle); }
   private reevaluateLifecycle(): void { const unavailable = this.count("SELECT count(*) AS count FROM configured_owners WHERE status='unavailable'"); this.setLifecycle(this.faultCount() || unavailable ? 'degraded' : 'current'); }
-  private appendChange(db: DatabaseSync, kind: 'owner-event' | 'rebuild', runId: string | undefined, isProtected: boolean): void {
+  private appendChange(db: DatabaseSync, kind: 'owner-event' | 'rebuild' | 'retention', runId: string | undefined, isProtected: boolean): void {
     const next = String(BigInt(String((db.prepare('SELECT change_sequence FROM projection_meta WHERE singleton=1').get() as Row).change_sequence)) + 1n); const size = 96 + (runId?.length ?? 0);
     db.prepare('INSERT INTO projection_changes(sequence,change_kind,run_id,protected,approximate_bytes) VALUES(?,?,?,?,?)').run(next, kind, runId ?? null, isProtected ? 1 : 0, size); db.prepare('UPDATE projection_meta SET change_sequence=? WHERE singleton=1').run(next);
     const excess = this.countRows(db, 'SELECT max(count(*)-?,0) AS count FROM projection_changes', STREAM_CHANGE_LIMIT);
@@ -510,7 +538,7 @@ export class OperationsReadModel implements BackendApplicationContribution {
       db.prepare('DELETE FROM projection_changes WHERE sequence=?').run(String(oldest.sequence)); retainedBytes -= Number(oldest.approximate_bytes);
     }
   }
-  private changeFromRow(row: Row): OperationsProjectionChangeV1 { return { projectionEpoch: String(this.meta().projection_epoch), sequence: String(row.sequence), kind: String(row.change_kind) as 'owner-event' | 'rebuild', ...(row.run_id ? { runId: String(row.run_id) } : {}), protected: Number(row.protected) === 1 }; }
+  private changeFromRow(row: Row): OperationsProjectionChangeV1 { return { projectionEpoch: String(this.meta().projection_epoch), sequence: String(row.sequence), kind: String(row.change_kind) as 'owner-event' | 'rebuild' | 'retention', ...(row.run_id ? { runId: String(row.run_id) } : {}), protected: Number(row.protected) === 1 }; }
   private notifyLatestChange(): void {
     if (!this.clients.size) return; const row = this.db().prepare('SELECT * FROM projection_changes ORDER BY CAST(sequence AS INTEGER) DESC LIMIT 1').get() as Row | undefined; if (!row) return;
     const change = this.changeFromRow(row);

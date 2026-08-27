@@ -8,16 +8,16 @@ export const OWNER_KINDS = ['task', 'workflow', 'adapter', 'execution', 'operati
 export type OwnerKind = typeof OWNER_KINDS[number];
 
 export const OWNER_EVENT_KINDS = {
-  task: ['task.created', 'task.updated', 'task.archived', 'specification.edited', 'specification.frozen', 'specification.successor-created', 'approval.recorded', 'approval.revoked', 'admission.authorized'],
+  task: ['task.created', 'task.updated', 'task.archived', 'specification.edited', 'specification.frozen', 'specification.successor-created', 'approval.recorded', 'approval.revoked', 'admission.authorized', 'task.retention-held', 'task.retention-released'],
   workflow: ['run.queued', 'run.started', 'run.waiting', 'run.retrying', 'run.blocked', 'run.cancelling', 'run.cleaning', 'run.failed', 'run.cancelled', 'run.recovered', 'run.completed', 'node.started', 'node.terminal'],
   adapter: ['attempt.requested', 'attempt.started', 'attempt.failed', 'attempt.cancelled', 'attempt.completed', 'usage.observed'],
-  execution: ['execution.admitted', 'execution.refused', 'execution.started', 'execution.failed', 'execution.completed', 'execution.quarantined'],
-  operation: ['operation.requested', 'operation.started', 'operation.active', 'operation.waiting', 'operation.stalled', 'operation.cancelling', 'operation.cleaning', 'operation.completed', 'operation.failed', 'operation.timed-out', 'operation.cancelled', 'operation.refused', 'operation.recovered', 'process.reserved', 'process.spawning', 'process.started', 'process.ready', 'process.activity', 'process.exited', 'process.cancelling', 'process.cleaning', 'process.cleaned', 'process.spawn-failed', 'process.timed-out', 'process.residual', 'process.lost', 'process.quarantined', 'process.inventory-unknown'],
+  execution: ['execution.admitted', 'execution.refused', 'execution.started', 'execution.failed', 'execution.completed', 'execution.quarantined', 'quarantine.retention-released'],
+  operation: ['operation.requested', 'operation.started', 'operation.active', 'operation.waiting', 'operation.stalled', 'operation.cancelling', 'operation.cleaning', 'operation.completed', 'operation.failed', 'operation.timed-out', 'operation.cancelled', 'operation.refused', 'operation.recovered', 'process.reserved', 'process.spawning', 'process.started', 'process.ready', 'process.activity', 'process.exited', 'process.cancelling', 'process.cleaning', 'process.cleaned', 'process.spawn-failed', 'process.timed-out', 'process.residual', 'process.lost', 'process.quarantined', 'process.inventory-unknown', 'incident.retention-released'],
   project: ['project.created', 'project.renamed', 'project.removed', 'project.available', 'project.unavailable', 'project.profile-changed', 'project.role-changed', 'project.binding-changed', 'project.switch-requested', 'project.switch-completed', 'project.switch-cancelled', 'repository.changed'],
   check: ['check.requested', 'check.started', 'check.failed', 'check.passed', 'check.cleaned'],
-  ranex: ['evidence.requested', 'evidence.admitted', 'evidence.refused', 'gate.decided'],
-  verdict: ['verdict.requested', 'verdict.accepted', 'verdict.rejected', 'verdict.unknown'],
-  merge: ['merge.requested', 'merge.refused', 'merge.committed', 'merge.recovered', 'merge.quarantined'],
+  ranex: ['evidence.requested', 'evidence.admitted', 'evidence.refused', 'gate.decided', 'evidence.retention-released'],
+  verdict: ['verdict.requested', 'verdict.accepted', 'verdict.rejected', 'verdict.unknown', 'verdict.retention-released'],
+  merge: ['merge.requested', 'merge.refused', 'merge.committed', 'merge.recovered', 'merge.quarantined', 'merge.retention-released'],
   diagnostic: ['diagnostic.started', 'diagnostic.passed', 'diagnostic.failed']
 } as const satisfies Record<OwnerKind, readonly string[]>;
 
@@ -173,12 +173,14 @@ export interface OperationsProjectionDiagnosticsV1 {
   readonly causalGapCount: number;
   readonly processAbnormalCount: number;
   readonly metricViolationCount: number;
+  readonly activeRetentionHoldCount: number;
+  readonly retentionViolationCount: number;
 }
 
 export interface OperationsProjectionChangeV1 {
   readonly projectionEpoch: string;
   readonly sequence: string;
-  readonly kind: 'owner-event' | 'rebuild' | 'resync-required';
+  readonly kind: 'owner-event' | 'rebuild' | 'retention' | 'resync-required';
   readonly runId?: string;
   readonly protected: boolean;
 }

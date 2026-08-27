@@ -12,14 +12,14 @@ test('fails closed with every read-model diagnostic when projection inspection f
   assert.deepEqual(checks.map(check => [check.id, check.status]), [
     ['operations.projection', 'fail'], ['operations.owners', 'fail'], ['operations.correlations', 'fail'],
     ['operations.timeline', 'fail'], ['operations.stream', 'fail'],
-    ['operations.metrics', 'fail'], ['operations.support', 'fail'], ['operations.actions', 'fail'],
+    ['operations.metrics', 'fail'], ['operations.retention', 'fail'], ['operations.support', 'fail'], ['operations.actions', 'fail'],
     ['operations.source-maps', 'fail']
   ]);
 });
 
 test('reports current owner actions and debugger source maps from runtime evidence', async () => {
   const projection = {
-    diagnostics: () => ({ integrity: true, foreignKeys: true, lifecycle: 'current', ownerCount: 11, acceptedEventCount: 0, faultCount: 0, causalGapCount: 0, processAbnormalCount: 0, metricViolationCount: 0 }),
+    diagnostics: () => ({ integrity: true, foreignKeys: true, lifecycle: 'current', ownerCount: 11, acceptedEventCount: 0, faultCount: 0, causalGapCount: 0, processAbnormalCount: 0, metricViolationCount: 0, activeRetentionHoldCount: 0, retentionViolationCount: 0 }),
     streamDiagnostics: () => ({ clientCount: 1, cursorRoundTrip: true, resyncRecovery: true, bounded: true }),
     storagePermissionsValid: () => true
   } as unknown as OperationsReadModel;
