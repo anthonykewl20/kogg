@@ -19,3 +19,11 @@ export function entriesForRunDetail(entries: readonly OperationsTimelineEntryV1[
   if (tab === 'usage') return entries.filter(entry => entry.eventKind === 'usage.observed');
   return entries.filter(entry => entry.processId !== undefined);
 }
+
+export function timelineObservedSummary(entry: OperationsTimelineEntryV1): string {
+  return entry.count === undefined ? entry.displayTime : `${entry.firstDisplayTime} – ${entry.lastDisplayTime}`;
+}
+
+export function timelineEventSummary(entry: OperationsTimelineEntryV1): string {
+  return entry.count === undefined ? entry.eventKind : `${entry.eventKind} × ${entry.count}`;
+}

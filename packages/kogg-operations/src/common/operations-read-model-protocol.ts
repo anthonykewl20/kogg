@@ -112,6 +112,9 @@ export interface OperationsTimelineEntryV1 {
   readonly attemptId?: string;
   readonly processId?: string;
   readonly displayTime: string;
+  readonly count?: number;
+  readonly firstDisplayTime?: string;
+  readonly lastDisplayTime?: string;
 }
 
 export interface OperationsRunQueryV1 {
@@ -174,6 +177,8 @@ export interface OperationsProjectionDiagnosticsV1 {
   readonly processAbnormalCount: number;
   readonly metricViolationCount: number;
   readonly retainedMetricEpochCount: number;
+  readonly retainedActivityAggregateCount: number;
+  readonly activityAggregateViolationCount: number;
   readonly activeRetentionHoldCount: number;
   readonly retentionViolationCount: number;
 }

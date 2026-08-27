@@ -4,7 +4,7 @@ import { inject, injectable, postConstruct } from '@theia/core/shared/inversify'
 import { KoggOperationsClientToken, KoggOperationsService, type OperationsSnapshot } from '../common/operations-protocol';
 import { OperationsClient } from './operations-client';
 import { KoggOperationsReadModelService, type KoggOperationsReadModelService as OperationsReadModelService, type OperationsProjectionSnapshotV1, type OperationsTimelineEntryV1 } from '../common/operations-read-model-protocol';
-import { entriesForRunDetail, RUN_DETAIL_TABS, runOutcomeSummary, type RunDetailTab } from '../common/operations-presentation';
+import { entriesForRunDetail, RUN_DETAIL_TABS, runOutcomeSummary, timelineEventSummary, timelineObservedSummary, type RunDetailTab } from '../common/operations-presentation';
 
 // diagnostic-coverage: operations.projection, operations.owners, operations.timeline, operations.processes, operations.cleanup, operations.admission, operations.stream, operations.support, operations.actions
 
@@ -70,7 +70,9 @@ export class OperationsWidget extends BaseWidget {
     const projectedRuns = this.projection?.runs ?? [];
     const projectionRows = projectedRuns.map(run => `<tr data-projected-run="${escapeHtml(run.runId)}"><td><button data-select-run="${escapeHtml(run.runId)}">${escapeHtml(run.runId.slice(0, 8))}</button></td><td>${escapeHtml(run.lifecycle)}</td><td>${run.attemptCount}</td><td>${run.retryCount}</td><td>${run.liveProcessCount}</td><td>${run.abnormalProcessCount}</td><td>${escapeHtml(runOutcomeSummary(run))}</td></tr>`).join('');
     const detailEntries = entriesForRunDetail(this.timeline, this.selectedDetail);
-    const timelineRows = detailEntries.map(entry => `<tr><td>${escapeHtml(entry.displayTime)}</td><td>${escapeHtml(entry.ownerKind)}</td><td>${escapeHtml(entry.eventKind)}</td><td>${escapeHtml(entry.safeCode ?? 'none')}</td></tr>`).join('');
+    const timelineRows = detailEntries.map(entry => {
+      return `<tr><td>${escapeHtml(timelineObservedSummary(entry))}</td><td>${escapeHtml(entry.ownerKind)}</td><td>${escapeHtml(timelineEventSummary(entry))}</td><td>${escapeHtml(entry.safeCode ?? 'none')}</td></tr>`;
+    }).join('');
     const detailTabs = RUN_DETAIL_TABS.map(tab => `<button role="tab" aria-selected="${tab === this.selectedDetail}" data-detail-tab="${tab}">${escapeHtml(detailLabel(tab))}</button>`).join('');
     this.node.innerHTML = `<div class="kogg-panel"><header><h2>Kogg Operations</h2><p>Safe lifecycle, recovery, and cleanup status for Kogg-owned work.</p></header>
       <p role="status"><strong>Admission:</strong> ${escapeHtml(this.snapshotValue.admission)}</p>

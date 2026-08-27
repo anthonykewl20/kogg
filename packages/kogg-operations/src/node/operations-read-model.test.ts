@@ -43,7 +43,7 @@ test('accepts a chained owner stream idempotently and rebuilds an identical safe
     const after = fixture.model.snapshot();
     assert.deepEqual(after.runs, before.runs); assert.notEqual(after.projectionEpoch, before.projectionEpoch);
     const afterMetrics = fixture.model.metrics(); assert.notEqual(afterMetrics.projectionEpoch, beforeMetrics.projectionEpoch); assert.deepEqual(afterMetrics.values, beforeMetrics.values);
-    assert.deepEqual(fixture.model.diagnostics(), { integrity: true, foreignKeys: true, lifecycle: 'current', ownerCount: 3, acceptedEventCount: 7, faultCount: 0, causalGapCount: 0, processAbnormalCount: 0, metricViolationCount: 0, retainedMetricEpochCount: 2, activeRetentionHoldCount: 0, retentionViolationCount: 0 });
+    assert.deepEqual(fixture.model.diagnostics(), { integrity: true, foreignKeys: true, lifecycle: 'current', ownerCount: 3, acceptedEventCount: 7, faultCount: 0, causalGapCount: 0, processAbnormalCount: 0, metricViolationCount: 0, retainedMetricEpochCount: 2, retainedActivityAggregateCount: 0, activityAggregateViolationCount: 0, activeRetentionHoldCount: 0, retentionViolationCount: 0 });
   } finally { await fixture.close(); }
 });
 
@@ -56,6 +56,61 @@ test('projects correlated diagnostic lifecycle as a governed run', async () => {
     fixture.model.ingest(owner.event('diagnostic.failed', { runId }, { resultClass: 'failed', safeCode: 'DIAGNOSTIC_FAILED' }));
     assert.equal(fixture.model.snapshot().runs[0]?.lifecycle, 'failed');
     assert.deepEqual(fixture.model.timeline(runId).map(entry => entry.eventKind), ['diagnostic.started', 'diagnostic.failed']);
+  } finally { await fixture.close(); }
+});
+
+test('coalesces only matching process activity buckets with exact counts and deterministic rebuilds', async () => {
+  const fixture = await createFixture();
+  try {
+    const runId = randomUUID(); const attemptId = randomUUID(); const processId = randomUUID(); const operation = fixture.owner('operation');
+    const correlations = { runId, attemptId, processId };
+    fixture.model.ingest(operation.event('process.ready', correlations, { processKind: 'provider-cli', processState: 'ready', cleanupState: 'required' }, undefined, '2026-08-28T00:00:05.000Z'));
+    fixture.model.ingest(operation.event('process.activity', correlations, { processKind: 'provider-cli', processState: 'activity', cleanupState: 'required', safeCode: 'PROVIDER_BUSY', count: 2 }, undefined, '2026-08-28T00:00:10.000Z'));
+    fixture.model.ingest(operation.event('process.activity', correlations, { processKind: 'provider-cli', processState: 'activity', cleanupState: 'required', safeCode: 'PROVIDER_BUSY', count: 3 }, undefined, '2026-08-28T00:00:40.000Z'));
+    fixture.model.ingest(operation.event('process.activity', correlations, { processKind: 'provider-cli', processState: 'activity', cleanupState: 'required', safeCode: 'PROVIDER_WAITING' }, undefined, '2026-08-28T00:00:45.000Z'));
+    fixture.model.ingest(operation.event('process.activity', correlations, { processKind: 'provider-cli', processState: 'activity', cleanupState: 'required', safeCode: 'PROVIDER_BUSY' }, undefined, '2026-08-28T00:01:00.000Z'));
+    const before = fixture.model.timeline(runId);
+    assert.equal(before.length, 4); assert.equal(before[0]?.eventKind, 'process.ready');
+    assert.deepEqual(before.slice(1).map(entry => ({ safeCode: entry.safeCode, count: entry.count, first: entry.firstDisplayTime, last: entry.lastDisplayTime })), [
+      { safeCode: 'PROVIDER_BUSY', count: 5, first: '2026-08-28T00:00:10.000Z', last: '2026-08-28T00:00:40.000Z' },
+      { safeCode: 'PROVIDER_WAITING', count: 1, first: '2026-08-28T00:00:45.000Z', last: '2026-08-28T00:00:45.000Z' },
+      { safeCode: 'PROVIDER_BUSY', count: 1, first: '2026-08-28T00:01:00.000Z', last: '2026-08-28T00:01:00.000Z' }
+    ]);
+    assert.equal(fixture.model.diagnostics().retainedActivityAggregateCount, 3); assert.equal(fixture.model.diagnostics().activityAggregateViolationCount, 0);
+    fixture.model.rebuild(); assert.deepEqual(fixture.model.timeline(runId), before);
+  } finally { await fixture.close(); }
+});
+
+test('retains activity aggregates for 90 days and extends them under owner holds', async () => {
+  const fixture = await createFixture(); const observedAt = '2026-01-01T00:00:00.000Z';
+  try {
+    const runId = randomUUID(); const processId = randomUUID(); const operation = fixture.owner('operation'); const workflow = fixture.owner('workflow'); const ranex = fixture.owner('ranex');
+    fixture.model.ingest(operation.event('process.activity', { runId, processId }, { processKind: 'provider-cli', processState: 'activity', cleanupState: 'required', count: 4 }, undefined, observedAt));
+    fixture.model.ingest(operation.event('process.cleaned', { runId, processId }, { processKind: 'provider-cli', processState: 'cleaned', cleanupState: 'cleaned' }, undefined, observedAt));
+    fixture.model.ingest(workflow.event('run.completed', { runId }, { lifecycle: 'completed' }, undefined, observedAt));
+    assert.equal(fixture.model.applyRetention(Date.parse('2026-02-01T00:00:00.001Z')), 1);
+    assert.equal(fixture.model.snapshot().runs.some(run => run.runId === runId), false);
+    assert.equal(fixture.model.timeline(runId)[0]?.count, 4); assert.equal(fixture.model.diagnostics().retainedActivityAggregateCount, 1);
+    fixture.model.applyRetention(Date.parse('2026-04-02T00:00:00.001Z'));
+    assert.equal(fixture.model.timeline(runId).length, 0); assert.equal(fixture.model.diagnostics().retainedActivityAggregateCount, 0);
+
+    const heldRunId = randomUUID(); const heldProcessId = randomUUID();
+    fixture.model.ingest(operation.event('process.activity', { runId: heldRunId, processId: heldProcessId }, { processKind: 'provider-cli', processState: 'activity', cleanupState: 'required' }, undefined, observedAt));
+    fixture.model.ingest(operation.event('process.cleaned', { runId: heldRunId, processId: heldProcessId }, { processKind: 'provider-cli', processState: 'cleaned', cleanupState: 'cleaned' }, undefined, observedAt));
+    fixture.model.ingest(workflow.event('run.completed', { runId: heldRunId }, { lifecycle: 'completed' }, undefined, observedAt));
+    fixture.model.ingest(ranex.event('evidence.requested', { runId: heldRunId }, { resultClass: 'pending' }, undefined, observedAt));
+    fixture.model.applyRetention(Date.parse('2026-04-02T00:00:00.001Z')); assert.equal(fixture.model.diagnostics().retainedActivityAggregateCount, 1);
+    fixture.model.ingest(ranex.event('evidence.retention-released', { runId: heldRunId }, { resultClass: 'not-applicable' }, undefined, observedAt));
+    fixture.model.applyRetention(Date.parse('2026-04-02T00:00:00.001Z')); assert.equal(fixture.model.diagnostics().retainedActivityAggregateCount, 0);
+  } finally { await fixture.close(); }
+});
+
+test('rejects zero-count activity before it can corrupt an aggregate', async () => {
+  const fixture = await createFixture();
+  try {
+    const operation = fixture.owner('operation');
+    assert.throws(() => fixture.model.ingest(operation.event('process.activity', { runId: randomUUID(), processId: randomUUID() }, { processKind: 'provider-cli', processState: 'activity', cleanupState: 'required', count: 0 })), /OWNER_PAYLOAD_INVALID/u);
+    assert.equal(fixture.model.diagnostics().retainedActivityAggregateCount, 0);
   } finally { await fixture.close(); }
 });
 
@@ -273,8 +328,11 @@ test('writes a bounded private checksummed support export without raw content', 
   const fixture = await createFixture(); const supportDirectory = await mkdtemp(path.join(os.tmpdir(), 'kogg-operations-support-test-'));
   try {
     const runId = randomUUID(); fixture.model.ingest(fixture.owner('workflow').event('run.queued', { runId }, { lifecycle: 'queued' }));
+    fixture.model.ingest(fixture.owner('operation').event('process.activity', { runId, processId: randomUUID() }, { processKind: 'provider-cli', processState: 'activity', cleanupState: 'required', count: 6 }));
     const exporter = new OperationsSupportExporter(fixture.model, supportDirectory); const receipt = await exporter.export({ requestId: randomUUID(), runId });
     const exported = await exporter.read(receipt.exportId); assert.equal(exported.sha256, receipt.sha256); assert.equal(exported.byteLength, receipt.byteLength);
+    const document = JSON.parse(exported.content) as { timelines: Record<string, Array<{ eventKind: string; count?: number }>> };
+    assert.deepEqual(document.timelines[runId]?.find(entry => entry.eventKind === 'process.activity')?.count, 6);
     assert.doesNotMatch(exported.content, /prompt|source|diff|command|environment|credential|authorization|cookie|rawBody/u);
     const mode = (await stat(path.join(supportDirectory, `kogg-operations-support-${receipt.exportId}.json`))).mode & 0o077; if (process.platform !== 'win32') assert.equal(mode, 0);
     await assert.rejects(exporter.read(randomUUID()), /SUPPORT_EXPORT_UNAVAILABLE/u);

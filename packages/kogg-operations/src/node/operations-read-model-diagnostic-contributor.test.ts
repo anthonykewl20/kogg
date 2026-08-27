@@ -19,7 +19,7 @@ test('fails closed with every read-model diagnostic when projection inspection f
 
 test('reports current owner actions and debugger source maps from runtime evidence', async () => {
   const projection = {
-    diagnostics: () => ({ integrity: true, foreignKeys: true, lifecycle: 'current', ownerCount: 11, acceptedEventCount: 0, faultCount: 0, causalGapCount: 0, processAbnormalCount: 0, metricViolationCount: 0, retainedMetricEpochCount: 0, activeRetentionHoldCount: 0, retentionViolationCount: 0 }),
+    diagnostics: () => ({ integrity: true, foreignKeys: true, lifecycle: 'current', ownerCount: 11, acceptedEventCount: 0, faultCount: 0, causalGapCount: 0, processAbnormalCount: 0, metricViolationCount: 0, retainedMetricEpochCount: 0, retainedActivityAggregateCount: 0, activityAggregateViolationCount: 0, activeRetentionHoldCount: 0, retentionViolationCount: 0 }),
     streamDiagnostics: () => ({ clientCount: 1, cursorRoundTrip: true, resyncRecovery: true, bounded: true }),
     storagePermissionsValid: () => true
   } as unknown as OperationsReadModel;
@@ -27,6 +27,18 @@ test('reports current owner actions and debugger source maps from runtime eviden
   const checks = await new OperationsReadModelDiagnosticContributor(projection, support, actions()).diagnose();
   assert.equal(checks.find(check => check.id === 'operations.actions')?.status, 'pass');
   assert.equal(checks.find(check => check.id === 'operations.source-maps')?.status, 'pass');
+});
+
+test('fails timeline and retention diagnostics for a malformed activity aggregate', async () => {
+  const projection = {
+    diagnostics: () => ({ integrity: true, foreignKeys: true, lifecycle: 'current', ownerCount: 11, acceptedEventCount: 1, faultCount: 0, causalGapCount: 0, processAbnormalCount: 0, metricViolationCount: 0, retainedMetricEpochCount: 1, retainedActivityAggregateCount: 1, activityAggregateViolationCount: 1, activeRetentionHoldCount: 0, retentionViolationCount: 0 }),
+    streamDiagnostics: () => ({ clientCount: 1, cursorRoundTrip: true, resyncRecovery: true, bounded: true }),
+    storagePermissionsValid: () => true
+  } as unknown as OperationsReadModel;
+  const support = { diagnostics: async () => ({ permissions: true, expired: true }) } as unknown as OperationsSupportExporter;
+  const checks = await new OperationsReadModelDiagnosticContributor(projection, support, actions()).diagnose();
+  assert.equal(checks.find(check => check.id === 'operations.timeline')?.status, 'fail');
+  assert.equal(checks.find(check => check.id === 'operations.retention')?.status, 'fail');
 });
 
 function actions(): OperationsActionRouter {
