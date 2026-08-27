@@ -5,6 +5,7 @@ import { inject, injectable } from '@theia/core/shared/inversify';
 import type { MergeAuthorizeRequestV1, MergeChallengeRequestV1, MergeExecuteRequestV1 } from '../common/verdict-merge-protocol';
 import { MergeAuthorizationAuthority, mergeAuthorizationScopeDigest } from './merge-authorization-authority';
 import { MergeAuthorizationError, MergeAuthorizationRegistry } from './merge-authorization-registry';
+import { NativeGitMergeService } from './native-git-merge-service';
 
 // Human merge authority is browser HTTP-only so cookie, origin, and CSRF facts never cross JSON-RPC serialization.
 // diagnostic-coverage: merge.authorization
@@ -13,7 +14,8 @@ export class MergeAuthorizationHttpController implements BackendApplicationContr
   constructor(
     @inject(BrowserAuthContribution) private readonly browserAuth: BrowserAuthContribution,
     @inject(MergeAuthorizationAuthority) private readonly authority: MergeAuthorizationAuthority,
-    @inject(MergeAuthorizationRegistry) private readonly registry: MergeAuthorizationRegistry
+    @inject(MergeAuthorizationRegistry) private readonly registry: MergeAuthorizationRegistry,
+    @inject(NativeGitMergeService) private readonly nativeGit: NativeGitMergeService
   ) {}
 
   configure(app: Application): void {
@@ -29,7 +31,9 @@ export class MergeAuthorizationHttpController implements BackendApplicationContr
     try {
       const request = httpRequest.body as MergeExecuteRequestV1; const actor = this.browserAuth.verifyMutation(httpRequest);
       const context = this.authority.mint(actor, mergeAuthorizationScopeDigest('execute', request));
-      const result = await this.registry.createIntent(request, context); response.status(result.kind === 'accepted' ? 202 : 409).json(result);
+      const result = await this.registry.createIntent(request, context);
+      if (result.kind === 'accepted') this.nativeGit.start(result.intent.mergeId);
+      response.status(result.kind === 'accepted' ? 202 : 409).json(result);
       console.info('[kogg:merge:authorization-http] consumption.completed', { requestId: request.requestId, authorizationId: request.authorizationId, safeCode: result.safeCode });
     } catch (error) {
       // observability-exempt: failure() emits the bounded consumption failure before returning a closed response.
