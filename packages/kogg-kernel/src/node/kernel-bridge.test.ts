@@ -9,7 +9,10 @@ import { canonicalKernelJson, KERNEL_SCHEMA_SET_DIGEST, KOGG_RANEX_COMMIT, KOGG_
 import { OperationRegistry } from '@kogg/operations/lib/node/operation-registry';
 import type { ILogger } from '@theia/core/lib/common/logger';
 import { ProcessManager } from '@theia/process/lib/node/process-manager';
+import { DatabaseSync } from 'node:sqlite';
+import { OperationsReadModel } from '@kogg/operations/lib/node/operations-read-model';
 import { KernelBridgeImpl } from './kernel-bridge';
+import { RanexOperationsOwner } from './ranex-operations-owner';
 
 test('handshakes with the pinned Ranex kernel and fails closed on missing journal', async () => {
   const state = await mkdtemp(path.join(os.tmpdir(), 'kogg-kernel-operation-test-'));
@@ -150,6 +153,13 @@ test('handshakes with the pinned Ranex kernel and fails closed on missing journa
     assert.equal(superseded.status, 'succeeded'); assert.equal(superseded.projection?.currentness, 'stale');
     const blocked = await bridge.evaluateGate(fixtureGateExpectation(committed.projection!.taskBindingDigest, incompleteFrozen.projection!.suiteDigest, subjectStateDigest, incompleteSuite), execution.subjectState);
     assert.equal(blocked.status, 'succeeded'); assert.equal(blocked.projection?.decision, 'blocked'); assert.equal(blocked.projection?.evidenceCount, 0);
+    const readModel = new OperationsReadModel(path.join(state, 'operations-projection.sqlite3')); readModel.start();
+    const ranexOwner = new RanexOperationsOwner(readModel); ranexOwner.onStart();
+    const ranexTimeline = readModel.timeline(fixtureBinding().runId);
+    assert.deepEqual(ranexTimeline.map(entry => entry.eventKind), ['evidence.admitted', 'gate.decided', 'gate.decided']);
+    ranexOwner.refresh();
+    assert.equal(readModel.timeline(fixtureBinding().runId).length, 3);
+    ranexOwner.onStop(); readModel.stop();
     const bindingBody = { binding: binding as unknown as KernelJson, bindingDigest: domainDigest('task-binding', binding as unknown as KernelJson) };
     const targetBodyDigest = jsonDigest(bindingBody as unknown as KernelJson);
     const reconciliation = await bridge.reconcileOperation({
@@ -182,6 +192,12 @@ test('handshakes with the pinned Ranex kernel and fails closed on missing journa
     assert.equal((await bridge.verifyJournal()).valid, true);
     await bridge.shutdown();
     assert.equal((await operations.snapshot()).active.length, 0);
+    const journal = new DatabaseSync(path.join(state, 'ranex', 'journal.sqlite3'));
+    journal.exec('DROP TRIGGER evaluations_no_update; UPDATE evaluations SET link=\'sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff\' WHERE seq=1;'); journal.close();
+    const corruptProjection = new OperationsReadModel(path.join(state, 'corrupt-operations-projection.sqlite3')); corruptProjection.start();
+    const corruptOwner = new RanexOperationsOwner(corruptProjection);
+    assert.throws(() => corruptOwner.onStart(), /integrity verification/u);
+    corruptProjection.stop();
   } finally {
     await bridge.shutdown();
     await operations.onStop();
@@ -210,7 +226,7 @@ test('maps a structurally invalid operation to a closed protocol refusal', async
       protocol: 'kogg.ranex/v2', requestId: '11111111-1111-4111-8111-111111111111',
       operationId: '22222222-2222-4222-8222-222222222222', idempotencyKey: `sha256:${'0'.repeat(64)}`,
       operation: {}, operationVersion: 1, ranexCommit: KOGG_RANEX_COMMIT,
-      schemaSetDigest: `sha256:90d8f437f914807b5eee9bcd4b1f701ebb34da9648bed1db83c6f2a0749192da`,
+      schemaSetDigest: `sha256:3bc24f92c49c2e318640273e51091c93429a805c7fc2795f13e352f04dc57511`,
       bodyDigest: `sha256:${'0'.repeat(64)}`, body: {}
     };
     const payload = Buffer.from(JSON.stringify(request), 'utf8');
@@ -261,7 +277,7 @@ function logger(): ILogger { return { debug() {}, info() {}, warn() {}, error() 
 function fixtureBinding(): TaskExecutionBindingV1 {
   const repository = fixtureRepository();
   return {
-    taskId: '11111111-1111-4111-8111-111111111111', taskRevision: 3, specificationDigest: `sha256:${'1'.repeat(64)}`,
+    taskId: '11111111-1111-4111-8111-111111111111', runId: '12121212-1212-4212-8212-121212121212', taskRevision: 3, specificationDigest: `sha256:${'1'.repeat(64)}`,
     approvalId: '22222222-2222-4222-8222-222222222222', approvalDigest: `sha256:${'2'.repeat(64)}`,
     authorityDigest: `sha256:${'3'.repeat(64)}`, projectId: '33333333-3333-4333-8333-333333333333',
     repositoryId: '44444444-4444-4444-8444-444444444444', repositoryIdentityDigest: `sha256:${'4'.repeat(64)}`,

@@ -30,6 +30,7 @@
     { "id": "operations.admission", "owner": "kogg-operations", "description": "Operation admission agrees with recovery and cleanup state." },
     { "id": "operations.projection", "owner": "kogg-operations", "description": "The disposable operations projection schema, event chain, lifecycle, and storage integrity are valid." },
     { "id": "operations.owners", "owner": "kogg-operations", "description": "Compiled owner adapters, schemas, epochs, cursors, and freshness are verified." },
+    { "id": "operations.ranex-owner", "owner": "kogg-kernel", "description": "Ranex evidence and gate projections replay from the verified authoritative journal with stable owner identity." },
     { "id": "operations.correlations", "owner": "kogg-operations", "description": "Owner-event causal references have no gap, conflict, rewind, or cycle." },
     { "id": "operations.timeline", "owner": "kogg-operations", "description": "The safe correlated timeline is complete and deterministically ordered." },
     { "id": "operations.stream", "owner": "kogg-operations", "description": "Authenticated projection streaming, resume, bounds, backpressure, and resync are healthy." },

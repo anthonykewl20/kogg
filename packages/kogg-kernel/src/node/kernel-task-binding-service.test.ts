@@ -16,6 +16,7 @@ import { KernelRepositoryStateAuthority } from './kernel-repository-state-author
 import { KernelEvidenceAdmissionService } from './kernel-evidence-admission-service';
 import { KernelGateEvaluationService } from './kernel-gate-evaluation-service';
 import { KernelVerdictReadService } from './kernel-verdict-read-service';
+import { RanexOwnerIntegrityError } from './ranex-operations-owner';
 
 test('measures a clean repository and binds only an exact live task authority snapshot', async () => {
   const temporary = await mkdtemp(path.join(os.tmpdir(), 'kogg-kernel-binding-test-'));
@@ -52,22 +53,28 @@ test('measures a clean repository and binds only an exact live task authority sn
     assert.equal(kernel.binding?.repositoryIdentityDigest, `sha256:${repositoryIdentityDigest}`);
     assert.equal((await operations.snapshot()).active.length, 0);
 
-    const evidenceService = new KernelEvidenceAdmissionService(authority, kernel as unknown as KernelBridge, operations, repositories, logger());
+    const ranexOwner = { refresh() {} };
+    const evidenceService = new KernelEvidenceAdmissionService(authority, kernel as unknown as KernelBridge, operations, repositories, logger(), ranexOwner as never);
     const admitted = await evidenceService.admit(admission, fixtureEvidence());
     assert.equal(admitted.status, 'succeeded'); assert.equal(kernel.evidenceCalls, 1);
     assert.equal(kernel.currentSubject?.commitObjectId, kernel.binding?.protectedSource.commitObjectId);
-    const gateService = new KernelGateEvaluationService(authority, kernel as unknown as KernelBridge, operations, repositories, logger());
+    const gateService = new KernelGateEvaluationService(authority, kernel as unknown as KernelBridge, operations, repositories, logger(), ranexOwner as never);
     const evaluated = await gateService.evaluate(admission, fixtureGateExpectation());
     assert.equal(evaluated.projection?.decision, 'pass'); assert.equal(kernel.gateCalls, 1);
+    const corruptOwner = { refresh() { throw new RanexOwnerIntegrityError(new Error('source corruption')); } };
+    const unknownEvidence = await new KernelEvidenceAdmissionService(authority, kernel as unknown as KernelBridge, operations, repositories, logger(), corruptOwner as never).admit(admission, fixtureEvidence());
+    assert.equal(unknownEvidence.status, 'unknown'); assert.equal(unknownEvidence.safeCode, 'KERNEL_OUTCOME_UNKNOWN');
+    const unknownGate = await new KernelGateEvaluationService(authority, kernel as unknown as KernelBridge, operations, repositories, logger(), corruptOwner as never).evaluate(admission, fixtureGateExpectation());
+    assert.equal(unknownGate.status, 'unknown'); assert.equal(unknownGate.safeCode, 'KERNEL_OUTCOME_UNKNOWN');
     const verdictService = new KernelVerdictReadService(authority, kernel as unknown as KernelBridge, operations, repositories, logger());
     const read = await verdictService.read(admission, fixtureVerdictRead());
     assert.equal(read.projection?.currentness, 'current'); assert.equal(kernel.verdictReadCalls, 1);
 
     await writeFile(path.join(repository, 'fixture.txt'), 'changed fixture\n');
     const staleEvidence = await evidenceService.admit(admission, fixtureEvidence());
-    assert.equal(staleEvidence.safeCode, 'KERNEL_SUBJECT_STALE'); assert.equal(kernel.evidenceCalls, 1);
+    assert.equal(staleEvidence.safeCode, 'KERNEL_SUBJECT_STALE'); assert.equal(kernel.evidenceCalls, 2);
     const staleGate = await gateService.evaluate(admission, fixtureGateExpectation());
-    assert.equal(staleGate.safeCode, 'KERNEL_VERDICT_STALE'); assert.equal(kernel.gateCalls, 1);
+    assert.equal(staleGate.safeCode, 'KERNEL_VERDICT_STALE'); assert.equal(kernel.gateCalls, 2);
     const staleRead = await verdictService.read(admission, fixtureVerdictRead());
     assert.equal(staleRead.projection?.currentness, 'stale'); assert.equal(staleRead.projection?.currentDecision, null);
     const refused = await service.bind(admission);

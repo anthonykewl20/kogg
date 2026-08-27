@@ -53,7 +53,7 @@ export class KernelTaskBindingService {
       });
       if (Date.parse(authority.expiresAt) <= Date.now()) throw new BindingRefusal('KERNEL_AUTHORITY_INVALID');
       const binding: TaskExecutionBindingV1 = {
-        taskId: authority.taskId, taskRevision: authority.taskRevision,
+        taskId: authority.taskId, runId: authority.runId, taskRevision: authority.taskRevision,
         specificationDigest: digest(authority.specificationDigest), approvalId: authority.approvalId,
         approvalDigest: digest(authority.approvalDigest), authorityDigest,
         projectId: authority.projectId, repositoryId: authority.repositoryId,

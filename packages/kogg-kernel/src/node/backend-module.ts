@@ -9,10 +9,13 @@ import { KernelRepositoryStateAuthority } from './kernel-repository-state-author
 import { KernelEvidenceAdmissionService } from './kernel-evidence-admission-service';
 import { KernelGateEvaluationService } from './kernel-gate-evaluation-service';
 import { KernelVerdictReadService } from './kernel-verdict-read-service';
+import { RanexOperationsOwner } from './ranex-operations-owner';
 
 export default new ContainerModule(bind => {
   bind(KernelBridgeImpl).toSelf().inSingletonScope();
   bind(KernelBridgeToken).toService(KernelBridgeImpl);
+  bind(RanexOperationsOwner).toSelf().inSingletonScope();
+  bind(BackendApplicationContribution).toService(RanexOperationsOwner);
   bind(KernelBackendContribution).toSelf().inSingletonScope();
   bind(BackendApplicationContribution).toService(KernelBackendContribution);
   bind(KernelDiagnosticContributor).toSelf().inSingletonScope();

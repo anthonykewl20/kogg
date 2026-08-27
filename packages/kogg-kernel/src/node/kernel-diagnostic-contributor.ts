@@ -5,14 +5,16 @@ import {
   type KoggDiagnosticCheck,
   type KoggDiagnosticContributor
 } from '@kogg/contracts';
+import { RanexOperationsOwner } from './ranex-operations-owner';
 
-// diagnostic-coverage: kernel.protocol, kernel.bridge, kernel.bindings, kernel.producers, kernel.suites, kernel.checks, kernel.evidence, kernel.verdicts, kernel.cleanup, kernel.recovery, kernel.source-maps
+// diagnostic-coverage: kernel.protocol, kernel.bridge, kernel.bindings, kernel.producers, kernel.suites, kernel.checks, kernel.evidence, kernel.verdicts, kernel.cleanup, kernel.recovery, kernel.source-maps, operations.ranex-owner
 
 @injectable()
 export class KernelDiagnosticContributor implements KoggDiagnosticContributor {
   readonly id = 'kernel';
 
-  constructor(@inject(KernelBridgeToken) private readonly kernel: KernelBridge) {}
+  constructor(@inject(KernelBridgeToken) private readonly kernel: KernelBridge,
+    @inject(RanexOperationsOwner) private readonly ranexOwner: RanexOperationsOwner) {}
 
   async diagnose(): Promise<readonly KoggDiagnosticCheck[]> {
     try {
@@ -22,6 +24,7 @@ export class KernelDiagnosticContributor implements KoggDiagnosticContributor {
         ? { status: 'pass', summary: `${operation} is schema-bound to an implemented handler.` }
         : { status: 'fail', summary: `${operation} is unavailable and remains fail-closed.`, details: { safeCode: 'KERNEL_CAPABILITY_UNAVAILABLE' } };
       const states = (operations: readonly string[]): Omit<KoggDiagnosticCheck, 'id'> => statesFor(implemented, operations);
+      const ranexOwner = this.ranexOwner.diagnostics();
       return [
         { id: 'kernel.protocol', status: 'pass', summary: 'Ranex v2 framing, provenance, schema set, and advertised operation closure verified.', details: { operationCount: implemented.size } },
         { id: 'kernel.bridge', status: health.status === 'failed' ? 'fail' : health.status === 'degraded' ? 'warn' : 'pass', summary: `Ranex bridge reports ${health.status}.`, details: { confinement: health.capabilities.confinement, journal: health.journal } },
@@ -33,6 +36,7 @@ export class KernelDiagnosticContributor implements KoggDiagnosticContributor {
         { id: 'kernel.verdicts', ...states(['gate.evaluate', 'verdict.read']) },
         { id: 'kernel.cleanup', ...state('operation.cancel') },
         { id: 'kernel.recovery', ...state('operation.reconcile') },
+        { id: 'operations.ranex-owner', status: 'pass', summary: 'Ranex evidence and gate facts replay from the verified authoritative journal.', details: { sourceEventCount: ranexOwner.sourceEventCount, projectedEventCount: ranexOwner.projectedEventCount } },
         { id: 'kernel.source-maps', status: 'pass', summary: 'Kernel TypeScript and Python adapter sources remain directly debugger-reachable.' }
       ];
     } catch (error) {
@@ -49,7 +53,7 @@ function statesFor(implemented: ReadonlySet<string>, operations: readonly string
     : { status: 'fail', summary: `${missing.join(' and ')} are unavailable and remain fail-closed.`, details: { safeCode: 'KERNEL_CAPABILITY_UNAVAILABLE' } };
 }
 
-const IDS = ['kernel.protocol', 'kernel.bridge', 'kernel.bindings', 'kernel.producers', 'kernel.suites', 'kernel.checks', 'kernel.evidence', 'kernel.verdicts', 'kernel.cleanup', 'kernel.recovery', 'kernel.source-maps'] as const;
+const IDS = ['kernel.protocol', 'kernel.bridge', 'kernel.bindings', 'kernel.producers', 'kernel.suites', 'kernel.checks', 'kernel.evidence', 'kernel.verdicts', 'kernel.cleanup', 'kernel.recovery', 'operations.ranex-owner', 'kernel.source-maps'] as const;
 
 function errorName(error: unknown): string {
   return error instanceof Error ? error.name : 'UnknownError';

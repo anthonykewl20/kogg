@@ -9,6 +9,7 @@ import { TaskKernelBindingAuthority, type TaskAdmissionSnapshot, type TaskKernel
 import { ILogger } from '@theia/core/lib/common/logger';
 import { inject, injectable, named } from '@theia/core/shared/inversify';
 import { GitFailure, KernelRepositoryStateAuthority, RepositoryRefusal } from './kernel-repository-state-authority';
+import { RanexOperationsOwner, RanexOwnerIntegrityError } from './ranex-operations-owner';
 
 // diagnostic-coverage: kernel.evidence, kernel.cleanup
 
@@ -19,7 +20,8 @@ export class KernelEvidenceAdmissionService {
     @inject(KernelBridgeToken) private readonly kernel: KernelBridge,
     @inject(KoggOperationRegistry) private readonly operations: OperationRegistryApi,
     @inject(KernelRepositoryStateAuthority) private readonly repositories: KernelRepositoryStateAuthority,
-    @inject(ILogger) @named('kogg:kernel:evidence') private readonly logger: ILogger
+    @inject(ILogger) @named('kogg:kernel:evidence') private readonly logger: ILogger,
+    @inject(RanexOperationsOwner) private readonly ranexOwner: RanexOperationsOwner
   ) {}
 
   async admit(admission: TaskAdmissionSnapshot, evidence: EvidenceManifestV1): Promise<KernelResultV2<EvidenceAdmissionProjectionV1>> {
@@ -37,6 +39,7 @@ export class KernelEvidenceAdmissionService {
       }
       operation.active();
       const result = await this.kernel.admitEvidence(evidence, facts.state);
+      this.ranexOwner.refresh();
       await operation.cleanup();
       if (result.status === 'succeeded') {
         operation.complete(); this.logger.info('evidence.admit.verified', { operationId: operation.id, taskId: admission.taskId, runId: admission.runId, safeCode: result.safeCode });
@@ -46,7 +49,11 @@ export class KernelEvidenceAdmissionService {
       return result;
     } catch (error) {
       await operation.cleanup().catch(() => undefined);
-      operation.fail(error instanceof GitFailure ? 'PROCESS_EXIT_NONZERO' : 'OPERATIONS_REFUSED', errorName(error));
+      operation.fail(error instanceof RanexOwnerIntegrityError ? 'OPERATIONS_INTEGRITY_FAILED' : error instanceof GitFailure ? 'PROCESS_EXIT_NONZERO' : 'OPERATIONS_REFUSED', errorName(error));
+      if (error instanceof RanexOwnerIntegrityError) {
+        this.logger.warn('evidence.admit.failed', { operationId: operation.id, taskId: admission.taskId, runId: admission.runId, safeCode: 'KERNEL_OUTCOME_UNKNOWN', errorType: errorName(error) });
+        return unknownOutcome();
+      }
       const safeCode = error instanceof EvidenceRefusal || error instanceof RepositoryRefusal ? error.safeCode : 'KERNEL_AUTHORITY_INVALID';
       this.logger.warn('evidence.admit.failed', { operationId: operation.id, taskId: admission.taskId, runId: admission.runId, safeCode, errorType: errorName(error) });
       return refused(safeCode);
@@ -59,3 +66,4 @@ function errorName(error: unknown): string { return error instanceof Error ? err
 function refused(safeCode: 'KERNEL_SUBJECT_STALE' | 'KERNEL_REPOSITORY_MISMATCH' | 'KERNEL_AUTHORITY_INVALID'): KernelResultV2<EvidenceAdmissionProjectionV1> {
   return { protocol: KOGG_RANEX_PROTOCOL, requestId: randomUUID(), operationId: randomUUID(), status: 'refused', safeCode, resultDigest: null, journal: null, projection: null };
 }
+function unknownOutcome(): KernelResultV2<EvidenceAdmissionProjectionV1> { return { protocol: KOGG_RANEX_PROTOCOL, requestId: randomUUID(), operationId: randomUUID(), status: 'unknown', safeCode: 'KERNEL_OUTCOME_UNKNOWN', resultDigest: null, journal: null, projection: null }; }
