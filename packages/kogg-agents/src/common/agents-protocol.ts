@@ -7,6 +7,7 @@ export const KoggAgentsService = Symbol('KoggAgentsService');
 export const KoggAdapterRegistry = Symbol('KoggAdapterRegistry');
 export const CredentialLeaseAuthority = Symbol('CredentialLeaseAuthority');
 export const KoggAgentBindingAuthorizer = Symbol('KoggAgentBindingAuthorizer');
+export const KoggAgentWorkspaceAuthority = Symbol('KoggAgentWorkspaceAuthority');
 
 export type Decimal = string;
 export type AttemptState = 'requested' | 'admitted' | 'adapter_resolved' | 'registered' | 'starting' | 'ready' | 'active'
@@ -58,7 +59,7 @@ export interface AttemptProjectionV1 {
 export interface StartAttemptRequestV1 {
   readonly schemaVersion: '1'; readonly requestId: string; readonly expectedRegistryRevision: Decimal; readonly taskAdmissionId: string;
   readonly roleRevisionId: string; readonly providerId: string; readonly modelId: string; readonly adapterKey: string; readonly adapterVersion: string;
-  readonly deadlinePolicyId: string; readonly parentAttemptId?: string;
+  readonly deadlinePolicyId: string; readonly parentAttemptId?: string; readonly workflowPlanDigest?: string;
 }
 export interface CancelAttemptRequestV1 { readonly schemaVersion: '1'; readonly requestId: string; readonly expectedRegistryRevision: Decimal; readonly expectedAttemptRevision: Decimal; readonly attemptId: string; readonly reason: 'user' | 'parent' | 'shutdown' | 'policy'; }
 export interface AgentMutationResult { readonly kind: 'completed' | 'refused' | 'conflict' | 'failed'; readonly code: AgentSafeCode; readonly registryRevision: Decimal; readonly role?: RoleRevisionV1; readonly attempt?: AttemptProjectionV1; readonly replay?: boolean; }
@@ -71,8 +72,15 @@ export interface CredentialLeaseAuthority { issue(input: { readonly attemptId: s
 export interface AdapterAttemptBindingV1 {
   readonly schemaVersion: '1'; readonly attemptId: string; readonly taskId: string; readonly projectId: string; readonly repositoryId: string;
   readonly repositoryBindingRevision: Decimal; readonly specificationId: string; readonly approvalId: string; readonly runId: string;
-  readonly roleRevisionId: string; readonly deadlinePolicyId: string; readonly providerId: string; readonly modelId: string;
+  readonly roleRevisionId: string; readonly deadlinePolicyId: string; readonly providerId: string; readonly modelId: string; readonly worktreeId?: string;
 }
+export interface AgentWorkspaceAuthorizationRequestV1 {
+  readonly schemaVersion: '1'; readonly requestId: string; readonly attemptId: string; readonly taskAdmissionId: string;
+  readonly taskId: string; readonly projectId: string; readonly repositoryId: string; readonly repositoryBindingRevision: Decimal;
+  readonly specificationId: string; readonly approvalId: string; readonly runId: string; readonly roleRevisionId: string; readonly workflowPlanDigest: string;
+}
+export interface AgentWorkspaceAuthorizationResultV1 { readonly allowed: boolean; readonly code: AgentSafeCode; readonly worktreeId?: string; readonly workspaceGrantDigest?: string; }
+export interface AgentWorkspaceAuthority { prepareWorkspace(request: AgentWorkspaceAuthorizationRequestV1): Promise<AgentWorkspaceAuthorizationResultV1>; }
 export interface AgentBindingAuthorizationRequestV1 { readonly roleRevisionId: string; readonly providerId: string; readonly modelId: string; readonly adapterKey: string; readonly adapterVersion: string; readonly deadlinePolicyId: string; }
 export interface AgentBindingAuthorizationResultV1 { readonly allowed: boolean; readonly code: AgentSafeCode; readonly registryRevision: Decimal; }
 export interface AgentBindingAuthorizer { authorizeBinding(request: AgentBindingAuthorizationRequestV1): Promise<AgentBindingAuthorizationResultV1>; }

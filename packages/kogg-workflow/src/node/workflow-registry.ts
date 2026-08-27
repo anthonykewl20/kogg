@@ -276,7 +276,9 @@ export class WorkflowRegistry implements KoggWorkflowService, BackendApplication
     if (!dispatcher || !configuration || !binding) return agentRefused(fields, 'WORKFLOW_EXECUTOR_INCOMPATIBLE', 0);
     try {
       const snapshot = await dispatcher.snapshot();
-      const started = await dispatcher.startAttempt({ schemaVersion: '1', requestId, expectedRegistryRevision: snapshot.registryRevision, taskAdmissionId, ...binding });
+      const run = this.db().prepare('SELECT plan_digest FROM workflow_runs WHERE run_id=?').get(runId) as Row | undefined;
+      if (!run) return agentRefused(fields, 'WORKFLOW_OUTCOME_UNKNOWN', 0);
+      const started = await dispatcher.startAttempt({ schemaVersion: '1', requestId, expectedRegistryRevision: snapshot.registryRevision, taskAdmissionId, workflowPlanDigest: text(run, 'plan_digest'), ...binding });
       if (started.attempt) this.db().prepare('UPDATE workflow_node_attempts SET external_attempt_id=? WHERE run_id=? AND node_id=? AND attempt=1').run(started.attempt.attemptId, runId, node.nodeId);
       if (started.kind !== 'completed' || !started.attempt) return agentRefused(fields, agentWorkflowCode(started.code), residualFor(started));
       const terminal = await this.waitForAgentAttempt(dispatcher, started.attempt, configuration.absoluteDeadlineMs); const terminalAttempt = terminal.attempt;

@@ -8,7 +8,7 @@ import type { OperationLease, OperationRegistryApi, ProcessLease, StartOperation
 import { OperationsReadModel } from '@kogg/operations/lib/node/operations-read-model';
 import type { TaskAdmissionAuthority, TaskAdmissionSnapshot } from '@kogg/tasks/lib/common/tasks-protocol';
 import type { ModeOperationAuthorizer } from '@kogg/interaction-modes/lib/common/interaction-modes-protocol';
-import type { AdapterAttemptBindingV1, AgentAdapterFactory } from '../common/agents-protocol';
+import type { AdapterAttemptBindingV1, AgentAdapterFactory, AgentWorkspaceAuthority } from '../common/agents-protocol';
 import { AdapterRegistry } from './adapter-registry';
 import { AgentRegistry } from './agent-registry';
 import { FixtureAdapter } from './fixture-adapter';
@@ -61,6 +61,30 @@ test('refuses agent dispatch by durable mode authority before creating an attemp
     const mutatingResult = await registry.startAttempt({ schemaVersion: '1', requestId: '30000000-0000-4000-8000-000000000092', expectedRegistryRevision: mutatingRole.registryRevision, taskAdmissionId: ADMISSION.taskAdmissionId, roleRevisionId: mutatingRole.role.roleRevisionId, providerId: 'kogg.fixture', modelId: 'fixture.echo', adapterKey: 'kogg.fixture', adapterVersion: '1.0.0', deadlinePolicyId: 'interactive-v1' });
     assert.equal(mutatingResult.kind, 'refused'); assert.deepEqual(modeOperations, ['research', 'private-mutate']); assert.equal(operations.started, 0); assert.equal((await registry.listAttempts()).length, 0);
   } finally { await registry.onStop(); if (prior === undefined) delete process.env.KOGG_STATE_DIR; else process.env.KOGG_STATE_DIR = prior; await rm(directory, { recursive: true, force: true }); }
+});
+
+test('refuses a mutating attempt without governed workspace authority before external effects', async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), 'kogg-agents-workspace-refused-')); const prior = process.env.KOGG_STATE_DIR; process.env.KOGG_STATE_DIR = directory;
+  const adapters = new AdapterRegistry(); const operations = new TestOperations(); const registry = new AgentRegistry({ resolveAdmission: async () => ADMISSION }, operations, adapters, new LocalCredentialLeaseAuthority(), MODE_AUTHORITY); const fixture = new FixtureAdapter(adapters); let adapterCreates = 0;
+  const create = fixture.create.bind(fixture); fixture.create = input => { adapterCreates++; return create(input); };
+  try {
+    await registry.onStart(); fixture.onStart(); const role = await registry.createRoleRevision(childRoleRequest('21000000-0000-4000-8000-000000000001', '0', 'workspace-mutator', ['write'], false, [], ['fixture.echo'])); assert.ok(role.role);
+    const result = await registry.startAttempt({ schemaVersion: '1', requestId: '31000000-0000-4000-8000-000000000001', expectedRegistryRevision: role.registryRevision, taskAdmissionId: ADMISSION.taskAdmissionId, roleRevisionId: role.role.roleRevisionId, providerId: 'kogg.fixture', modelId: 'fixture.echo', adapterKey: 'kogg.fixture', adapterVersion: '1.0.0', deadlinePolicyId: 'interactive-v1', workflowPlanDigest: 'a'.repeat(64) });
+    assert.equal(result.kind, 'refused'); assert.equal(result.code, 'WORKSPACE_UNTRUSTED'); assert.equal(result.attempt?.state, 'cleaned'); assert.equal(result.attempt?.worktreeId, undefined); assert.equal(operations.started, 0); assert.equal(operations.processes.length, 0); assert.equal(adapterCreates, 0);
+  } finally { await registry.onStop(); if (prior === undefined) delete process.env.KOGG_STATE_DIR; else process.env.KOGG_STATE_DIR = prior; await rm(directory, { recursive: true, force: true }); }
+});
+
+test('persists and binds a validated governed workspace grant for a mutating attempt', async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), 'kogg-agents-workspace-approved-')); const prior = process.env.KOGG_STATE_DIR; process.env.KOGG_STATE_DIR = directory;
+  const worktreeId = '41000000-0000-4000-8000-000000000001'; const requests: Parameters<AgentWorkspaceAuthority['prepareWorkspace']>[0][] = []; const authority: AgentWorkspaceAuthority = { async prepareWorkspace(request) { requests.push(request); return { allowed: true, code: 'AGENT_OK', worktreeId, workspaceGrantDigest: 'b'.repeat(64) }; } };
+  const adapters = new AdapterRegistry(); const registry = new AgentRegistry({ resolveAdmission: async () => ADMISSION }, new TestOperations(), adapters, new LocalCredentialLeaseAuthority(), MODE_AUTHORITY, authority); const fixture = new FixtureAdapter(adapters); let adapterBinding: AdapterAttemptBindingV1 | undefined; let restarted: AgentRegistry | undefined;
+  const create = fixture.create.bind(fixture); fixture.create = input => { adapterBinding = input.binding; return create(input); };
+  try {
+    await registry.onStart(); fixture.onStart(); const role = await registry.createRoleRevision(childRoleRequest('21000000-0000-4000-8000-000000000002', '0', 'workspace-mutator', ['write'], false, [], ['fixture.echo'])); assert.ok(role.role);
+    const result = await registry.startAttempt({ schemaVersion: '1', requestId: '31000000-0000-4000-8000-000000000002', expectedRegistryRevision: role.registryRevision, taskAdmissionId: ADMISSION.taskAdmissionId, roleRevisionId: role.role.roleRevisionId, providerId: 'kogg.fixture', modelId: 'fixture.echo', adapterKey: 'kogg.fixture', adapterVersion: '1.0.0', deadlinePolicyId: 'interactive-v1', workflowPlanDigest: 'a'.repeat(64) });
+    assert.equal(result.kind, 'completed'); assert.equal(result.attempt?.worktreeId, worktreeId); assert.equal(adapterBinding?.worktreeId, worktreeId); assert.equal(requests.length, 1); assert.deepEqual(requests[0], { schemaVersion: '1', requestId: '31000000-0000-4000-8000-000000000002', attemptId: result.attempt?.attemptId, taskAdmissionId: ADMISSION.taskAdmissionId, taskId: ADMISSION.taskId, projectId: ADMISSION.projectId, repositoryId: ADMISSION.repositoryId, repositoryBindingRevision: ADMISSION.bindingRevision, specificationId: ADMISSION.specificationId, approvalId: ADMISSION.approvalId, runId: ADMISSION.runId, roleRevisionId: role.role.roleRevisionId, workflowPlanDigest: 'a'.repeat(64) });
+    await poll(() => registry.getAttempt(result.attempt!.attemptId), value => value.state === 'cleaned'); await registry.onStop(); restarted = new AgentRegistry({ resolveAdmission: async () => ADMISSION }, new TestOperations(), new AdapterRegistry(), new LocalCredentialLeaseAuthority(), MODE_AUTHORITY); await restarted.onStart(); assert.equal((await restarted.getAttempt(result.attempt!.attemptId)).worktreeId, worktreeId);
+  } finally { await restarted?.onStop(); await registry.onStop(); if (prior === undefined) delete process.env.KOGG_STATE_DIR; else process.env.KOGG_STATE_DIR = prior; await rm(directory, { recursive: true, force: true }); }
 });
 
 test('publishes restart-safe adapter owner facts into the operations projection', async () => {
