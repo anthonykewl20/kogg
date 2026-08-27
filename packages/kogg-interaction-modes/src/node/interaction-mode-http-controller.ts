@@ -5,8 +5,9 @@ import { inject, injectable } from '@theia/core/shared/inversify';
 import {
   InteractionModeError, InteractionModeRegistry
 } from './interaction-mode-registry';
-import type { ModeTransitionCancelRequestV1, ModeTransitionRequestV1 } from '../common/interaction-modes-protocol';
+import type { ModeTransitionCancelRequestV1, ModeTransitionConfirmRequestV1, ModeTransitionRequestV1 } from '../common/interaction-modes-protocol';
 import { ModeTransitionAuthority, transitionScopeDigest } from './mode-transition-authority';
+import { ModeTransitionCoordinator } from './mode-transition-coordinator';
 
 // Browser transition mutation is intentionally HTTP-only so authenticated request facts never cross JSON-RPC serialization.
 // diagnostic-coverage: interaction-modes.transitions
@@ -15,15 +16,29 @@ export class InteractionModeHttpController implements BackendApplicationContribu
   constructor(
     @inject(BrowserAuthContribution) private readonly browserAuth: BrowserAuthContribution,
     @inject(ModeTransitionAuthority) private readonly authority: ModeTransitionAuthority,
-    @inject(InteractionModeRegistry) private readonly registry: InteractionModeRegistry
+    @inject(InteractionModeRegistry) private readonly registry: InteractionModeRegistry,
+    @inject(ModeTransitionCoordinator) private readonly coordinator: ModeTransitionCoordinator
   ) {}
 
   configure(app: Application): void {
     if (!this.browserAuth.browserMutationsEnabled()) return;
     app.use('/kogg/modes/transitions', json({ limit: '8kb', strict: true }));
     app.post('/kogg/modes/transitions/request', (request, response) => void this.request(request, response));
+    app.post('/kogg/modes/transitions/confirm', (request, response) => void this.confirm(request, response));
     app.post('/kogg/modes/transitions/cancel', (request, response) => void this.cancel(request, response));
     console.info('[kogg:interaction-modes:http] controller.enabled');
+  }
+
+  private async confirm(httpRequest: Request, response: Response): Promise<void> {
+    try {
+      const request = httpRequest.body as ModeTransitionConfirmRequestV1; const actor = this.browserAuth.verifyMutation(httpRequest);
+      const result = await this.coordinator.confirm(request, this.context(actor, transitionScopeDigest('confirm', request)));
+      console.info('[kogg:interaction-modes:http] transition.confirm.completed', { transitionId: result.transitionId, taskId: result.taskId, safeCode: result.safeCode });
+      response.status(200).json(result);
+    } catch (error) {
+      // observability-exempt: failure() emits the bounded transition.confirm.failed event before returning a safe response.
+      this.failure(response, error, 'transition.confirm.failed');
+    }
   }
 
   private async request(httpRequest: Request, response: Response): Promise<void> {
@@ -52,7 +67,7 @@ export class InteractionModeHttpController implements BackendApplicationContribu
 
   private context(actor: BrowserMutationActorV1, scopeDigest: string) { return this.authority.mint(actor, scopeDigest); }
 
-  private failure(response: Response, error: unknown, event: 'transition.request.failed' | 'transition.cancel.failed'): void {
+  private failure(response: Response, error: unknown, event: 'transition.request.failed' | 'transition.confirm.failed' | 'transition.cancel.failed'): void {
     const safeCode = error instanceof BrowserMutationAuthorizationError ? error.code
       : error instanceof InteractionModeError ? error.code : 'MODE_REGISTRY_UNAVAILABLE';
     const status = error instanceof BrowserMutationAuthorizationError ? (error.code === 'authentication_required' ? 401 : 403)

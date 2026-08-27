@@ -2,16 +2,21 @@ import { BackendApplicationContribution } from '@theia/core/lib/node';
 import { KoggDiagnosticContribution } from '@kogg/contracts';
 import { ConnectionHandler, JsonRpcConnectionHandler } from '@theia/core/lib/common/messaging';
 import { ContainerModule } from '@theia/core/shared/inversify';
-import { KoggInteractionModesServicePath, KoggModeOperationAuthorizer, type KoggInteractionModesService } from '../common/interaction-modes-protocol';
+import { KoggInteractionModesServicePath, KoggModeOperationAuthorizer, KoggModeTransitionOwner, type KoggInteractionModesService } from '../common/interaction-modes-protocol';
 import { InteractionModeRegistry } from './interaction-mode-registry';
 import { ModeTransitionAuthority } from './mode-transition-authority';
 import { InteractionModesDiagnosticContributor } from './interaction-modes-diagnostic-contributor';
 import { InteractionModeHttpController } from './interaction-mode-http-controller';
 import { InteractionModesRpcService } from './interaction-modes-rpc-service';
+import { ModeTransitionCoordinator } from './mode-transition-coordinator';
+import { OperationsTransitionOwner } from './operations-transition-owner';
 
 // diagnostic-coverage: interaction-modes.registry, interaction-modes.authority, interaction-modes.operations, interaction-modes.restoration
 export default new ContainerModule(bind => {
   bind(ModeTransitionAuthority).toSelf().inSingletonScope();
+  bind(ModeTransitionCoordinator).toSelf().inSingletonScope();
+  bind(OperationsTransitionOwner).toSelf().inSingletonScope();
+  bind(KoggModeTransitionOwner).toService(OperationsTransitionOwner);
   bind(InteractionModeRegistry).toSelf().inSingletonScope(); bind(BackendApplicationContribution).toService(InteractionModeRegistry);
   bind(KoggModeOperationAuthorizer).toService(InteractionModeRegistry);
   bind(InteractionModesRpcService).toSelf().inSingletonScope();

@@ -8,7 +8,8 @@ import { inject, injectable, unmanaged } from '@theia/core/shared/inversify';
 import type {
   InteractionModeV1, ModeCapabilityV1, ModeOperationRequestV1, ModeOperationResultV1,
   ModeOperationV1, ModeProjectionV1, ModeReadRequestV1, ModeSafeCodeV1, ModeTransitionCancelRequestV1,
-  ModeTransitionProjectionV1, ModeTransitionRequestV1, ModeTransitionStateV1
+  ModeTransitionConfirmRequestV1, ModeTransitionOwnerContribution, ModeTransitionOwnerIdV1, ModeTransitionOwnerRequestV1,
+  ModeTransitionOwnerResultV1, ModeTransitionProjectionV1, ModeTransitionRequestV1, ModeTransitionStateV1
 } from '../common/interaction-modes-protocol';
 import { modeLog, modeLoggingDiagnostics } from './interaction-modes-logger';
 import { ModeTransitionAuthority, type ModeTransitionContextV1, transitionScopeDigest } from './mode-transition-authority';
@@ -18,6 +19,8 @@ import { ModeTransitionAuthority, type ModeTransitionContextV1, transitionScopeD
 // diagnostic-coverage: interaction-modes.registry, interaction-modes.authority, interaction-modes.operations, interaction-modes.restoration
 type Row = Record<string, SQLOutputValue>;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u;
+const SYMBOLIC = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/u;
+const SHA256 = /^sha256:[0-9a-f]{64}$/u;
 const OPERATION_CAPABILITY: Readonly<Record<ModeOperationV1, ModeCapabilityV1>> = {
   research: 'research.read', 'plan-save': 'plan.write', 'plan-approval-request': 'plan.approval-request',
   'worktree-create': 'worktree.create', 'private-mutate': 'repository.mutate-private', 'build-tool': 'tool.execute-build',
@@ -148,6 +151,56 @@ export class InteractionModeRegistry implements BackendApplicationContribution {
     return projection;
   }
 
+  async confirmTransition(request: ModeTransitionConfirmRequestV1, context: ModeTransitionContextV1, owners: readonly ModeTransitionOwnerContribution[]): Promise<ModeTransitionProjectionV1> {
+    validateTransitionConfirm(request); const requestDigest = transitionScopeDigest('confirm', request); const actor = this.transitionAuthority.verify(context, requestDigest);
+    if (!actor) throw new InteractionModeError('MODE_AUTHORITY_REFUSED');
+    await this.ensureStarted(); this.expireChallenges(); const replay = this.transitionReplay(request.requestId, requestDigest); if (replay) return replay;
+    const transition = this.db().prepare('SELECT * FROM mode_transitions WHERE transition_id=? AND task_id=?').get(request.transitionId, request.taskId) as Row | undefined;
+    if (!transition || !['awaiting-confirmation', 'cleanup-pending'].includes(String(transition.state))) throw new InteractionModeError('MODE_TRANSITION_CONFLICT');
+    const direction = String(transition.direction) as ModeTransitionProjectionV1['direction'];
+    if (direction === 'expand' && (request.challengeDigest !== String(transition.challenge_digest) || actor.sessionId !== String(transition.session_id) || actor.actorAuthorityDigest !== String(transition.actor_authority_digest))) throw new InteractionModeError('MODE_AUTHORITY_REFUSED');
+    if (configurationKind(request.configuration) !== String(transition.to_mode) || configurationDigest(request.configuration) !== String(transition.configuration_digest)) throw new InteractionModeError('MODE_TRANSITION_CONFLICT');
+    const task = await this.resolveTask(request.taskId); const modeRow = this.row(request.taskId);
+    if (!modeRow || String(modeRow.sequence) !== String(transition.expected_sequence) || String(modeRow.selected_mode) !== String(transition.from_mode)
+      || String(modeRow.task_revision) !== task.taskRevision || String(modeRow.project_id) !== task.projectId || String(modeRow.repository_id) !== task.repositoryId) throw new InteractionModeError('MODE_TRANSITION_CONFLICT');
+    const ownerRequest: ModeTransitionOwnerRequestV1 = { transitionId: request.transitionId, taskId: task.taskId, projectId: task.projectId, repositoryId: task.repositoryId,
+      taskRevision: task.taskRevision, fromMode: String(transition.from_mode) as InteractionModeV1, toMode: String(transition.to_mode) as InteractionModeV1, direction, configuration: request.configuration };
+    const required = requiredTransitionOwners(ownerRequest.toMode); const results: ModeTransitionOwnerResultV1[] = [];
+    for (const ownerId of required) {
+      const owner = owners.find(candidate => candidate.owner === ownerId);
+      if (!owner) results.push({ owner: ownerId, qualified: false, safeCode: missingOwnerCode(ownerId) });
+      else try { results.push(validateOwnerResult(ownerId, await owner.qualifyTransition(ownerRequest))); }
+      catch (error) { // observability-exempt: owner qualification failures are reduced to a closed safe code and error type.
+        console.error('[kogg:interaction-modes:service] transition.owner.failed', { transitionId: request.transitionId, taskId: request.taskId, owner: ownerId, errorType: error instanceof Error ? error.name : 'UnknownError' });
+        results.push({ owner: ownerId, qualified: false, safeCode: missingOwnerCode(ownerId) });
+      }
+    }
+    const qualificationDigest = digest('kogg:interaction-modes:transition-qualification:v1', JSON.stringify(results.map(result => ({ owner: result.owner, proofDigest: result.proofDigest ?? null, qualified: result.qualified, safeCode: result.safeCode }))));
+    const failure = results.find(result => !result.qualified); const state: ModeTransitionStateV1 = failure?.safeCode === 'MODE_PROCESS_RESIDUAL' || failure?.safeCode === 'MODE_CLEANUP_FAILED' ? 'quarantined' : failure ? 'refused' : 'committed'; const safeCode = failure?.safeCode ?? 'MODE_OK';
+    const currentTask = await this.resolveTask(request.taskId);
+    if (currentTask.taskRevision !== task.taskRevision || currentTask.projectId !== task.projectId || currentTask.repositoryId !== task.repositoryId) throw new InteractionModeError('MODE_TRANSITION_CONFLICT');
+    let projection: ModeTransitionProjectionV1 | undefined;
+    this.transaction(database => {
+      const current = database.prepare('SELECT sequence,selected_mode,task_revision,project_id,repository_id FROM task_modes WHERE task_id=?').get(request.taskId) as Row | undefined;
+      const pending = database.prepare('SELECT state FROM mode_transitions WHERE transition_id=?').get(request.transitionId) as Row | undefined;
+      if (!current || String(current.sequence) !== String(transition.expected_sequence) || String(current.selected_mode) !== String(transition.from_mode)
+        || String(current.task_revision) !== currentTask.taskRevision || String(current.project_id) !== currentTask.projectId || String(current.repository_id) !== currentTask.repositoryId
+        || !pending || !['awaiting-confirmation', 'cleanup-pending'].includes(String(pending.state))) throw new InteractionModeError('MODE_TRANSITION_CONFLICT');
+      if (!failure) {
+        const committed = database.prepare('UPDATE task_modes SET selected_mode=?,effective_digest=?,sequence=sequence+1,state=\'ready\',active_stage=?,updated_at=? WHERE task_id=? AND sequence=? AND selected_mode=? AND task_revision=? AND project_id=? AND repository_id=?')
+          .run(String(transition.to_mode), capabilityDigest(CEILINGS[String(transition.to_mode) as InteractionModeV1]), activeStageFor(String(transition.to_mode) as InteractionModeV1), this.now().toISOString(), request.taskId, Number(transition.expected_sequence), String(transition.from_mode), currentTask.taskRevision, currentTask.projectId, currentTask.repositoryId);
+        if (committed.changes !== 1) throw new InteractionModeError('MODE_TRANSITION_CONFLICT');
+      }
+      database.prepare('UPDATE mode_transitions SET state=?,safe_code=?,qualification_digest=? WHERE transition_id=?').run(state, safeCode, qualificationDigest, request.transitionId);
+      appendEvent(database, request.taskId, `mode.transition.${state}`, safeCode, request.transitionId, qualificationDigest);
+      projection = this.transitionProjection(request.transitionId, task); const createdAt = this.now().toISOString(); const resultJson = JSON.stringify(projection);
+      database.prepare('INSERT INTO transition_requests(request_id,request_digest,result_json,created_at,receipt_digest) VALUES(?,?,?,?,?)').run(request.requestId, requestDigest, resultJson, createdAt, requestReceiptDigest('transition', request.requestId, requestDigest, resultJson, createdAt));
+    });
+    if (!projection) throw new InteractionModeError('MODE_REGISTRY_UNAVAILABLE');
+    modeLog(failure ? 'mode.transition.refused' : 'mode.transition.committed', { requestId: request.requestId, taskId: request.taskId, fromMode: ownerRequest.fromMode, toMode: ownerRequest.toMode, safeCode });
+    return projection;
+  }
+
   diagnostics(): InteractionModeDiagnostics {
     this.expireChallenges(); const db = this.db(); const count = (sql: string): number => Number((db.prepare(sql).get() as Row).count);
     return { integrity: String((db.prepare('PRAGMA integrity_check').get() as Row).integrity_check) === 'ok', eventChain: verifyEvents(db) && verifyTransitions(db),
@@ -178,12 +231,12 @@ export class InteractionModeRegistry implements BackendApplicationContribution {
     CREATE TABLE IF NOT EXISTS task_modes(task_id TEXT PRIMARY KEY,task_revision TEXT NOT NULL,project_id TEXT NOT NULL,repository_id TEXT NOT NULL,selected_mode TEXT NOT NULL CHECK(selected_mode IN ('plan','build','kogg')),effective_digest TEXT NOT NULL,sequence INTEGER NOT NULL CHECK(sequence>=0),state TEXT NOT NULL CHECK(state IN ('ready','restore-degraded','quarantined')),active_stage TEXT NOT NULL,updated_at TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS mode_events(sequence INTEGER PRIMARY KEY AUTOINCREMENT,task_id TEXT NOT NULL,event_name TEXT NOT NULL,safe_code TEXT NOT NULL,subject_id TEXT NOT NULL,subject_digest TEXT NOT NULL,previous_digest TEXT NOT NULL,event_digest TEXT NOT NULL,created_at TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS requests(request_id TEXT PRIMARY KEY,request_digest TEXT NOT NULL,result_json TEXT NOT NULL,created_at TEXT NOT NULL,receipt_digest TEXT);
-    CREATE TABLE IF NOT EXISTS mode_transitions(transition_id TEXT PRIMARY KEY,request_id TEXT NOT NULL UNIQUE,task_id TEXT NOT NULL,expected_sequence INTEGER NOT NULL CHECK(expected_sequence>=0),from_mode TEXT NOT NULL CHECK(from_mode IN ('plan','build','kogg')),to_mode TEXT NOT NULL CHECK(to_mode IN ('plan','build','kogg')),direction TEXT NOT NULL CHECK(direction IN ('preserve','reduce','expand')),configuration_digest TEXT NOT NULL,actor_authority_digest TEXT NOT NULL,session_id TEXT NOT NULL,state TEXT NOT NULL CHECK(state IN ('committed','awaiting-confirmation','cleanup-pending','cancelled','expired')),safe_code TEXT NOT NULL,challenge_digest TEXT,created_at TEXT NOT NULL,expires_at TEXT,transition_digest TEXT NOT NULL);
+    CREATE TABLE IF NOT EXISTS mode_transitions(transition_id TEXT PRIMARY KEY,request_id TEXT NOT NULL UNIQUE,task_id TEXT NOT NULL,expected_sequence INTEGER NOT NULL CHECK(expected_sequence>=0),from_mode TEXT NOT NULL CHECK(from_mode IN ('plan','build','kogg')),to_mode TEXT NOT NULL CHECK(to_mode IN ('plan','build','kogg')),direction TEXT NOT NULL CHECK(direction IN ('preserve','reduce','expand')),configuration_digest TEXT NOT NULL,actor_authority_digest TEXT NOT NULL,session_id TEXT NOT NULL,state TEXT NOT NULL CHECK(state IN ('committed','awaiting-confirmation','cleanup-pending','cancelled','expired','refused','quarantined')),safe_code TEXT NOT NULL,challenge_digest TEXT,created_at TEXT NOT NULL,expires_at TEXT,transition_digest TEXT NOT NULL,qualification_digest TEXT);
     CREATE TABLE IF NOT EXISTS transition_requests(request_id TEXT PRIMARY KEY,request_digest TEXT NOT NULL,result_json TEXT NOT NULL,created_at TEXT NOT NULL,receipt_digest TEXT);
     CREATE TRIGGER IF NOT EXISTS mode_events_no_update BEFORE UPDATE ON mode_events BEGIN SELECT RAISE(ABORT,'immutable mode event'); END;
     CREATE TRIGGER IF NOT EXISTS mode_events_no_delete BEFORE DELETE ON mode_events BEGIN SELECT RAISE(ABORT,'immutable mode event'); END;
     INSERT OR IGNORE INTO mode_meta VALUES(1,1,'blocked');
-  `); ensureRequestReceiptSchema(this.db()); }
+  `); ensureTransitionSchema(this.db()); ensureRequestReceiptSchema(this.db()); }
   private async resolveTask(taskId: string): Promise<TaskProjection> {
     try { const task = await this.tasks.get(taskId); if (task.lifecycle !== 'active') throw new InteractionModeError('MODE_TASK_UNAVAILABLE'); return task; }
     catch (error) { if (error instanceof InteractionModeError) throw error; throw new InteractionModeError('MODE_TASK_UNAVAILABLE'); }
@@ -213,7 +266,7 @@ export class InteractionModeRegistry implements BackendApplicationContribution {
       activeStage: String(row.active_stage), safeCode: !current ? 'MODE_RESTORE_DEGRADED' : pending ? 'MODE_ACTIVE_OPERATION' : 'MODE_OK' };
   }
   private transitionReplay(requestId: string, requestDigest: string): ModeTransitionProjectionV1 | undefined { const row = this.db().prepare('SELECT request_digest,result_json FROM transition_requests WHERE request_id=?').get(requestId) as Row | undefined; if (!row) return undefined; if (String(row.request_digest) !== requestDigest) throw new InteractionModeError('MODE_REQUEST_CONFLICT'); return JSON.parse(String(row.result_json)) as ModeTransitionProjectionV1; }
-  private transitionProjection(transitionId: string, task: TaskProjection): ModeTransitionProjectionV1 { const row = this.db().prepare('SELECT * FROM mode_transitions WHERE transition_id=?').get(transitionId) as Row | undefined; if (!row) throw new InteractionModeError('MODE_TRANSITION_CONFLICT'); const modeRow = this.row(task.taskId); if (!modeRow) throw new InteractionModeError('MODE_TRANSITION_CONFLICT'); const result: ModeTransitionProjectionV1 = { schemaVersion: 1, transitionId, taskId: task.taskId, fromMode: String(row.from_mode) as InteractionModeV1, toMode: String(row.to_mode) as InteractionModeV1, direction: String(row.direction) as ModeTransitionProjectionV1['direction'], state: String(row.state) as ModeTransitionStateV1, safeCode: String(row.safe_code) as ModeSafeCodeV1, mode: this.project(modeRow, task) }; if (row.challenge_digest) Object.assign(result, { challengeDigest: String(row.challenge_digest), expiresAt: String(row.expires_at) }); return result; }
+  private transitionProjection(transitionId: string, task: TaskProjection): ModeTransitionProjectionV1 { const row = this.db().prepare('SELECT * FROM mode_transitions WHERE transition_id=?').get(transitionId) as Row | undefined; if (!row) throw new InteractionModeError('MODE_TRANSITION_CONFLICT'); const modeRow = this.row(task.taskId); if (!modeRow) throw new InteractionModeError('MODE_TRANSITION_CONFLICT'); const result: ModeTransitionProjectionV1 = { schemaVersion: 1, transitionId, taskId: task.taskId, fromMode: String(row.from_mode) as InteractionModeV1, toMode: String(row.to_mode) as InteractionModeV1, direction: String(row.direction) as ModeTransitionProjectionV1['direction'], state: String(row.state) as ModeTransitionStateV1, safeCode: String(row.safe_code) as ModeSafeCodeV1, configurationDigest: String(row.configuration_digest), mode: this.project(modeRow, task) }; if (row.challenge_digest) Object.assign(result, { challengeDigest: String(row.challenge_digest), expiresAt: String(row.expires_at) }); return result; }
   private expireChallenges(): void { const rows = this.db().prepare("SELECT transition_id,task_id,from_mode,to_mode,transition_digest FROM mode_transitions WHERE state='awaiting-confirmation' AND expires_at<=?").all(this.now().toISOString()) as Row[]; if (!rows.length) return; this.transaction(database => { for (const row of rows) { database.prepare("UPDATE mode_transitions SET state='expired',safe_code='MODE_TRANSITION_EXPIRED' WHERE transition_id=? AND state='awaiting-confirmation'").run(String(row.transition_id)); appendEvent(database, String(row.task_id), 'mode.transition.expired', 'MODE_TRANSITION_EXPIRED', String(row.transition_id), String(row.transition_digest)); } }); for (const row of rows) modeLog('mode.transition.expired', { taskId: String(row.task_id), fromMode: String(row.from_mode) as InteractionModeV1, toMode: String(row.to_mode) as InteractionModeV1, safeCode: 'MODE_TRANSITION_EXPIRED' }); }
   private transaction<T>(run: (database: DatabaseSync) => T): T { const database = this.db(); database.exec('BEGIN IMMEDIATE'); try { const result = run(database); database.exec('COMMIT'); return result; } catch (error) { database.exec('ROLLBACK'); throw error; } }
   private db(): DatabaseSync { if (!this.database) throw new InteractionModeError('MODE_REGISTRY_UNAVAILABLE'); return this.database; }
@@ -223,10 +276,31 @@ export class InteractionModeError extends Error { constructor(readonly code: Mod
 function validateRead(request: ModeReadRequestV1): void { if (!request || Object.keys(request).sort().join(',') !== 'requestId,taskId' || !UUID.test(request.requestId) || !UUID.test(request.taskId)) throw new InteractionModeError('MODE_PROTOCOL_INVALID'); }
 function validateOperation(request: ModeOperationRequestV1): void { if (!request || Object.keys(request).sort().join(',') !== 'operation,requestId,taskId' || !UUID.test(request.requestId) || !UUID.test(request.taskId) || !Object.hasOwn(OPERATION_CAPABILITY, request.operation)) throw new InteractionModeError('MODE_PROTOCOL_INVALID'); }
 function validateTransitionRequest(request: ModeTransitionRequestV1): void { if (!request || Object.keys(request).sort().join(',') !== 'expectedSequence,fromMode,requestId,requestedConfigurationDigest,taskId,toMode,transitionId' || !UUID.test(request.transitionId) || !UUID.test(request.requestId) || !UUID.test(request.taskId) || !/^(0|[1-9][0-9]*)$/u.test(request.expectedSequence) || !Object.hasOwn(CEILINGS, request.fromMode) || !Object.hasOwn(CEILINGS, request.toMode) || !/^sha256:[0-9a-f]{64}$/u.test(request.requestedConfigurationDigest)) throw new InteractionModeError('MODE_PROTOCOL_INVALID'); }
+function validateTransitionConfirm(request: ModeTransitionConfirmRequestV1): void {
+  if (!request || !UUID.test(request.requestId) || !UUID.test(request.transitionId) || !UUID.test(request.taskId) || request.explicitGesture !== true
+    || Object.keys(request).some(key => !['requestId', 'transitionId', 'taskId', 'challengeDigest', 'explicitGesture', 'configuration'].includes(key))
+    || (request.challengeDigest !== undefined && !SHA256.test(request.challengeDigest)) || !validConfiguration(request.configuration)) throw new InteractionModeError('MODE_PROTOCOL_INVALID');
+}
 function validateTransitionCancel(request: ModeTransitionCancelRequestV1): void { if (!request || Object.keys(request).sort().join(',') !== 'requestId,taskId,transitionId' || !UUID.test(request.requestId) || !UUID.test(request.taskId) || !UUID.test(request.transitionId)) throw new InteractionModeError('MODE_PROTOCOL_INVALID'); }
 function transitionDirection(fromMode: InteractionModeV1, toMode: InteractionModeV1): ModeTransitionProjectionV1['direction'] { if (fromMode === toMode) return 'preserve'; const from = new Set(CEILINGS[fromMode]); return CEILINGS[toMode].every(capability => from.has(capability)) ? 'reduce' : 'expand'; }
 function requestDigest(request: ModeOperationRequestV1): string { return digest('kogg:interaction-modes:operation-request:v1', JSON.stringify({ operation: request.operation, requestId: request.requestId, taskId: request.taskId })); }
 function capabilityDigest(capabilities: readonly ModeCapabilityV1[]): string { return digest('kogg:interaction-modes:effective-capabilities:v1', JSON.stringify([...capabilities].sort())); }
+function configurationDigest(configuration: ModeTransitionConfirmRequestV1['configuration']): string { return `sha256:${createHash('sha256').update(JSON.stringify(configuration)).digest('hex')}`; }
+function configurationKind(configuration: ModeTransitionConfirmRequestV1['configuration']): InteractionModeV1 { return configuration.kind; }
+function validConfiguration(configuration: ModeTransitionConfirmRequestV1['configuration']): boolean {
+  if (!configuration || typeof configuration !== 'object' || configuration.schemaVersion !== 1 || !['plan', 'build', 'kogg'].includes(configuration.kind)) return false;
+  if (configuration.kind === 'plan') return Object.keys(configuration).sort().join(',') === 'kind,schemaVersion';
+  if (configuration.kind === 'kogg') return Object.keys(configuration).sort().join(',') === 'kind,schemaVersion,workflowVersionId' && UUID.test(configuration.workflowVersionId);
+  return Object.keys(configuration).sort().join(',') === 'adapterKey,adapterVersion,deadlinePolicyId,kind,modelId,providerId,roleRevisionId,schemaVersion,targetId'
+    && UUID.test(configuration.roleRevisionId) && [configuration.providerId, configuration.modelId, configuration.adapterKey, configuration.deadlinePolicyId, configuration.targetId].every(value => SYMBOLIC.test(value)) && /^\d+\.\d+\.\d+$/u.test(configuration.adapterVersion);
+}
+function requiredTransitionOwners(toMode: InteractionModeV1): readonly ModeTransitionOwnerIdV1[] { return toMode === 'plan' ? ['operations'] : toMode === 'build' ? ['operations', 'agent-binding', 'execution-target'] : ['operations', 'workflow-anchors']; }
+function missingOwnerCode(owner: ModeTransitionOwnerIdV1): ModeSafeCodeV1 { return owner === 'operations' ? 'MODE_CLEANUP_FAILED' : owner === 'agent-binding' ? 'MODE_PROVIDER_UNQUALIFIED' : owner === 'execution-target' ? 'MODE_HOST_UNQUALIFIED' : 'MODE_WORKFLOW_UNAVAILABLE'; }
+function validateOwnerResult(owner: ModeTransitionOwnerIdV1, result: ModeTransitionOwnerResultV1): ModeTransitionOwnerResultV1 {
+  if (!result || result.owner !== owner || typeof result.qualified !== 'boolean' || (result.qualified && (!result.proofDigest || !SHA256.test(result.proofDigest))) || (!result.qualified && result.safeCode === 'MODE_OK')) return { owner, qualified: false, safeCode: missingOwnerCode(owner) };
+  return result;
+}
+function activeStageFor(mode: InteractionModeV1): string { return mode === 'plan' ? 'research' : mode === 'build' ? 'implementation' : 'idea'; }
 function operationRefusal(mode: InteractionModeV1, operation: ModeOperationV1, projectionCode: ModeSafeCodeV1): ModeSafeCodeV1 {
   if (projectionCode !== 'MODE_OK') return projectionCode; if (mode === 'plan') return 'PLAN_MUTATION_REFUSED';
   if (operation === 'evidence-request') return 'BUILD_EVIDENCE_REFUSED'; if (operation === 'verdict-observe-current') return 'BUILD_VERDICT_REFUSED';
@@ -238,7 +312,7 @@ function appendEvent(database: DatabaseSync, taskId: string, eventName: string, 
   database.prepare('INSERT INTO mode_events(task_id,event_name,safe_code,subject_id,subject_digest,previous_digest,event_digest,created_at) VALUES(?,?,?,?,?,?,?,?)').run(taskId, eventName, safeCode, subjectId, subjectDigest, previousDigest, eventDigest, createdAt);
 }
 function verifyEvents(database: DatabaseSync): boolean { let previous = `sha256:${'0'.repeat(64)}`; for (const row of database.prepare('SELECT * FROM mode_events ORDER BY sequence').all() as Row[]) { const expected = digest('kogg:interaction-modes:event:v1', JSON.stringify({ createdAt: String(row.created_at), eventName: String(row.event_name), previousDigest: previous, safeCode: String(row.safe_code), subjectDigest: String(row.subject_digest), subjectId: String(row.subject_id), taskId: String(row.task_id) })); if (String(row.previous_digest) !== previous || String(row.event_digest) !== expected) return false; previous = expected; } return true; }
-function verifyTransitions(database: DatabaseSync): boolean { for (const row of database.prepare('SELECT * FROM mode_transitions').all() as Row[]) { const transitionDigest = transitionIntentDigest(row); if (String(row.transition_digest) !== transitionDigest) return false; const event = database.prepare('SELECT event_name,safe_code,subject_digest FROM mode_events WHERE subject_id=? ORDER BY sequence DESC LIMIT 1').get(String(row.transition_id)) as Row | undefined; if (!event || String(event.event_name) !== `mode.transition.${String(row.state)}` || String(event.safe_code) !== String(row.safe_code) || String(event.subject_digest) !== transitionDigest) return false; } return true; }
+function verifyTransitions(database: DatabaseSync): boolean { for (const row of database.prepare('SELECT * FROM mode_transitions').all() as Row[]) { const transitionDigest = transitionIntentDigest(row); if (String(row.transition_digest) !== transitionDigest || (row.qualification_digest !== null && !SHA256.test(String(row.qualification_digest)))) return false; const event = database.prepare('SELECT event_name,safe_code,subject_digest FROM mode_events WHERE subject_id=? ORDER BY sequence DESC LIMIT 1').get(String(row.transition_id)) as Row | undefined; const subjectDigest = row.qualification_digest === null ? transitionDigest : String(row.qualification_digest); if (!event || String(event.event_name) !== `mode.transition.${String(row.state)}` || String(event.safe_code) !== String(row.safe_code) || String(event.subject_digest) !== subjectDigest) return false; } return true; }
 function verifyModeStates(database: DatabaseSync): boolean {
   for (const row of database.prepare('SELECT * FROM task_modes').all() as Row[]) {
     const taskId = String(row.task_id); const selectedMode = String(row.selected_mode) as InteractionModeV1;
@@ -253,6 +327,16 @@ function immutableRequestLedgers(database: DatabaseSync): boolean {
   if (Number((database.prepare("SELECT count(*) AS count FROM sqlite_master WHERE type='trigger' AND name IN ('mode_events_no_update','mode_events_no_delete','mode_requests_no_update','mode_requests_no_delete','mode_transition_requests_no_update','mode_transition_requests_no_delete')").get() as Row).count) !== 6) return false;
   for (const [table, kind] of [['requests', 'operation'], ['transition_requests', 'transition']] as const) for (const row of database.prepare(`SELECT * FROM ${table}`).all() as Row[]) if (String(row.receipt_digest) !== requestReceiptDigest(kind, String(row.request_id), String(row.request_digest), String(row.result_json), String(row.created_at))) return false;
   return true;
+}
+function ensureTransitionSchema(database: DatabaseSync): void {
+  const definition = database.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='mode_transitions'").get() as Row;
+  const columns = new Set((database.prepare('PRAGMA table_info(mode_transitions)').all() as Row[]).map(row => String(row.name)));
+  if (columns.has('qualification_digest') && String(definition.sql).includes("'quarantined'")) return;
+  database.exec(`ALTER TABLE mode_transitions RENAME TO mode_transitions_legacy;
+    CREATE TABLE mode_transitions(transition_id TEXT PRIMARY KEY,request_id TEXT NOT NULL UNIQUE,task_id TEXT NOT NULL,expected_sequence INTEGER NOT NULL CHECK(expected_sequence>=0),from_mode TEXT NOT NULL CHECK(from_mode IN ('plan','build','kogg')),to_mode TEXT NOT NULL CHECK(to_mode IN ('plan','build','kogg')),direction TEXT NOT NULL CHECK(direction IN ('preserve','reduce','expand')),configuration_digest TEXT NOT NULL,actor_authority_digest TEXT NOT NULL,session_id TEXT NOT NULL,state TEXT NOT NULL CHECK(state IN ('committed','awaiting-confirmation','cleanup-pending','cancelled','expired','refused','quarantined')),safe_code TEXT NOT NULL,challenge_digest TEXT,created_at TEXT NOT NULL,expires_at TEXT,transition_digest TEXT NOT NULL,qualification_digest TEXT);
+    INSERT INTO mode_transitions(transition_id,request_id,task_id,expected_sequence,from_mode,to_mode,direction,configuration_digest,actor_authority_digest,session_id,state,safe_code,challenge_digest,created_at,expires_at,transition_digest)
+      SELECT transition_id,request_id,task_id,expected_sequence,from_mode,to_mode,direction,configuration_digest,actor_authority_digest,session_id,state,safe_code,challenge_digest,created_at,expires_at,transition_digest FROM mode_transitions_legacy;
+    DROP TABLE mode_transitions_legacy;`);
 }
 function ensureRequestReceiptSchema(database: DatabaseSync): void {
   database.exec('DROP TRIGGER IF EXISTS mode_requests_no_update; DROP TRIGGER IF EXISTS mode_transition_requests_no_update;');

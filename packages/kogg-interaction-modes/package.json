@@ -15,6 +15,7 @@
   "dependencies": {
     "@kogg/contracts": "0.1.0",
     "@kogg/core": "0.1.0",
+    "@kogg/operations": "0.1.0",
     "@kogg/tasks": "0.1.0",
     "@theia/core": "1.74.1",
     "inversify": "6.2.2"

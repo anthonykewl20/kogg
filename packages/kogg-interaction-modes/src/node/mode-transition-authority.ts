@@ -23,6 +23,7 @@ const SESSION = /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$/u;
 @injectable()
 export class ModeTransitionAuthority {
   private readonly issued = new WeakMap<object, IssuedModeActorV1 & { readonly scopeDigest: string }>();
+  private readonly desktopActor: IssuedModeActorV1 = { sessionId: `electron:${randomUUID()}`, actorAuthorityDigest: `sha256:${randomBytes(32).toString('hex')}`, role: 'owner' };
 
   mint(actor: VerifiedModeActorV1, scopeDigest: string): ModeTransitionContextV1 {
     if (!SESSION.test(actor.sessionId) || !DIGEST.test(actor.actorAuthorityDigest) || !DIGEST.test(scopeDigest)
@@ -38,7 +39,7 @@ export class ModeTransitionAuthority {
       console.warn('[kogg:interaction-modes:transition-authority] authority.mint.refused', { channel: 'electron', safeCode: 'MODE_AUTHORITY_REFUSED' });
       throw new Error('MODE_AUTHORITY_REFUSED');
     }
-    return this.issue({ sessionId: `electron:${randomUUID()}`, actorAuthorityDigest: `sha256:${randomBytes(32).toString('hex')}`, role: 'owner' }, scopeDigest, 'electron');
+    return this.issue(this.desktopActor, scopeDigest, 'electron');
   }
 
   verify(context: ModeTransitionContextV1, scopeDigest: string): IssuedModeActorV1 | undefined {
@@ -54,6 +55,6 @@ export class ModeTransitionAuthority {
   }
 }
 
-export function transitionScopeDigest(domain: 'request' | 'cancel', value: unknown): string {
+export function transitionScopeDigest(domain: 'request' | 'confirm' | 'cancel', value: unknown): string {
   return `sha256:${createHash('sha256').update(`kogg:interaction-modes:transition-${domain}:v1\0${JSON.stringify(value)}`).digest('hex')}`;
 }
