@@ -5,6 +5,7 @@ import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import test from 'node:test';
 import type { EditableWorkflowGraphV1, EditableWorkflowNodeV1 } from '../common/workflow-protocol';
+import { workflowDigest } from '../common/workflow-canonical';
 import { WorkflowCompiler } from './workflow-compiler';
 import { WorkflowDiagnosticContributor, WORKFLOW_CHECKS } from './workflow-diagnostic-contributor';
 import { WorkflowRegistry } from './workflow-registry';
@@ -46,6 +47,16 @@ test('fails closed on forged anchors, cycles, ambiguous joins, widened authority
   const retryBase = validGraph(); const retried = { ...retryBase, nodes: retryBase.nodes.map((node, index) => index === 1 ? { ...node, retry: { maxAttempts: 2, backoffMs: 1000 as const, sideEffectPolicy: 'none' as const } } : node) }; assert.equal(compiler.validate(retried).code, 'WORKFLOW_AUTHORITY_EXPANSION');
   const joinBase = validGraph(); const extra = node('30000000-0000-4000-8000-000000000003', 'tool.build', ['read-repository','run-tool']); const ambiguous = { ...joinBase, nodes: [...joinBase.nodes, extra], edges: [...joinBase.edges, edge('40000000-0000-4000-8000-000000000004', extra.nodeId, joinBase.nodes[1]!.nodeId)] }; assert.equal(compiler.validate(ambiguous).code, 'WORKFLOW_JOIN_AMBIGUOUS');
   const root = await mkdtemp(path.join(os.tmpdir(), 'kogg-workflow-conflict-')); try { const registry = new WorkflowRegistry(compiler, MODE_AUTHORITY, path.join(root, 'workflow.sqlite3')); await registry.onStart(); await registry.saveVersion({ requestId: '20000000-0000-4000-8000-000000000010', templateId: TEMPLATE, expectedVersionNumber: 0, graph: validGraph() }); const conflict = await registry.saveVersion({ requestId: '20000000-0000-4000-8000-000000000011', templateId: TEMPLATE, expectedVersionNumber: 0, graph: validGraph() }); assert.equal(conflict.kind, 'conflict'); assert.equal(conflict.currentVersionNumber, 1); await registry.onStop(); } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test('validates closed node configuration digests, exact agent bindings, deadlines, conditions, and targets', () => {
+  const compiler = workflowCompiler(); const base = validGraph(); const configuration = { schemaVersion: '1' as const, roleRevisionId: '60000000-0000-4000-8000-000000000001', providerId: 'kogg.fixture', modelId: 'fixture.echo', adapterKey: 'kogg.fixture', adapterVersion: '1.0.0', deadlinePolicyId: 'interactive-v1', absoluteDeadlineMs: 60_000, target: 'private-worktree' as const, condition: 'always' as const };
+  const configured = { ...base, nodes: base.nodes.map((item, index) => index === 1 ? { ...item, configuration, configurationDigest: workflowDigest('node-configuration', configuration) } : item) };
+  assert.equal(compiler.validate(configured).code, 'WORKFLOW_OK');
+  const tampered = { ...configured, nodes: configured.nodes.map((item, index) => index === 1 ? { ...item, configuration: { ...configuration, modelId: 'fixture.other' } } : item) }; assert.equal(compiler.validate(tampered).code, 'WORKFLOW_SCHEMA_INVALID');
+  const deadlineConfiguration = { ...configuration, absoluteDeadlineMs: 1_800_001 }; const deadline = { ...base, nodes: base.nodes.map((item, index) => index === 1 ? { ...item, configuration: deadlineConfiguration, configurationDigest: workflowDigest('node-configuration', deadlineConfiguration) } : item) }; assert.equal(compiler.validate(deadline).code, 'WORKFLOW_DEADLINE');
+  const targetConfiguration = { ...configuration, target: 'project-read-only' as const }; const target = { ...base, nodes: base.nodes.map((item, index) => index === 1 ? { ...item, configuration: targetConfiguration, configurationDigest: workflowDigest('node-configuration', targetConfiguration) } : item) }; assert.equal(compiler.validate(target).code, 'WORKFLOW_TARGET_MISMATCH');
+  const partial = { schemaVersion: '1' as const, providerId: 'kogg.fixture', absoluteDeadlineMs: 60_000, target: 'private-worktree' as const, condition: 'always' as const }; const partialGraph = { ...base, nodes: base.nodes.map((item, index) => index === 1 ? { ...item, configuration: partial, configurationDigest: workflowDigest('node-configuration', partial) } : item) }; assert.equal(compiler.validate(partialGraph).code, 'WORKFLOW_SCHEMA_INVALID');
 });
 
 test('refuses startup after immutable graph corruption and diagnostics fail as a complete catalog', async () => {
