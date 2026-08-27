@@ -14,6 +14,7 @@ export const KERNEL_MAX_PENDING_RESPONSE_BYTES = 4 * 1024 * 1024;
 export const KERNEL_OPERATIONS = {
   'kernel.handshake': 2,
   'kernel.health': 1,
+  'execution.qualify': 1,
   'task.bind': 1,
   'producer.dispatch': 1,
   'suite.freeze': 1,
@@ -229,11 +230,26 @@ export interface VerdictBindingV1 {
   readonly evaluatedAt: string;
 }
 
+export type KernelExecutionQualificationRefusalCode = 'QUALIFICATION_PLATFORM_UNSUPPORTED' | 'QUALIFICATION_PROFILE_UNAVAILABLE'
+  | 'QUALIFICATION_BOOT_CHANGED' | 'QUALIFICATION_KERNEL_UNSUPPORTED' | 'QUALIFICATION_LANDLOCK_UNAVAILABLE'
+  | 'QUALIFICATION_CGROUP_UNAVAILABLE' | 'QUALIFICATION_QUOTA_UNAVAILABLE' | 'QUALIFICATION_LAUNCHER_MISMATCH'
+  | 'QUALIFICATION_BUBBLEWRAP_MISMATCH' | 'QUALIFICATION_SECCOMP_MISMATCH' | 'QUALIFICATION_BROKER_UNAVAILABLE'
+  | 'QUALIFICATION_ATTESTATION_INVALID';
+export interface KernelExecutionQualification {
+  readonly schemaVersion: 1; readonly qualificationId: string; readonly targetId: string; readonly architecture: 'amd64';
+  readonly profileId: 'kogg-writable-agent-v1'; readonly profileDigest: string; readonly bootIdDigest: string; readonly kernelRelease: string;
+  readonly landlockAbi: string; readonly cgroupProfileDigest: string; readonly mountQuotaDigest: string; readonly launcherDigest: string;
+  readonly bubblewrapDigest: string; readonly seccompDigest: string; readonly brokerDigest: string; readonly ranexCommit: typeof KOGG_RANEX_COMMIT;
+  readonly checkedAt: string; readonly expiresAt: string; readonly status: 'qualified' | 'refused';
+  readonly refusalCodes: readonly KernelExecutionQualificationRefusalCode[];
+}
+
 export interface KernelBridge {
   start(): Promise<KernelCapabilities>;
   handshake(): Promise<KernelCapabilities>;
   health(): Promise<KernelHealth>;
   capabilities(): Promise<KernelCapabilities>;
+  qualifyExecution(targetId: string): Promise<KernelExecutionQualification>;
   execute<TProjection extends KernelJson>(operation: KernelOperationV2, body: KernelJson): Promise<KernelResultV2<TProjection>>;
   bindTask(binding: TaskExecutionBindingV1): Promise<KernelResultV2<TaskBindingProjectionV1>>;
   dispatchProducer(binding: ProducerBindingV1): Promise<KernelResultV2<ProducerBindingProjectionV1>>;

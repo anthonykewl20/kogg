@@ -60,6 +60,7 @@ export const TaskKernelBindingAuthority = Symbol('TaskKernelBindingAuthority');
 export interface TaskKernelBindingAuthority {
   resolveAdmission(admission: TaskAdmissionSnapshot): Promise<TaskKernelAuthoritySnapshot>;
 }
+export const TaskAdmissionAuthority = Symbol('TaskAdmissionAuthority');
 export interface TaskAdmissionAuthority { resolveAdmission(taskAdmissionId: string): Promise<TaskAdmissionSnapshot | undefined>; }
 
 export interface KoggTasksService {
