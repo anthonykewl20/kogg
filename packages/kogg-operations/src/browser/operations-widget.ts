@@ -4,6 +4,7 @@ import { inject, injectable, postConstruct } from '@theia/core/shared/inversify'
 import { KoggOperationsClientToken, KoggOperationsService, type OperationsSnapshot } from '../common/operations-protocol';
 import { OperationsClient } from './operations-client';
 import { KoggOperationsReadModelService, type KoggOperationsReadModelService as OperationsReadModelService, type OperationsProjectionSnapshotV1, type OperationsTimelineEntryV1 } from '../common/operations-read-model-protocol';
+import { runOutcomeSummary } from '../common/operations-presentation';
 
 // diagnostic-coverage: operations.projection, operations.owners, operations.timeline, operations.processes, operations.cleanup, operations.admission, operations.stream, operations.support
 
@@ -65,14 +66,14 @@ export class OperationsWidget extends BaseWidget {
     };
     const needsDiagnostics = this.snapshotValue.admission !== 'enabled' || [...this.snapshotValue.active, ...this.snapshotValue.recent].some(operation => operation.blocksAdmission || operation.state === 'stalled' || operation.cleanup === 'failed');
     const projectedRuns = this.projection?.runs ?? [];
-    const projectionRows = projectedRuns.map(run => `<tr data-projected-run="${escapeHtml(run.runId)}"><td><button data-select-run="${escapeHtml(run.runId)}">${escapeHtml(run.runId.slice(0, 8))}</button></td><td>${escapeHtml(run.lifecycle)}</td><td>${run.attemptCount}</td><td>${run.retryCount}</td><td>${run.liveProcessCount}</td><td>${run.abnormalProcessCount}</td><td>${escapeHtml(run.evidenceSummary)} / ${escapeHtml(run.verdictSummary)} / ${escapeHtml(run.mergeSummary)}</td></tr>`).join('');
+    const projectionRows = projectedRuns.map(run => `<tr data-projected-run="${escapeHtml(run.runId)}"><td><button data-select-run="${escapeHtml(run.runId)}">${escapeHtml(run.runId.slice(0, 8))}</button></td><td>${escapeHtml(run.lifecycle)}</td><td>${run.attemptCount}</td><td>${run.retryCount}</td><td>${run.liveProcessCount}</td><td>${run.abnormalProcessCount}</td><td>${escapeHtml(runOutcomeSummary(run))}</td></tr>`).join('');
     const timelineRows = this.timeline.map(entry => `<tr><td>${escapeHtml(entry.displayTime)}</td><td>${escapeHtml(entry.ownerKind)}</td><td>${escapeHtml(entry.eventKind)}</td><td>${escapeHtml(entry.safeCode ?? 'none')}</td></tr>`).join('');
     this.node.innerHTML = `<div class="kogg-panel"><header><h2>Kogg Operations</h2><p>Safe lifecycle, recovery, and cleanup status for Kogg-owned work.</p></header>
       <p role="status"><strong>Admission:</strong> ${escapeHtml(this.snapshotValue.admission)}</p>
       <p role="status"><strong>Projection:</strong> ${escapeHtml(this.projection?.lifecycle ?? 'loading')} · ${this.projection?.faultCount ?? 0} faults</p>
       <p role="status"><strong>Stream:</strong> ${escapeHtml(this.streamState)} · sequence ${escapeHtml(this.projection?.changeSequence ?? 'loading')}</p>
       <button data-refresh ${this.cancellingOperation ? 'disabled' : ''}>Refresh</button><button data-support>Export safe support bundle</button>${needsDiagnostics ? '<button data-diagnostics>Run Diagnostics</button>' : ''}
-      <section><h3>Governed runs</h3>${projectedRuns.length ? `<div tabindex="0" role="region" aria-label="Governed run projection"><table><thead><tr><th>Run</th><th>Lifecycle</th><th>Attempts</th><th>Retries</th><th>Live</th><th>Abnormal</th><th>Evidence / verdict / merge</th></tr></thead><tbody>${projectionRows}</tbody></table></div>` : `<p>${this.projection?.lifecycle === 'degraded' ? 'Run projection is degraded.' : 'No governed runs match the current projection.'}</p>`}</section>
+      <section><h3>Governed runs</h3>${projectedRuns.length ? `<div tabindex="0" role="region" aria-label="Governed run projection"><table><thead><tr><th>Run</th><th>Lifecycle</th><th>Attempts</th><th>Retries</th><th>Live</th><th>Abnormal</th><th>Checks / evidence / verdict / merge</th></tr></thead><tbody>${projectionRows}</tbody></table></div>` : `<p>${this.projection?.lifecycle === 'degraded' ? 'Run projection is degraded.' : 'No governed runs match the current projection.'}</p>`}</section>
       ${this.selectedRunId ? `<section><h3>Timeline for run ${escapeHtml(this.selectedRunId.slice(0, 8))}</h3><div tabindex="0" role="region" aria-label="Correlated run timeline"><table><thead><tr><th>Observed</th><th>Owner</th><th>Event</th><th>Safe code</th></tr></thead><tbody>${timelineRows || '<tr><td colspan="4">No timeline entries.</td></tr>'}</tbody></table></div></section>` : ''}
       <section><h3>Active</h3><div class="kogg-package-list">${this.snapshotValue.active.length ? this.snapshotValue.active.map(operation => item(operation, true)).join('') : '<p>No active operations.</p>'}</div></section>
       <section><h3>Recent</h3><div class="kogg-package-list">${this.snapshotValue.recent.length ? this.snapshotValue.recent.map(operation => item(operation, false)).join('') : '<p>No recent operations.</p>'}</div></section></div>`;
