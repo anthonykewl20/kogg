@@ -2,7 +2,7 @@ import { BackendApplicationContribution } from '@theia/core/lib/node';
 import { KoggDiagnosticContribution } from '@kogg/contracts';
 import { ConnectionHandler, JsonRpcConnectionHandler } from '@theia/core/lib/common/messaging';
 import { ContainerModule } from '@theia/core/shared/inversify';
-import { KoggInteractionModesServicePath, type KoggInteractionModesService } from '../common/interaction-modes-protocol';
+import { KoggInteractionModesServicePath, KoggModeOperationAuthorizer, type KoggInteractionModesService } from '../common/interaction-modes-protocol';
 import { InteractionModeRegistry } from './interaction-mode-registry';
 import { ModeTransitionAuthority } from './mode-transition-authority';
 import { InteractionModesDiagnosticContributor } from './interaction-modes-diagnostic-contributor';
@@ -13,6 +13,7 @@ import { InteractionModesRpcService } from './interaction-modes-rpc-service';
 export default new ContainerModule(bind => {
   bind(ModeTransitionAuthority).toSelf().inSingletonScope();
   bind(InteractionModeRegistry).toSelf().inSingletonScope(); bind(BackendApplicationContribution).toService(InteractionModeRegistry);
+  bind(KoggModeOperationAuthorizer).toService(InteractionModeRegistry);
   bind(InteractionModesRpcService).toSelf().inSingletonScope();
   bind(InteractionModeHttpController).toSelf().inSingletonScope(); bind(BackendApplicationContribution).toService(InteractionModeHttpController);
   bind(InteractionModesDiagnosticContributor).toSelf().inSingletonScope(); bind(KoggDiagnosticContribution).toService(InteractionModesDiagnosticContributor);

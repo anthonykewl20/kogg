@@ -10,6 +10,7 @@ import { WorkflowCompiler } from './workflow-compiler';
 import { workflowLog } from './workflow-logger';
 import type { OperationsOwnerSink, OwnerEventV1, SafeOwnerPayloadV1 } from '@kogg/operations/lib/common/operations-read-model-protocol';
 import { OperationsReadModel } from '@kogg/operations/lib/node/operations-read-model';
+import { KoggModeOperationAuthorizer, type ModeOperationAuthorizer } from '@kogg/interaction-modes/lib/common/interaction-modes-protocol';
 
 // Logs through the closed workflowLog schemas.
 // diagnostic-coverage: workflow.schema, workflow.catalog, workflow.graph, workflow.anchors, workflow.authority, workflow.scheduler, workflow.processes, workflow.cleanup, workflow.recovery, workflow.source-maps
@@ -24,7 +25,9 @@ export class WorkflowRegistry implements KoggWorkflowService, BackendApplication
   private readonly schedulerEpochId = randomUUID();
   private readonly schedulerFencingToken = randomUUID();
   private ownerSink: OperationsOwnerSink | undefined;
-  constructor(@inject(WorkflowCompiler) private readonly compiler: WorkflowCompiler, @unmanaged() private readonly databasePath = path.join(stateRoot(), 'workflow', 'registry.sqlite3')) {}
+  constructor(@inject(WorkflowCompiler) private readonly compiler: WorkflowCompiler,
+    @inject(KoggModeOperationAuthorizer) private readonly modeAuthority: ModeOperationAuthorizer,
+    @unmanaged() private readonly databasePath = path.join(stateRoot(), 'workflow', 'registry.sqlite3')) {}
 
   async onStart(): Promise<void> {
     try {
@@ -111,18 +114,28 @@ export class WorkflowRegistry implements KoggWorkflowService, BackendApplication
     }
   }
 
-  async admitRun(input: { requestId: string; planId: string }): Promise<WorkflowMutationResult> {
+  async admitRun(input: { requestId: string; planId: string; taskId: string }): Promise<WorkflowMutationResult> {
     workflowLog('run.admission.requested', { requestId: safeId(input.requestId), planId: safeId(input.planId) });
     let unavailableExecutorCount = 0;
     try {
-      uuid(input.requestId); uuid(input.planId);
+      uuid(input.requestId); uuid(input.planId); uuid(input.taskId);
       const storedPlan = this.compiledPlan(input.planId); const storedVersion = this.version(text(storedPlan, 'version_id'));
       const graph = this.compiler.decodeAndValidate(JSON.parse(text(storedVersion, 'graph_json')) as unknown);
       const catalog = this.compiler.catalogStatus();
       if (text(storedPlan, 'catalog_digest') !== catalog.digest || text(storedVersion, 'catalog_digest') !== catalog.digest) throw new WorkflowValidationError('WORKFLOW_CATALOG_MISMATCH');
       this.compiler.assertPlanIntegrity(plan(storedPlan), graph);
+      let authority: Awaited<ReturnType<ModeOperationAuthorizer['authorizeOperation']>>;
+      try { authority = await this.modeAuthority.authorizeOperation({ requestId: input.requestId, taskId: input.taskId, operation: 'governed-entry' }); }
+      catch { // observability-exempt: the closed admission refusal records only the fixed authority safe code and no upstream error content.
+        throw new WorkflowValidationError('WORKFLOW_AUTHORITY_EXPANSION');
+      }
+      if (!authority.allowed || authority.projection.state !== 'ready' || authority.projection.taskId !== input.taskId || authority.projection.projectId !== graph.projectId) {
+        const requestDigest = workflowDigest('run-snapshot', { schemaVersion: '1', planId: input.planId, planDigest: text(storedPlan, 'plan_digest'), taskId: input.taskId });
+        const result = this.transaction(input.requestId, requestDigest, () => ({ kind: 'refused', code: 'WORKFLOW_AUTHORITY_EXPANSION' } as const));
+        workflowLog('run.admission.refused', { requestId: input.requestId, planId: input.planId, safeCode: result.code, unavailableExecutorCount: 0 }); return result;
+      }
       unavailableExecutorCount = graph.nodes.filter(node => this.compiler.catalogEntry(node.kind).executor.status === 'unavailable').length;
-      const requestDigest = workflowDigest('run-snapshot', { schemaVersion: '1', planId: input.planId, planDigest: text(storedPlan, 'plan_digest') });
+      const requestDigest = workflowDigest('run-snapshot', { schemaVersion: '1', planId: input.planId, planDigest: text(storedPlan, 'plan_digest'), taskId: input.taskId });
       const result = this.transaction(input.requestId, requestDigest, () => ({ kind: 'refused', code: unavailableExecutorCount > 0 ? 'WORKFLOW_EXECUTOR_INCOMPATIBLE' : 'WORKFLOW_AUTHORITY_EXPANSION' } as const));
       workflowLog('run.admission.refused', { requestId: input.requestId, planId: input.planId, safeCode: result.code, unavailableExecutorCount });
       return result;

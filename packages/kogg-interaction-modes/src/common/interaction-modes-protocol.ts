@@ -2,6 +2,7 @@
 // diagnostic-exempt: Pure RPC declarations have no independent runtime state.
 export const KoggInteractionModesServicePath = '/services/kogg-interaction-modes';
 export const KoggInteractionModesService = Symbol('KoggInteractionModesService');
+export const KoggModeOperationAuthorizer = Symbol('KoggModeOperationAuthorizer');
 
 export type InteractionModeV1 = 'plan' | 'build' | 'kogg';
 export type ModeCapabilityV1 = 'research.read' | 'plan.write' | 'plan.approval-request' | 'worktree.create'
@@ -24,6 +25,7 @@ export interface ModeProjectionV1 {
 export interface ModeReadRequestV1 { readonly requestId: string; readonly taskId: string; }
 export interface ModeOperationRequestV1 { readonly requestId: string; readonly taskId: string; readonly operation: ModeOperationV1; }
 export interface ModeOperationResultV1 { readonly schemaVersion: 1; readonly allowed: boolean; readonly safeCode: ModeSafeCodeV1; readonly projection: ModeProjectionV1; }
+export interface ModeOperationAuthorizer { authorizeOperation(request: ModeOperationRequestV1): Promise<ModeOperationResultV1>; }
 export type ModeTransitionStateV1 = 'committed' | 'awaiting-confirmation' | 'cleanup-pending' | 'cancelled' | 'expired';
 export interface ModeTransitionRequestV1 {
   readonly transitionId: string; readonly requestId: string; readonly taskId: string; readonly expectedSequence: string;
