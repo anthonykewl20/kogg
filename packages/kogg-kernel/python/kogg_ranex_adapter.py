@@ -20,7 +20,7 @@ from ranex.governed_execution.adapters.persistence.sqlite.journal import Journal
 
 PROTOCOL = "kogg.ranex/v2"
 PROTOCOL_VERSION = 2
-SCHEMA_SET_DIGEST = "sha256:76be6566aef1a98cb5a18c0133c63043ddd42d804c995809d4cbb6145dc77622"
+SCHEMA_SET_DIGEST = "sha256:72d3744f64fa150f4e0b4bed73ff5ad305e75a21f99f28e44eb3bbcf33ef0899"
 MAX_FRAME_BYTES = 1024 * 1024
 MAX_DEPTH = 32
 MAX_MEMBERS = 4096
@@ -28,7 +28,7 @@ MAX_PENDING_REQUESTS = 64
 MAX_PENDING_RESPONSE_BYTES = 4 * 1024 * 1024
 DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
 UUID = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$")
-IMPLEMENTED_OPERATIONS = {"kernel.handshake": 2, "kernel.health": 1, "execution.qualify": 1, "task.bind": 1, "producer.dispatch": 1, "suite.freeze": 1, "suite.execute": 1, "evidence.admit": 1}
+IMPLEMENTED_OPERATIONS = {"kernel.handshake": 2, "kernel.health": 1, "execution.qualify": 1, "task.bind": 1, "producer.dispatch": 1, "suite.freeze": 1, "suite.execute": 1, "evidence.admit": 1, "gate.evaluate": 1}
 SYMBOLIC = re.compile(r"^[a-z0-9][a-z0-9._:-]{0,127}$")
 CHECK_KINDS = {"build", "unit", "integration", "visible-e2e", "observability", "diagnostics", "source-maps", "process-cleanup", "ranex-evidence"}
 
@@ -613,6 +613,126 @@ def _admit_evidence(request: dict[str, Any], body: dict[str, Any]) -> tuple[dict
     return projection, {"sequence": str(len(committed)), "rootDigest": root}
 
 
+def _gate_expectation(value: Any) -> dict[str, Any]:
+    expectation = _closed(value, {
+        "verdictId", "taskBindingDigest", "suiteDigest", "subjectStateDigest", "gateCatalogDigest",
+        "requirements", "authorityDigest", "ranexProvenanceDigest", "evaluatedAt",
+    })
+    _uuid(expectation["verdictId"])
+    for field in ("taskBindingDigest", "suiteDigest", "subjectStateDigest", "gateCatalogDigest", "authorityDigest", "ranexProvenanceDigest"):
+        _sha256(expectation[field])
+    _timestamp(expectation["evaluatedAt"])
+    requirements = expectation["requirements"]
+    if not isinstance(requirements, list) or not 1 <= len(requirements) <= 64:
+        raise ProtocolRefusal("KERNEL_GATE_INCOMPLETE")
+    for requirement in requirements:
+        _closed(requirement, {"claimType", "checkDefinitionDigest", "requiredOutcome"})
+        if not isinstance(requirement["claimType"], str) or not SYMBOLIC.fullmatch(requirement["claimType"]) or requirement["requiredOutcome"] != "pass":
+            raise ProtocolRefusal("KERNEL_GATE_INCOMPLETE")
+        _sha256(requirement["checkDefinitionDigest"])
+    keys = [(item["claimType"], item["checkDefinitionDigest"]) for item in requirements]
+    if keys != sorted(keys) or len(keys) != len(set(keys)) or expectation["gateCatalogDigest"] != _domain_digest("gate-catalog", requirements):
+        raise ProtocolRefusal("KERNEL_GATE_INCOMPLETE")
+    return expectation
+
+
+def _evaluate_gate(request: dict[str, Any], body: dict[str, Any]) -> tuple[dict[str, Any], dict[str, str]]:
+    try:
+        closed = _closed(body, {"currentSubject", "expectation", "expectationDigest"})
+    except ProtocolRefusal as error:
+        raise ProtocolRefusal("KERNEL_GATE_INCOMPLETE") from error
+    expectation = _gate_expectation(closed["expectation"]); current_subject = _repository_state(closed["currentSubject"])
+    expectation_digest = _domain_digest("gate-evaluation", expectation)
+    if closed["expectationDigest"] != expectation_digest or expectation["subjectStateDigest"] != _domain_digest("repository-state", current_subject):
+        raise ProtocolRefusal("KERNEL_SUBJECT_STALE")
+    provenance = _provenance()
+    expected_provenance = _domain_digest("ranex-provenance", {"commit": provenance["commit"], "schemaSetDigest": SCHEMA_SET_DIGEST, "tree": provenance["tree"]})
+    if expectation["ranexProvenanceDigest"] != expected_provenance:
+        raise ProtocolRefusal("KERNEL_PROVENANCE_MISMATCH")
+    evaluated_at = datetime.strptime(expectation["evaluatedAt"], "%Y-%m-%dT%H:%M:%S.%fZ")
+    if evaluated_at > datetime.utcnow() + timedelta(seconds=5):
+        raise ProtocolRefusal("KERNEL_VERDICT_STALE")
+    journal = Journal(_journal_path())
+    try:
+        if not _journal_path().is_file() or not journal.verify():
+            raise ProtocolRefusal("KERNEL_JOURNAL_INTEGRITY")
+        records = journal.entries()
+    except ProtocolRefusal:
+        raise
+    except Exception as error:
+        raise ProtocolRefusal("KERNEL_JOURNAL_INTEGRITY") from error
+    prior = [record for record in records if record.get("kind") == "kogg.verdict.v1" and record.get("idempotencyKey") == request["idempotencyKey"]]
+    if len(prior) > 1:
+        raise ProtocolRefusal("KERNEL_JOURNAL_AMBIGUOUS")
+    if prior:
+        stored = prior[0].get("verdict")
+        if prior[0].get("bodyDigest") != request["bodyDigest"] or prior[0].get("expectationDigest") != expectation_digest or not isinstance(stored, dict):
+            raise ProtocolRefusal("KERNEL_IDEMPOTENCY_CONFLICT")
+        projection = {"decision": stored.get("decision"), "evidenceCount": len(prior[0].get("evidenceDigests", [])), "verdictDigest": prior[0].get("verdictDigest"), "verdictId": stored.get("verdictId")}
+        return projection, _journal_position(records, records.index(prior[0]) + 1)
+    tasks = [record for record in records if record.get("kind") == "kogg.task-binding.v1" and record.get("bindingDigest") == expectation["taskBindingDigest"]]
+    suites = [record for record in records if record.get("kind") == "kogg.frozen-suite.v1" and record.get("suiteDigest") == expectation["suiteDigest"]]
+    if len(tasks) > 1 or len(suites) > 1:
+        raise ProtocolRefusal("KERNEL_JOURNAL_AMBIGUOUS")
+    if len(tasks) != 1 or len(suites) != 1 or not isinstance(tasks[0].get("binding"), dict) or not isinstance(suites[0].get("suite"), dict):
+        raise ProtocolRefusal("KERNEL_GATE_INCOMPLETE")
+    task = tasks[0]["binding"]; suite = suites[0]["suite"]
+    if suite.get("taskBindingDigest") != expectation["taskBindingDigest"] or suite.get("gateCatalogDigest") != expectation["gateCatalogDigest"] or suite.get("verifierAuthorityDigest") != expectation["authorityDigest"]:
+        raise ProtocolRefusal("KERNEL_GATE_INCOMPLETE")
+    suite_checks = {_domain_digest("check-definition", check) for check in suite.get("checks", []) if isinstance(check, dict)}
+    if any(requirement["checkDefinitionDigest"] not in suite_checks for requirement in expectation["requirements"]):
+        raise ProtocolRefusal("KERNEL_GATE_INCOMPLETE")
+    selected: list[dict[str, Any]] = []; blocked = False; failed = False
+    for requirement in expectation["requirements"]:
+        matches = [record for record in records if record.get("kind") == "kogg.evidence.v1" and isinstance(record.get("evidence"), dict)
+                   and record["evidence"].get("claimType") == requirement["claimType"]
+                   and record["evidence"].get("checkDefinitionDigest") == requirement["checkDefinitionDigest"]
+                   and record["evidence"].get("taskBindingDigest") == expectation["taskBindingDigest"]
+                   and record["evidence"].get("suiteDigest") == expectation["suiteDigest"]
+                   and record["evidence"].get("subjectStateDigest") == expectation["subjectStateDigest"]
+                   and record["evidence"].get("authorityDigest") == expectation["authorityDigest"]
+                   and record["evidence"].get("ranexProvenanceDigest") == expectation["ranexProvenanceDigest"]]
+        if len(matches) != 1:
+            blocked = True; continue
+        evidence_record = matches[0]; evidence = evidence_record["evidence"]
+        executions = [record for record in records if record.get("kind") == "kogg.check-execution.v1" and record.get("executionDigest") == evidence.get("checkExecutionDigest")]
+        if len(executions) != 1 or not isinstance(executions[0].get("execution"), dict):
+            blocked = True; continue
+        execution = executions[0]["execution"]
+        if execution.get("resultArtifactDigest") != evidence.get("resultArtifactDigest") or execution.get("outcome") not in {"pass", "fail"}:
+            blocked = True; continue
+        failed = failed or execution["outcome"] != requirement["requiredOutcome"]
+        selected.append(evidence_record)
+    decision = "blocked" if blocked else "fail" if failed else "pass"
+    evidence_digests = sorted(str(record["evidenceDigest"]) for record in selected)
+    evidence_set_digest = _domain_digest("evidence-set", evidence_digests)
+    prior_position = _journal_position(records)
+    verdict = {
+        "verdictId": expectation["verdictId"], "taskBindingDigest": expectation["taskBindingDigest"],
+        "subjectStateDigest": expectation["subjectStateDigest"], "gateCatalogDigest": expectation["gateCatalogDigest"],
+        "evidenceSetDigest": evidence_set_digest, "authorityDigest": expectation["authorityDigest"],
+        "ranexProvenanceDigest": expectation["ranexProvenanceDigest"], "journalRootDigest": prior_position["rootDigest"],
+        "journalSequence": len(records), "decision": decision, "evaluatedAt": expectation["evaluatedAt"],
+    }
+    verdict_digest = _domain_digest("verdict", verdict)
+    same_id = [record for record in records if record.get("kind") == "kogg.verdict.v1" and isinstance(record.get("verdict"), dict) and record["verdict"].get("verdictId") == verdict["verdictId"]]
+    if same_id and any(record.get("verdictDigest") != verdict_digest for record in same_id):
+        raise ProtocolRefusal("KERNEL_IDEMPOTENCY_CONFLICT")
+    if same_id:
+        raise ProtocolRefusal("KERNEL_IDEMPOTENCY_CONFLICT")
+    projection = {"decision": decision, "evidenceCount": len(selected), "verdictDigest": verdict_digest, "verdictId": verdict["verdictId"]}
+    fact = {"kind": "kogg.verdict.v1", "idempotencyKey": request["idempotencyKey"], "bodyDigest": request["bodyDigest"], "expectationDigest": expectation_digest, "verdictDigest": verdict_digest, "verdict": verdict, "evidenceDigests": evidence_digests}
+    try:
+        root = journal.append(_KernelFact(fact)); committed = journal.entries()
+        if not journal.verify() or not committed or committed[-1] != fact:
+            raise ProtocolRefusal("KERNEL_JOURNAL_INTEGRITY")
+    except ProtocolRefusal:
+        raise
+    except Exception as error:
+        raise ProtocolRefusal("KERNEL_JOURNAL_INTEGRITY") from error
+    return projection, {"sequence": str(len(committed)), "rootDigest": root}
+
+
 def _capabilities() -> dict[str, Any]:
     provenance = _provenance()
     qualified = platform.system() == "Linux"
@@ -723,6 +843,8 @@ def _dispatch(request: dict[str, Any]) -> tuple[dict[str, Any], dict[str, str] |
         return _execute_suite(request, body)
     if operation == "evidence.admit":
         return _admit_evidence(request, body)
+    if operation == "gate.evaluate":
+        return _evaluate_gate(request, body)
     raise ProtocolRefusal("KERNEL_CAPABILITY_UNAVAILABLE")
 
 

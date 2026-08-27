@@ -6,7 +6,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import test from 'node:test';
-import type { EvidenceAdmissionProjectionV1, EvidenceManifestV1, KernelBridge, KernelResultV2, RepositoryStateV1, TaskBindingProjectionV1, TaskExecutionBindingV1 } from '@kogg/contracts';
+import type { EvidenceAdmissionProjectionV1, EvidenceManifestV1, GateEvaluationExpectationV1, GateEvaluationProjectionV1, KernelBridge, KernelResultV2, RepositoryStateV1, TaskBindingProjectionV1, TaskExecutionBindingV1 } from '@kogg/contracts';
 import { OperationRegistry } from '@kogg/operations/lib/node/operation-registry';
 import type { TaskAdmissionSnapshot, TaskKernelBindingAuthority, TaskKernelAuthoritySnapshot } from '@kogg/tasks/lib/common/tasks-protocol';
 import type { ILogger } from '@theia/core/lib/common/logger';
@@ -14,6 +14,7 @@ import { ProcessManager } from '@theia/process/lib/node/process-manager';
 import { KernelTaskBindingService } from './kernel-task-binding-service';
 import { KernelRepositoryStateAuthority } from './kernel-repository-state-authority';
 import { KernelEvidenceAdmissionService } from './kernel-evidence-admission-service';
+import { KernelGateEvaluationService } from './kernel-gate-evaluation-service';
 
 test('measures a clean repository and binds only an exact live task authority snapshot', async () => {
   const temporary = await mkdtemp(path.join(os.tmpdir(), 'kogg-kernel-binding-test-'));
@@ -54,10 +55,15 @@ test('measures a clean repository and binds only an exact live task authority sn
     const admitted = await evidenceService.admit(admission, fixtureEvidence());
     assert.equal(admitted.status, 'succeeded'); assert.equal(kernel.evidenceCalls, 1);
     assert.equal(kernel.currentSubject?.commitObjectId, kernel.binding?.protectedSource.commitObjectId);
+    const gateService = new KernelGateEvaluationService(authority, kernel as unknown as KernelBridge, operations, repositories, logger());
+    const evaluated = await gateService.evaluate(admission, fixtureGateExpectation());
+    assert.equal(evaluated.projection?.decision, 'pass'); assert.equal(kernel.gateCalls, 1);
 
     await writeFile(path.join(repository, 'fixture.txt'), 'changed fixture\n');
     const staleEvidence = await evidenceService.admit(admission, fixtureEvidence());
     assert.equal(staleEvidence.safeCode, 'KERNEL_SUBJECT_STALE'); assert.equal(kernel.evidenceCalls, 1);
+    const staleGate = await gateService.evaluate(admission, fixtureGateExpectation());
+    assert.equal(staleGate.safeCode, 'KERNEL_VERDICT_STALE'); assert.equal(kernel.gateCalls, 1);
     const refused = await service.bind(admission);
     assert.equal(refused.safeCode, 'KERNEL_REPOSITORY_MISMATCH');
     assert.equal(kernel.calls, 1);
@@ -81,6 +87,7 @@ class FixtureKernel implements Partial<KernelBridge> {
   currentSubject: RepositoryStateV1 | undefined;
   calls = 0;
   evidenceCalls = 0;
+  gateCalls = 0;
   async bindTask(binding: TaskExecutionBindingV1): Promise<KernelResultV2<TaskBindingProjectionV1>> {
     this.binding = binding; this.calls += 1;
     return {
@@ -97,6 +104,14 @@ class FixtureKernel implements Partial<KernelBridge> {
       projection: { evidenceDigest: `sha256:${'8'.repeat(64)}`, evidenceId: evidence.evidenceId, claimType: evidence.claimType }
     };
   }
+  async evaluateGate(expectation: GateEvaluationExpectationV1, currentSubject: RepositoryStateV1): Promise<KernelResultV2<GateEvaluationProjectionV1>> {
+    this.currentSubject = currentSubject; this.gateCalls += 1;
+    return {
+      protocol: 'kogg.ranex/v2', requestId: randomUUID(), operationId: randomUUID(), status: 'succeeded', safeCode: 'KERNEL_OK',
+      resultDigest: `sha256:${'a'.repeat(64)}`, journal: { sequence: '6', rootDigest: `sha256:${'b'.repeat(64)}` },
+      projection: { verdictDigest: `sha256:${'c'.repeat(64)}`, verdictId: expectation.verdictId, decision: 'pass', evidenceCount: 1 }
+    };
+  }
 }
 
 function fixtureEvidence(): EvidenceManifestV1 {
@@ -106,6 +121,15 @@ function fixtureEvidence(): EvidenceManifestV1 {
     checkDefinitionDigest: `sha256:${'5'.repeat(64)}`, checkExecutionDigest: `sha256:${'6'.repeat(64)}`,
     resultArtifactDigest: `sha256:${'7'.repeat(64)}`, authorityDigest: `sha256:${'8'.repeat(64)}`,
     ranexProvenanceDigest: `sha256:${'9'.repeat(64)}`, createdAt: '2099-08-27T08:00:00.000Z'
+  };
+}
+
+function fixtureGateExpectation(): GateEvaluationExpectationV1 {
+  return {
+    verdictId: '88888888-8888-4888-8888-888888888888', taskBindingDigest: `sha256:${'1'.repeat(64)}`,
+    suiteDigest: `sha256:${'2'.repeat(64)}`, subjectStateDigest: `sha256:${'3'.repeat(64)}`, gateCatalogDigest: `sha256:${'4'.repeat(64)}`,
+    requirements: [{ claimType: 'tests.unit', checkDefinitionDigest: `sha256:${'5'.repeat(64)}`, requiredOutcome: 'pass' }],
+    authorityDigest: `sha256:${'6'.repeat(64)}`, ranexProvenanceDigest: `sha256:${'7'.repeat(64)}`, evaluatedAt: new Date().toISOString()
   };
 }
 
