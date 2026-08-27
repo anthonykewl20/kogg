@@ -5,7 +5,7 @@ import { createHash } from 'node:crypto';
 import { mkdtemp, rm } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { canonicalKernelJson, KOGG_RANEX_COMMIT, KOGG_RANEX_PROTOCOL_VERSION, type FrozenSuiteV1, type KernelJson, type ProducerBindingV1, type RepositoryStateV1, type TaskExecutionBindingV1 } from '@kogg/contracts';
+import { canonicalKernelJson, KOGG_RANEX_COMMIT, KOGG_RANEX_PROTOCOL_VERSION, type CheckExecutionV1, type FrozenSuiteV1, type KernelJson, type ProducerBindingV1, type RepositoryStateV1, type TaskExecutionBindingV1 } from '@kogg/contracts';
 import { OperationRegistry } from '@kogg/operations/lib/node/operation-registry';
 import type { ILogger } from '@theia/core/lib/common/logger';
 import { ProcessManager } from '@theia/process/lib/node/process-manager';
@@ -20,7 +20,7 @@ test('handshakes with the pinned Ranex kernel and fails closed on missing journa
     const capabilities = await bridge.start();
     assert.equal(capabilities.ranexCommit, KOGG_RANEX_COMMIT);
     assert.equal(capabilities.protocolVersion, KOGG_RANEX_PROTOCOL_VERSION);
-    assert.deepEqual(capabilities.operations.map(operation => operation.operation), ['kernel.handshake', 'kernel.health', 'execution.qualify', 'task.bind', 'producer.dispatch', 'suite.freeze']);
+    assert.deepEqual(capabilities.operations.map(operation => operation.operation), ['kernel.handshake', 'kernel.health', 'execution.qualify', 'task.bind', 'producer.dispatch', 'suite.freeze', 'suite.execute']);
     const verification = await bridge.verifyJournal();
     assert.equal(verification.valid, false);
     assert.equal(verification.reason, 'missing');
@@ -33,6 +33,7 @@ test('handshakes with the pinned Ranex kernel and fails closed on missing journa
     assert.equal(unauthorizedProducer.status, 'refused');
     assert.equal(unauthorizedProducer.safeCode, 'KERNEL_AUTHORITY_INVALID');
     assert.equal((await bridge.execute('suite.freeze', {})).safeCode, 'KERNEL_AUTHORITY_INVALID');
+    assert.equal((await bridge.execute('suite.execute', {})).safeCode, 'KERNEL_AUTHORITY_INVALID');
     const committed = await bridge.bindTask(fixtureBinding());
     assert.equal(committed.status, 'succeeded');
     assert.equal(committed.safeCode, 'KERNEL_OK');
@@ -58,6 +59,42 @@ test('handshakes with the pinned Ranex kernel and fails closed on missing journa
     const manifestMismatch = await bridge.freezeSuite({ ...suite, suiteId: '99999999-9999-4999-8999-999999999999', manifestDigest: `sha256:${'0'.repeat(64)}` });
     assert.equal(manifestMismatch.status, 'refused');
     assert.equal(manifestMismatch.safeCode, 'KERNEL_SUITE_MISMATCH');
+    const checkDefinitionDigest = domainDigest('check-definition', suite.checks[0] as unknown as KernelJson);
+    const subjectStateDigest = domainDigest('repository-state', fixtureRepository() as unknown as KernelJson);
+    const checkOperation = await operations.startOperation({ kind: 'check' }); checkOperation.start();
+    const checkProcess = checkOperation.registerProcess({
+      kind: 'check', owner: 'kogg-supervisor', executionAuthority: {
+        suiteDigest: frozen.projection!.suiteDigest, checkDefinitionDigest, subjectStateDigest,
+        verifierId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', verifierArtifactDigest: `sha256:${'c'.repeat(64)}`,
+        executionProfileDigest: `sha256:${'5'.repeat(64)}`
+      }
+    });
+    checkProcess.spawning();
+    const child = spawn(process.execPath, ['-e', 'process.exit(0)'], { stdio: 'ignore' });
+    assert.ok(child.pid); checkProcess.started(child.pid); checkProcess.ready(); checkOperation.active();
+    const exit = await new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((resolve, reject) => {
+      child.once('exit', (code, signal) => resolve({ code, signal })); child.once('error', reject);
+    });
+    checkProcess.exited(exit.signal ? 'signal' : exit.code === 0 ? 'zero' : 'nonzero', `sha256:${'d'.repeat(64)}`); checkProcess.cleanup();
+    await checkOperation.cleanup(); checkOperation.complete();
+    const authority = await operations.processExecutionAttestation(checkProcess.id); assert.ok(authority);
+    const execution: CheckExecutionV1 = {
+      executionId: '99999999-9999-4999-8999-999999999999', suiteDigest: frozen.projection!.suiteDigest,
+      checkDefinitionDigest, subjectState: fixtureRepository(),
+      verifierId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', verifierRole: 'verification', verifierArtifactDigest: `sha256:${'c'.repeat(64)}`,
+      processRegistrationId: checkProcess.id, executionProfileDigest: `sha256:${'5'.repeat(64)}`,
+      startedAt: authority.startedAt, finishedAt: authority.finishedAt, outcome: 'pass', exitClass: 'zero',
+      resultArtifactDigest: `sha256:${'d'.repeat(64)}`, cleanupProofDigest: authority.cleanupProofDigest
+    };
+    const forged = await bridge.executeCheck({ ...execution, cleanupProofDigest: `sha256:${'0'.repeat(64)}` });
+    assert.equal(forged.status, 'refused'); assert.equal(forged.safeCode, 'KERNEL_AUTHORITY_INVALID');
+    const substitutedResult = await bridge.executeCheck({ ...execution, resultArtifactDigest: `sha256:${'e'.repeat(64)}` });
+    assert.equal(substitutedResult.status, 'refused'); assert.equal(substitutedResult.safeCode, 'KERNEL_AUTHORITY_INVALID');
+    const executed = await bridge.executeCheck(execution);
+    assert.equal(executed.status, 'succeeded'); assert.equal(executed.journal?.sequence, '4');
+    assert.equal(executed.projection?.outcome, 'pass');
+    const executionReplay = await bridge.executeCheck(execution);
+    assert.deepEqual(executionReplay, { ...executed, requestId: executionReplay.requestId, operationId: executionReplay.operationId });
     assert.equal((await bridge.verifyJournal()).valid, true);
     await bridge.shutdown();
     assert.equal((await operations.snapshot()).active.length, 0);
@@ -89,7 +126,7 @@ test('maps a structurally invalid operation to a closed protocol refusal', async
       protocol: 'kogg.ranex/v2', requestId: '11111111-1111-4111-8111-111111111111',
       operationId: '22222222-2222-4222-8222-222222222222', idempotencyKey: `sha256:${'0'.repeat(64)}`,
       operation: {}, operationVersion: 1, ranexCommit: KOGG_RANEX_COMMIT,
-      schemaSetDigest: `sha256:b44b4f9fc8c16386e1c5b4f22dcdf6f910b951dce48799689e623f14ef5497f3`,
+      schemaSetDigest: `sha256:9a45373309b74bfdd6cd2390fd3a553433123ab63da321788a2554b8f9655307`,
       bodyDigest: `sha256:${'0'.repeat(64)}`, body: {}
     };
     const payload = Buffer.from(JSON.stringify(request), 'utf8');

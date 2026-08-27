@@ -20,6 +20,7 @@ import type {
 } from '../common/operations-protocol';
 import type { OperationsOwnerSink, OwnerEventV1, SafeOwnerPayloadV1 } from '../common/operations-read-model-protocol';
 import { OperationsReadModel } from './operations-read-model';
+import { canonicalKernelJson, type KernelJson } from '@kogg/contracts';
 
 // diagnostic-coverage: operations.registry, operations.recovery, operations.processes, operations.cleanup, operations.admission
 
@@ -145,6 +146,41 @@ export class OperationRegistry implements OperationRegistryApi, BackendApplicati
     return { status: 'active', ...(safeCode ? { safeCode } : {}) };
   }
 
+  async processExecutionAttestation(processRegistrationId: string): Promise<import('../common/operations-protocol').ProcessExecutionAttestation | undefined> {
+    await this.ensureStarted();
+    if (!UUID.test(processRegistrationId)) return undefined;
+    const row = this.requireDatabase().prepare(`SELECT p.id,p.operation_id,p.kind,p.owner,p.state,p.cleanup_state,p.exit_class,p.execution_authority,p.result_artifact_digest,
+      o.kind AS operation_kind,o.state AS operation_state,o.cleanup_state AS operation_cleanup,
+      (SELECT created_at FROM operation_events WHERE process_id=p.id AND event_name='process.started' ORDER BY sequence ASC LIMIT 1) AS started_at,
+      (SELECT created_at FROM operation_events WHERE process_id=p.id AND event_name='process.exit' ORDER BY sequence DESC LIMIT 1) AS finished_at,
+      (SELECT created_at FROM operation_events WHERE process_id=p.id AND event_name='cleanup.completed' ORDER BY sequence DESC LIMIT 1) AS cleanup_at
+      FROM processes p JOIN operations o ON o.id=p.operation_id WHERE p.id=?`).get(processRegistrationId) as SqlRow | undefined;
+    if (!row || !['check', 'build', 'test'].includes(String(row.kind)) || String(row.kind) !== String(row.operation_kind)
+      || !['completed', 'failed', 'timed-out', 'cancelled'].includes(String(row.operation_state))
+      || !['exited', 'signalled'].includes(String(row.state)) || row.cleanup_state !== 'cleaned' || row.operation_cleanup !== 'cleaned'
+      || !['zero', 'nonzero', 'signal'].includes(String(row.exit_class)) || !row.started_at || !row.finished_at || !row.cleanup_at
+      || !row.execution_authority || !validDigest(row.result_artifact_digest)) {
+      console.warn('[kogg:operations:process] execution.attestation.refused', { processRegistrationId, safeCode: 'PROCESS_IDENTITY_UNVERIFIED' });
+      return undefined;
+    }
+    const executionAuthority = parseExecutionAuthority(String(row.execution_authority));
+    if (!executionAuthority) {
+      console.warn('[kogg:operations:process] execution.attestation.refused', { processRegistrationId, safeCode: 'PROCESS_IDENTITY_UNVERIFIED' });
+      return undefined;
+    }
+    const fact = {
+      operationId: String(row.operation_id), processRegistrationId, processKind: String(row.kind), processOwner: String(row.owner),
+      operationState: String(row.operation_state), exitClass: String(row.exit_class), startedAt: String(row.started_at),
+      finishedAt: String(row.finished_at), cleanupAt: String(row.cleanup_at), ...executionAuthority,
+      resultArtifactDigest: String(row.result_artifact_digest)
+    } as const;
+    const cleanupProofDigest = domainFactDigest('process-execution-cleanup', fact as unknown as KernelJson);
+    console.info('[kogg:operations:process] execution.attestation.issued', {
+      operationId: fact.operationId, processRegistrationId, processKind: fact.processKind, operationState: fact.operationState, exitClass: fact.exitClass
+    });
+    return { ...fact, cleanupProofDigest } as import('../common/operations-protocol').ProcessExecutionAttestation;
+  }
+
   async cancel(request: { readonly requestId: string; readonly operationId: string }): Promise<OperationsSnapshot> {
     await this.ensureStarted();
     if (Object.keys(request).sort().join(',') !== 'operationId,requestId') throw new Error('Cancel request contains unknown fields');
@@ -237,13 +273,16 @@ export class OperationRegistry implements OperationRegistryApi, BackendApplicati
   }
 
   registerProcess(operationId: string, request: StartProcess): DurableProcessLease {
-    if (Object.keys(request).some(key => !['kind', 'owner', 'cancel'].includes(key)) || !PROCESS_KINDS.has(request.kind) || !PROCESS_OWNERS.has(request.owner)) {
+    if (Object.keys(request).some(key => !['kind', 'owner', 'executionAuthority', 'cancel'].includes(key)) || !PROCESS_KINDS.has(request.kind) || !PROCESS_OWNERS.has(request.owner)
+      || (request.executionAuthority !== undefined && !['check', 'build', 'test'].includes(request.kind))
+      || (request.executionAuthority !== undefined && !validExecutionAuthority(request.executionAuthority))) {
       throw new Error('Process registration request is invalid');
     }
     const id = randomUUID();
     this.transaction(database => {
-      database.prepare(`INSERT INTO processes(id,operation_id,kind,owner,state,cleanup_state,owner_instance_id)
-        VALUES(?,?,?,?,'registered','required',?)`).run(id, operationId, request.kind, request.owner, this.instanceId);
+      database.prepare(`INSERT INTO processes(id,operation_id,kind,owner,state,cleanup_state,owner_instance_id,execution_authority)
+        VALUES(?,?,?,?,'registered','required',?,?)`).run(id, operationId, request.kind, request.owner, this.instanceId,
+        request.executionAuthority ? canonicalKernelJson(request.executionAuthority as unknown as KernelJson) : null);
       database.prepare(`UPDATE operations SET cleanup_state='required',updated_at=?,revision=revision+1 WHERE id=?`).run(new Date().toISOString(), operationId);
       this.appendEvent(database, operationId, id, 'process.registered');
       this.bump(database);
@@ -254,7 +293,7 @@ export class OperationRegistry implements OperationRegistryApi, BackendApplicati
   }
 
   transitionProcess(operationId: string, id: string, state: ProcessState, eventName: string, values: {
-    readonly pid?: number; readonly safeCode?: OperationSafeCode; readonly errorType?: string; readonly exitClass?: string;
+    readonly pid?: number; readonly safeCode?: OperationSafeCode; readonly errorType?: string; readonly exitClass?: string; readonly resultArtifactDigest?: string;
   } = {}): void {
     if (values.safeCode && !SAFE_CODES.has(values.safeCode)) throw new Error('Process safe code is invalid');
     const current = this.requireDatabase().prepare('SELECT state FROM processes WHERE id=? AND operation_id=?').get(id, operationId) as SqlRow | undefined;
@@ -264,10 +303,11 @@ export class OperationRegistry implements OperationRegistryApi, BackendApplicati
     if (!PROCESS_TRANSITIONS[currentState]?.includes(state)) throw new Error(`Invalid process transition from ${currentState} to ${state}`);
     const fingerprint = values.pid ? fingerprintFor(values.pid) : undefined;
     this.transaction(database => {
+      if (values.resultArtifactDigest !== undefined && !validDigest(values.resultArtifactDigest)) throw new Error('Result artifact digest is invalid');
       database.prepare(`UPDATE processes SET state=?,pid=COALESCE(?,pid),identity_fingerprint=COALESCE(?,identity_fingerprint),
-        safe_code=?,error_type=?,exit_class=?,updated_at=? WHERE id=? AND operation_id=?`).run(
+        safe_code=?,error_type=?,exit_class=?,result_artifact_digest=COALESCE(?,result_artifact_digest),updated_at=? WHERE id=? AND operation_id=?`).run(
         state, values.pid ?? null, fingerprint ?? null, values.safeCode ?? null, values.errorType ?? null,
-        values.exitClass ?? null, new Date().toISOString(), id, operationId
+        values.exitClass ?? null, values.resultArtifactDigest ?? null, new Date().toISOString(), id, operationId
       );
       this.appendEvent(database, operationId, id, eventName);
       this.bump(database);
@@ -366,7 +406,7 @@ export class OperationRegistry implements OperationRegistryApi, BackendApplicati
     this.requireDatabase().exec(`
       CREATE TABLE IF NOT EXISTS operation_meta(singleton INTEGER PRIMARY KEY CHECK(singleton=1),schema_version INTEGER NOT NULL CHECK(schema_version=1),revision INTEGER NOT NULL CHECK(revision>=1),instance_id TEXT NOT NULL,owner_id TEXT NOT NULL,owner_epoch_id TEXT NOT NULL,admission TEXT NOT NULL CHECK(admission IN ('enabled','recovering','blocked')));
       CREATE TABLE IF NOT EXISTS operations(id TEXT PRIMARY KEY,kind TEXT NOT NULL CHECK(kind IN ('application-start','application-stop','recovery','diagnostics','support-export','project-mutation','repository-probe','project-switch','worktree','marketplace','provider-connection','provider-session','ranex-bridge','ranex-request','task','agent-dispatch','check','build','test','debug','evidence','verdict','merge')),state TEXT NOT NULL CHECK(state IN ('requested','refused','starting','active','waiting','stalled','cancelling','completed','failed','timed-out','cancelled','recovery-required','recovering','recovered')),cleanup_state TEXT NOT NULL CHECK(cleanup_state IN ('not-required','required','cleaning','cleaned','failed')),safe_code TEXT,project_id TEXT,task_id TEXT,run_id TEXT,attempt_id TEXT,session_id TEXT,worktree_id TEXT,owner_instance_id TEXT NOT NULL,requested_at TEXT NOT NULL,updated_at TEXT NOT NULL,last_activity_at TEXT,activity_count INTEGER NOT NULL CHECK(activity_count>=0),error_type TEXT,revision INTEGER NOT NULL CHECK(revision>=1));
-      CREATE TABLE IF NOT EXISTS processes(id TEXT PRIMARY KEY,operation_id TEXT NOT NULL REFERENCES operations(id),kind TEXT NOT NULL CHECK(kind IN ('git','ranex-kernel','provider-cli','governed-command','check','build','test','debug-adapter','delegated-theia')),owner TEXT NOT NULL CHECK(owner IN ('kogg-supervisor','theia-task','theia-terminal','theia-debug','theia-plugin-host','ranex')),state TEXT NOT NULL CHECK(state IN ('registered','spawning','started','ready','spawn-failed','exited','signalled','possible-residual')),cleanup_state TEXT NOT NULL CHECK(cleanup_state IN ('required','cleaning','cleaned','failed')),owner_instance_id TEXT NOT NULL,pid INTEGER CHECK(pid IS NULL OR pid>0),identity_fingerprint TEXT,safe_code TEXT,error_type TEXT,exit_class TEXT,updated_at TEXT);
+      CREATE TABLE IF NOT EXISTS processes(id TEXT PRIMARY KEY,operation_id TEXT NOT NULL REFERENCES operations(id),kind TEXT NOT NULL CHECK(kind IN ('git','ranex-kernel','provider-cli','governed-command','check','build','test','debug-adapter','delegated-theia')),owner TEXT NOT NULL CHECK(owner IN ('kogg-supervisor','theia-task','theia-terminal','theia-debug','theia-plugin-host','ranex')),state TEXT NOT NULL CHECK(state IN ('registered','spawning','started','ready','spawn-failed','exited','signalled','possible-residual')),cleanup_state TEXT NOT NULL CHECK(cleanup_state IN ('required','cleaning','cleaned','failed')),owner_instance_id TEXT NOT NULL,pid INTEGER CHECK(pid IS NULL OR pid>0),identity_fingerprint TEXT,safe_code TEXT,error_type TEXT,exit_class TEXT,execution_authority TEXT,result_artifact_digest TEXT,updated_at TEXT);
       CREATE TABLE IF NOT EXISTS operation_events(sequence INTEGER PRIMARY KEY AUTOINCREMENT,operation_id TEXT NOT NULL REFERENCES operations(id),process_id TEXT,event_name TEXT NOT NULL,created_at TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS request_results(request_id TEXT PRIMARY KEY,request_digest TEXT NOT NULL,operation_id TEXT NOT NULL,safe_code TEXT NOT NULL,created_at TEXT NOT NULL);
       CREATE INDEX IF NOT EXISTS operation_active_idx ON operations(state,cleanup_state);
@@ -375,6 +415,8 @@ export class OperationRegistry implements OperationRegistryApi, BackendApplicati
     `);
     ensureTextColumn(this.requireDatabase(), 'operation_meta', 'owner_id', randomUUID());
     ensureTextColumn(this.requireDatabase(), 'operation_meta', 'owner_epoch_id', randomUUID());
+    ensureNullableTextColumn(this.requireDatabase(), 'processes', 'execution_authority');
+    ensureNullableTextColumn(this.requireDatabase(), 'processes', 'result_artifact_digest');
     const meta = this.requireDatabase().prepare('SELECT schema_version FROM operation_meta WHERE singleton=1').get() as SqlRow;
     if (Number(meta.schema_version) !== 1) throw new Error('Unsupported operation registry schema');
     console.info('[kogg:operations:registry] registry.migration.completed', { schemaVersion: 1 });
@@ -551,7 +593,7 @@ class DurableProcessLease implements ProcessLease {
   ready(): void { this.registry.transitionProcess(this.operationId, this.id, 'ready', 'process.ready'); }
   activity(): void { this.registry.activity(this.operationId, this.id); }
   failed(code: OperationSafeCode, error: string): void { this.registry.transitionProcess(this.operationId, this.id, 'spawn-failed', 'process.failed', { safeCode: code, errorType: error }); }
-  exited(exitClass: 'zero' | 'nonzero' | 'signal'): void { this.registry.transitionProcess(this.operationId, this.id, exitClass === 'signal' ? 'signalled' : 'exited', 'process.exit', { exitClass }); }
+  exited(exitClass: 'zero' | 'nonzero' | 'signal', resultArtifactDigest?: `sha256:${string}`): void { this.registry.transitionProcess(this.operationId, this.id, exitClass === 'signal' ? 'signalled' : 'exited', 'process.exit', { exitClass, resultArtifactDigest }); }
   cleanup(): void { this.registry.cleanupProcess(this.operationId, this.id); }
   async cancel(): Promise<void> { await this.cancelRun?.(); this.cleanup(); }
 }
@@ -579,6 +621,27 @@ function ensureTextColumn(database: DatabaseSync, table: 'operation_meta', colum
   const exists = (database.prepare(`PRAGMA table_info(${table})`).all() as SqlRow[]).some(row => String(row.name) === column);
   if (!exists) database.exec(`ALTER TABLE ${table} ADD COLUMN ${column} TEXT`);
   database.prepare(`UPDATE ${table} SET ${column}=? WHERE ${column} IS NULL OR ${column}=''`).run(value);
+}
+function ensureNullableTextColumn(database: DatabaseSync, table: 'processes', column: 'execution_authority' | 'result_artifact_digest'): void {
+  const exists = (database.prepare(`PRAGMA table_info(${table})`).all() as SqlRow[]).some(row => String(row.name) === column);
+  if (!exists) database.exec(`ALTER TABLE ${table} ADD COLUMN ${column} TEXT`);
+}
+function validDigest(value: unknown): value is `sha256:${string}` { return typeof value === 'string' && /^sha256:[0-9a-f]{64}$/u.test(value); }
+function validExecutionAuthority(value: import('../common/operations-protocol').CheckProcessAuthority): boolean {
+  return Object.keys(value).sort().join(',') === 'checkDefinitionDigest,executionProfileDigest,subjectStateDigest,suiteDigest,verifierArtifactDigest,verifierId'
+    && validDigest(value.suiteDigest) && validDigest(value.checkDefinitionDigest) && validDigest(value.subjectStateDigest)
+    && validDigest(value.verifierArtifactDigest) && validDigest(value.executionProfileDigest) && UUID.test(value.verifierId);
+}
+function parseExecutionAuthority(value: string): import('../common/operations-protocol').CheckProcessAuthority | undefined {
+  try {
+    const parsed = JSON.parse(value) as import('../common/operations-protocol').CheckProcessAuthority;
+    return canonicalKernelJson(parsed as unknown as KernelJson) === value && validExecutionAuthority(parsed) ? parsed : undefined;
+  } catch { // observability-exempt: the caller emits the content-free PROCESS_IDENTITY_UNVERIFIED refusal for malformed durable authority JSON.
+    return undefined;
+  }
+}
+function domainFactDigest(domain: string, value: KernelJson): `sha256:${string}` {
+  return `sha256:${createHash('sha256').update(`kogg:${domain}:v1\n`).update(canonicalKernelJson(value)).digest('hex')}`;
 }
 function stateRoot(): string { return path.resolve(process.env.KOGG_STATE_DIR ?? path.join(process.env.KOGG_ROOT ? path.resolve(process.env.KOGG_ROOT) : process.cwd(), '.kogg', 'state')); }
 function validateStartOperation(request: StartOperation): void {
