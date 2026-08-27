@@ -29,6 +29,8 @@ import {
   type RepositoryStateV1,
   type TaskBindingProjectionV1,
   type TaskExecutionBindingV1,
+  type VerdictReadExpectationV1,
+  type VerdictReadProjectionV1,
   KOGG_RANEX_COMMIT,
   KOGG_RANEX_PROTOCOL,
   KOGG_RANEX_PROTOCOL_VERSION,
@@ -166,7 +168,7 @@ export class KernelBridgeImpl implements KernelBridge {
   }
 
   execute<TProjection extends KernelJson>(operation: KernelOperationV2, body: KernelJson): Promise<KernelResultV2<TProjection>> {
-    if (operation === 'task.bind' || operation === 'producer.dispatch' || operation === 'suite.freeze' || operation === 'suite.execute' || operation === 'evidence.admit' || operation === 'gate.evaluate') {
+    if (operation === 'task.bind' || operation === 'producer.dispatch' || operation === 'suite.freeze' || operation === 'suite.execute' || operation === 'evidence.admit' || operation === 'gate.evaluate' || operation === 'verdict.read') {
       console.warn('[kogg:kernel:bridge] request.refused', { operation, safeCode: 'KERNEL_AUTHORITY_INVALID' });
       return Promise.resolve({
         protocol: KOGG_RANEX_PROTOCOL, requestId: randomUUID(), operationId: randomUUID(), status: 'refused',
@@ -231,6 +233,13 @@ export class KernelBridgeImpl implements KernelBridge {
   evaluateGate(expectation: GateEvaluationExpectationV1, currentSubject: RepositoryStateV1): Promise<KernelResultV2<GateEvaluationProjectionV1>> {
     const expectationDigest = domainDigest('gate-evaluation', expectation as unknown as KernelJson);
     return this.requestResult<GateEvaluationProjectionV1>('gate.evaluate', {
+      currentSubject: currentSubject as unknown as KernelJson, expectation: expectation as unknown as KernelJson, expectationDigest
+    });
+  }
+
+  readVerdict(expectation: VerdictReadExpectationV1, currentSubject: RepositoryStateV1): Promise<KernelResultV2<VerdictReadProjectionV1>> {
+    const expectationDigest = domainDigest('verdict-read', expectation as unknown as KernelJson);
+    return this.requestResult<VerdictReadProjectionV1>('verdict.read', {
       currentSubject: currentSubject as unknown as KernelJson, expectation: expectation as unknown as KernelJson, expectationDigest
     });
   }
@@ -443,6 +452,14 @@ function validOperationProjection(operation: KernelOperationV2, value: unknown):
       && validDigest(projection.verdictDigest) && validUuid(projection.verdictId)
       && ['pass', 'fail', 'blocked'].includes(String(projection.decision))
       && Number.isSafeInteger(projection.evidenceCount) && Number(projection.evidenceCount) >= 0;
+  }
+  if (operation === 'verdict.read') {
+    return Object.keys(projection).sort().join(',') === 'currentDecision,currentness,historicalDecision,verdictDigest,verdictId'
+      && validDigest(projection.verdictDigest) && validUuid(projection.verdictId)
+      && ['pass', 'fail', 'blocked'].includes(String(projection.historicalDecision))
+      && ['current', 'stale'].includes(String(projection.currentness))
+      && (projection.currentDecision === null || ['pass', 'fail', 'blocked'].includes(String(projection.currentDecision)))
+      && (projection.currentness === 'current') === (projection.currentDecision === projection.historicalDecision);
   }
   return true;
 }

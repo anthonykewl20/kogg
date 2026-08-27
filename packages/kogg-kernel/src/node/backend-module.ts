@@ -8,6 +8,7 @@ import { KernelTaskBindingService } from './kernel-task-binding-service';
 import { KernelRepositoryStateAuthority } from './kernel-repository-state-authority';
 import { KernelEvidenceAdmissionService } from './kernel-evidence-admission-service';
 import { KernelGateEvaluationService } from './kernel-gate-evaluation-service';
+import { KernelVerdictReadService } from './kernel-verdict-read-service';
 
 export default new ContainerModule(bind => {
   bind(KernelBridgeImpl).toSelf().inSingletonScope();
@@ -20,4 +21,5 @@ export default new ContainerModule(bind => {
   bind(KernelRepositoryStateAuthority).toSelf().inSingletonScope();
   bind(KernelEvidenceAdmissionService).toSelf().inSingletonScope();
   bind(KernelGateEvaluationService).toSelf().inSingletonScope();
+  bind(KernelVerdictReadService).toSelf().inSingletonScope();
 });
