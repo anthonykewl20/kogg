@@ -8,7 +8,7 @@ import test from 'node:test';
 import { OperationRegistry } from '@kogg/operations/lib/node/operation-registry';
 import type { ExecutionBindingV1, ReserveExecutionAllocationV1 } from '../common/execution-protocol';
 import { ExecutionAllocationRegistry } from './execution-allocation-registry';
-import { NativeAllocationController, NativeAllocationError } from './native-allocation-controller';
+import { NativeAllocationController, NativeAllocationError, NativeCleanupError } from './native-allocation-controller';
 
 // diagnostic-coverage: execution.target-qualification, execution.worktree-registry, execution.capacity, execution.recovery, execution.process-cleanup
 test('verifies, registers, and commits one native helper allocation', async () => {
@@ -17,11 +17,25 @@ test('verifies, registers, and commits one native helper allocation', async () =
     const result = await fixture.controller.allocate(fixture.request);
     assert.equal(result.state, 'allocated'); assert.equal(result.revision, '2');
     assert.equal(fixture.allocations.diagnostics().activeQuotaProjectLeaseCount, 1); assert.equal(fixture.allocations.diagnostics().quarantinedQuotaProjectLeaseCount, 0);
+    const cleaned = await fixture.controller.cleanup({ requestId: '60000000-0000-4000-8000-000000000009', worktreeId: result.worktreeId, expectedRevision: result.revision, bindingDigest: result.bindingDigest });
+    assert.equal(cleaned.state, 'cleaned'); assert.equal(cleaned.revision, '4'); assert.equal(fixture.allocations.diagnostics().activeQuotaProjectLeaseCount, 0);
     const operations = await fixture.operations.snapshot(); assert.equal(operations.active.length, 0); assert.equal(operations.recent[0]?.processCount, 1);
     assert.equal(fixture.operations.diagnostics().residualCount, 0); assert.equal(fixture.operations.diagnostics().cleanupFailureCount, 0);
     const database = new DatabaseSync(path.join(process.env.KOGG_STATE_DIR!, 'operations', 'registry.sqlite3'));
     const events = database.prepare('SELECT event_name FROM operation_events WHERE process_id IS NOT NULL ORDER BY sequence').all().map(row => String(row.event_name)); database.close();
     assert.ok(events.indexOf('process.registered') < events.indexOf('process.spawn.started')); assert.ok(events.includes('cleanup.completed'));
+  } finally { await fixture.close(); }
+});
+
+test('quarantines ambiguous native cleanup refusal and releases no durable lease', async () => {
+  const fixture = await setup('cleanup-refusal');
+  try {
+    const allocation = await fixture.controller.allocate(fixture.request);
+    await assert.rejects(() => fixture.controller.cleanup({ requestId: '61000000-0000-4000-8000-000000000001', worktreeId: allocation.worktreeId, expectedRevision: allocation.revision, bindingDigest: allocation.bindingDigest }),
+      (error: unknown) => error instanceof NativeCleanupError && error.code === 'CLEANUP_IDENTITY_MISMATCH');
+    const replay = await fixture.allocations.reserve(fixture.request); assert.equal(replay.state, 'quarantined'); assert.equal(replay.cleanupState, 'failed');
+    assert.equal(fixture.allocations.diagnostics().activeQuotaProjectLeaseCount, 0); assert.equal(fixture.allocations.diagnostics().quarantinedQuotaProjectLeaseCount, 1);
+    assert.equal(fixture.operations.diagnostics().residualCount, 0);
   } finally { await fixture.close(); }
 });
 
@@ -43,7 +57,7 @@ test('refuses a changed helper artifact before reserving durable allocation stat
   } finally { await fixture.close(); }
 });
 
-async function setup(mode: 'success' | 'refusal') {
+async function setup(mode: 'success' | 'refusal' | 'cleanup-refusal') {
   const root = await mkdtemp(path.join(os.tmpdir(), 'kogg-native-controller-')); process.env.KOGG_STATE_DIR = path.join(root, 'state');
   const native = path.join(root, 'native'); const allocationRoot = path.join(root, 'allocations'); await mkdir(native, { recursive: true });
   const binary = path.join(native, 'helper'); const manifest = path.join(native, 'manifest.json'); const source = await fakeHelper(mode);
@@ -57,10 +71,14 @@ async function setup(mode: 'success' | 'refusal') {
   return { root, binary, allocations, operations, controller, request: allocationRequest(), async close() { controller.onStop(); allocations.onStop(); await operations.onStop(); await rm(root, { recursive: true, force: true }); } };
 }
 
-async function fakeHelper(mode: 'success' | 'refusal'): Promise<string> {
-  const result = mode === 'success'
-    ? `process.stdout.write(JSON.stringify({schemaVersion:1,ok:true,safeCode:'ALLOCATION_OK',filesystemDevice:'2049',filesystemInode:'4001',ownerUid:String(process.geteuid()),mode:'0700',mountId:'55',quotaProjectId:request.quotaProjectId})+'\\n');`
-    : `process.stdout.write(JSON.stringify({schemaVersion:1,ok:false,safeCode:'ALLOCATION_QUALIFICATION_INVALID'})+'\\n'); process.exitCode=1;`;
+async function fakeHelper(mode: 'success' | 'refusal' | 'cleanup-refusal'): Promise<string> {
+  const allocation = mode === 'refusal'
+    ? `process.stdout.write(JSON.stringify({schemaVersion:1,ok:false,safeCode:'ALLOCATION_QUALIFICATION_INVALID'})+'\\n'); process.exitCode=1;`
+    : `process.stdout.write(JSON.stringify({schemaVersion:1,ok:true,safeCode:'ALLOCATION_OK',filesystemDevice:'2049',filesystemInode:'4001',ownerUid:String(process.geteuid()),mode:'0700',mountId:'55',quotaProjectId:request.quotaProjectId})+'\\n');`;
+  const cleanup = mode === 'cleanup-refusal'
+    ? `process.stdout.write(JSON.stringify({schemaVersion:1,ok:false,safeCode:'CLEANUP_IDENTITY_MISMATCH'})+'\\n'); process.exitCode=1;`
+    : `process.stdout.write(JSON.stringify({schemaVersion:1,ok:true,safeCode:'ALLOCATION_OK',absent:true,quotaProjectId:request.quotaProjectId})+'\\n');`;
+  const result = `if(request.operation==='cleanup'){${cleanup}}else{${allocation}}`;
   return `#!${process.execPath}\nconst fs=require('node:fs');let input='';process.stdin.setEncoding('utf8');process.stdin.on('data',chunk=>input+=chunk);process.stdin.on('end',()=>{if(!fs.fstatSync(3).isDirectory())process.exit(2);const request=JSON.parse(input);${result}});\n`;
 }
 

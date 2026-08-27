@@ -6,7 +6,7 @@ import { BackendApplicationContribution } from '@theia/core/lib/node';
 import { inject, injectable, unmanaged } from '@theia/core/shared/inversify';
 import { KoggOperationRegistry, type OperationLease, type OperationRegistryApi } from '@kogg/operations/lib/common/operations-protocol';
 import type { ExecutionAllocationSummaryV1, ReserveExecutionAllocationV1 } from '../common/execution-protocol';
-import { ExecutionAllocationRegistry, type PhysicalAllocationIntentV1 } from './execution-allocation-registry';
+import { ExecutionAllocationRegistry, type PhysicalAllocationIntentV1, type PhysicalCleanupIntentV1, type PreparePhysicalCleanupV1 } from './execution-allocation-registry';
 import { ExecutionTargetRegistry } from './execution-target-registry';
 
 // The allocation controller verifies the qualified native artifact, registers it before spawn, and commits only closed identity output.
@@ -50,7 +50,7 @@ export class NativeAllocationController implements BackendApplicationContributio
       } });
       operation.start(); operation.active();
       console.info('[kogg:execution:allocation-helper] allocation.started', { operationId: operation.id, worktreeId: allocation.worktreeId });
-      const result = await this.invoke(operation, intent);
+      const result = parseAllocationResult(await this.invoke(operation, intent.helperDigest, allocationRequest(intent)), intent.quotaProjectId);
       if (!result.ok) throw new NativeAllocationError(result.safeCode === 'ALLOCATION_QUALIFICATION_INVALID' ? result.safeCode : 'ALLOCATION_INTEGRITY_FAILED');
       const completed = await this.allocations.recordPhysicalAllocation({ requestId: randomUUID(), intentId: intent.intentId,
         worktreeId: intent.worktreeId, expectedRevision: intent.expectedRevision, bindingDigest: allocation.bindingDigest,
@@ -78,6 +78,40 @@ export class NativeAllocationController implements BackendApplicationContributio
     }
   }
 
+  async cleanup(request: PreparePhysicalCleanupV1): Promise<ExecutionAllocationSummaryV1> {
+    const intent = await this.allocations.preparePhysicalCleanup(request); let operation: OperationLease | undefined; let committed = false;
+    try {
+      operation = await this.operations.startOperation({ kind: 'worktree', correlations: { worktreeId: intent.worktreeId } });
+      operation.start(); operation.active();
+      console.info('[kogg:execution:allocation-helper] cleanup.started', { operationId: operation.id, worktreeId: intent.worktreeId });
+      const result = parseCleanupResult(await this.invoke(operation, intent.helperDigest, cleanupRequest(intent)), intent.quotaProjectId);
+      if (!result.ok) throw new NativeCleanupError(result.safeCode === 'CLEANUP_IDENTITY_MISMATCH' ? result.safeCode : 'CLEANUP_FAILED');
+      const absenceProofDigest = cleanupAbsenceProof(intent);
+      const completed = await this.allocations.completePhysicalCleanup({ requestId: randomUUID(), intentId: intent.intentId, worktreeId: intent.worktreeId,
+        expectedRevision: intent.expectedRevision, bindingDigest: request.bindingDigest, fencingToken: intent.fencingToken,
+        expectedIdentityDigest: intent.expectedIdentityDigest, preDeleteIdentityDigest: intent.expectedIdentityDigest, absenceProofDigest,
+        helperDigest: intent.helperDigest, mountQuotaDigest: intent.mountQuotaDigest });
+      committed = true; await operation.cleanup(); operation.complete();
+      console.info('[kogg:execution:allocation-helper] cleanup.completed', { operationId: operation.id, worktreeId: intent.worktreeId });
+      return completed;
+    } catch (error) {
+      let safeCode: 'CLEANUP_FAILED' | 'CLEANUP_IDENTITY_MISMATCH' = error instanceof NativeCleanupError ? error.code : 'CLEANUP_FAILED';
+      if (!committed) {
+        try {
+          await this.allocations.failPhysicalCleanup({ requestId: randomUUID(), intentId: intent.intentId, worktreeId: intent.worktreeId,
+            expectedRevision: intent.expectedRevision, bindingDigest: request.bindingDigest, fencingToken: intent.fencingToken,
+            expectedIdentityDigest: intent.expectedIdentityDigest, observedIdentityDigest: cleanupFailureObservation(intent, safeCode), safeCode });
+        } catch (failureError) { // observability-exempt: The closed cleanup.failed event records failure-commit loss without exposing either raw error.
+          safeCode = 'CLEANUP_FAILED';
+          console.error('[kogg:execution:allocation-helper] cleanup.failure.commit.failed', { operationId: operation?.id, worktreeId: intent.worktreeId, safeCode, errorType: failureError instanceof Error ? failureError.name : 'UnknownError' });
+        }
+      }
+      await operation?.cleanup().catch(() => undefined); operation?.fail('PROCESS_EXIT_NONZERO', error instanceof Error ? error.name : 'UnknownError');
+      console.error('[kogg:execution:allocation-helper] cleanup.failed', { operationId: operation?.id, worktreeId: intent.worktreeId, safeCode, errorType: error instanceof Error ? error.name : 'UnknownError' });
+      throw new NativeCleanupError(safeCode);
+    }
+  }
+
   private artifactDigest(): string {
     if (!this.supported()) throw new NativeAllocationError('ALLOCATION_QUALIFICATION_INVALID');
     this.openRoot();
@@ -97,9 +131,9 @@ export class NativeAllocationController implements BackendApplicationContributio
     } catch { throw new NativeAllocationError('ALLOCATION_QUALIFICATION_INVALID'); }
   }
 
-  private async invoke(operation: OperationLease, intent: PhysicalAllocationIntentV1): Promise<HelperResult> {
+  private async invoke(operation: OperationLease, helperDigest: string, request: Record<string, string | number>): Promise<Buffer> {
     const rootFd = this.rootFd; if (rootFd === undefined) throw new NativeAllocationError('ALLOCATION_QUALIFICATION_INVALID');
-    if (this.artifactDigest() !== intent.helperDigest) throw new NativeAllocationError('ALLOCATION_QUALIFICATION_INVALID');
+    if (this.artifactDigest() !== helperDigest) throw new NativeAllocationError('ALLOCATION_QUALIFICATION_INVALID');
     let child: HelperChild | undefined; let terminal: { code: number | null; signal: NodeJS.Signals | null } | undefined; let spawnFailed = false;
     let output = Buffer.alloc(0); let bytes = 0; let limited = false; let timedOut = false; let timeout: NodeJS.Timeout | undefined;
     let settled: Promise<void> | undefined;
@@ -113,9 +147,9 @@ export class NativeAllocationController implements BackendApplicationContributio
       processLease.started(spawned.pid); processLease.ready(); timeout = setTimeout(() => { timedOut = true; kill(spawned); }, this.configuration.timeoutMs);
       spawned.stdout?.on('data', chunk => { const value = Buffer.from(chunk); bytes += value.length; if (bytes > OUTPUT_LIMIT) { limited = true; kill(spawned); } else output = Buffer.concat([output, value]); processLease.activity(); });
       spawned.stderr?.on('data', chunk => { bytes += Buffer.byteLength(chunk); if (bytes > OUTPUT_LIMIT) { limited = true; kill(spawned); } processLease.activity(); });
-      spawned.stdin?.end(`${JSON.stringify(helperRequest(intent))}\n`); await settled;
+      spawned.stdin?.end(`${JSON.stringify(request)}\n`); await settled;
       if (spawnFailed || limited || timedOut || terminal?.signal || (terminal?.code !== 0 && output.length === 0)) throw new NativeAllocationError('ALLOCATION_INTEGRITY_FAILED');
-      return parseHelperResult(output, intent.quotaProjectId);
+      return output;
     } finally {
       if (timeout) clearTimeout(timeout); kill(child); await settled?.catch(() => undefined);
       if (child?.pid) processLease.exited(terminal?.signal ? 'signal' : terminal?.code === 0 ? 'zero' : 'nonzero'); else processLease.failed('PROCESS_SPAWN_FAILED', 'Error');
@@ -137,9 +171,12 @@ export class NativeAllocationController implements BackendApplicationContributio
 export class NativeAllocationError extends Error {
   constructor(readonly code: 'ALLOCATION_INTEGRITY_FAILED' | 'ALLOCATION_QUALIFICATION_INVALID') { super(code); this.name = 'NativeAllocationError'; }
 }
+export class NativeCleanupError extends Error {
+  constructor(readonly code: 'CLEANUP_FAILED' | 'CLEANUP_IDENTITY_MISMATCH') { super(code); this.name = 'NativeCleanupError'; }
+}
 
 type HelperResult = { readonly ok: false; readonly safeCode: string } | { readonly ok: true; readonly filesystemDevice: string; readonly filesystemInode: string; readonly ownerUid: string; readonly mountId: string; readonly quotaProjectId: string };
-function parseHelperResult(output: Buffer, expectedProjectId: string): HelperResult {
+function parseAllocationResult(output: Buffer, expectedProjectId: string): HelperResult {
   if (output.length === 0 || output.length > OUTPUT_LIMIT) throw new NativeAllocationError('ALLOCATION_INTEGRITY_FAILED');
   let value: Record<string, unknown>; try { value = JSON.parse(output.toString('utf8').trim()) as Record<string, unknown>; } catch { throw new NativeAllocationError('ALLOCATION_INTEGRITY_FAILED'); }
   if (value.schemaVersion !== 1 || typeof value.ok !== 'boolean' || typeof value.safeCode !== 'string') throw new NativeAllocationError('ALLOCATION_INTEGRITY_FAILED');
@@ -153,11 +190,36 @@ function parseHelperResult(output: Buffer, expectedProjectId: string): HelperRes
     || value.filesystemInode === '0' || value.mountId === '0' || value.quotaProjectId !== expectedProjectId) throw new NativeAllocationError('ALLOCATION_INTEGRITY_FAILED');
   return { ok: true, filesystemDevice: String(value.filesystemDevice), filesystemInode: String(value.filesystemInode), ownerUid: String(value.ownerUid), mountId: String(value.mountId), quotaProjectId: String(value.quotaProjectId) };
 }
-function helperRequest(intent: PhysicalAllocationIntentV1): Record<string, string | number> {
+function allocationRequest(intent: PhysicalAllocationIntentV1): Record<string, string | number> {
   if (![intent.intentId, intent.worktreeId, intent.ownerInstanceId].every(value => UUID.test(value))) throw new NativeAllocationError('ALLOCATION_INTEGRITY_FAILED');
   return { schemaVersion: 1, operation: 'allocate', allocationName: intent.allocationName, allocationNonce: intent.allocationNonce,
     worktreeId: intent.worktreeId, ownerInstanceId: intent.ownerInstanceId, createdAt: intent.createdAt, quotaProjectId: intent.quotaProjectId,
     quotaBytes: intent.quotaBytes, quotaInodes: intent.quotaInodes };
+}
+function cleanupRequest(intent: PhysicalCleanupIntentV1): Record<string, string | number> {
+  if (![intent.intentId, intent.worktreeId, intent.ownerInstanceId].every(value => UUID.test(value))) throw new NativeCleanupError('CLEANUP_FAILED');
+  return { schemaVersion: 1, operation: 'cleanup', allocationName: intent.allocationName, allocationNonce: intent.allocationNonce,
+    worktreeId: intent.worktreeId, ownerInstanceId: intent.ownerInstanceId, createdAt: intent.createdAt,
+    filesystemDevice: intent.filesystemDevice, filesystemInode: intent.filesystemInode, ownerUid: intent.ownerUid, mode: intent.mode,
+    mountId: intent.mountId, quotaProjectId: intent.quotaProjectId };
+}
+function parseCleanupResult(output: Buffer, expectedProjectId: string): { readonly ok: boolean; readonly safeCode: string } {
+  if (output.length === 0 || output.length > OUTPUT_LIMIT) throw new NativeCleanupError('CLEANUP_FAILED');
+  let value: Record<string, unknown>; try { value = JSON.parse(output.toString('utf8').trim()) as Record<string, unknown>; } catch { throw new NativeCleanupError('CLEANUP_FAILED'); }
+  if (value.schemaVersion !== 1 || typeof value.ok !== 'boolean' || typeof value.safeCode !== 'string') throw new NativeCleanupError('CLEANUP_FAILED');
+  if (!value.ok) {
+    if (Object.keys(value).sort().join(',') !== 'ok,safeCode,schemaVersion') throw new NativeCleanupError('CLEANUP_FAILED');
+    return { ok: false, safeCode: value.safeCode };
+  }
+  if (Object.keys(value).sort().join(',') !== 'absent,ok,quotaProjectId,safeCode,schemaVersion' || value.safeCode !== 'ALLOCATION_OK'
+    || value.absent !== true || value.quotaProjectId !== expectedProjectId) throw new NativeCleanupError('CLEANUP_FAILED');
+  return { ok: true, safeCode: value.safeCode };
+}
+function cleanupAbsenceProof(intent: PhysicalCleanupIntentV1): string {
+  return `sha256:${createHash('sha256').update(`kogg-execution-cleanup-absence-v1\0${JSON.stringify({ expectedIdentityDigest: intent.expectedIdentityDigest, fencingToken: intent.fencingToken, helperDigest: intent.helperDigest, intentId: intent.intentId, mountQuotaDigest: intent.mountQuotaDigest, worktreeId: intent.worktreeId })}`).digest('hex')}`;
+}
+function cleanupFailureObservation(intent: PhysicalCleanupIntentV1, safeCode: string): string {
+  return `sha256:${createHash('sha256').update(`kogg-execution-cleanup-failure-observation-v1\0${intent.intentId}\0${intent.fencingToken}\0${safeCode}`).digest('hex')}`;
 }
 function kill(child: HelperChild | undefined): void {
   if (!child?.pid || child.exitCode !== null || child.signalCode !== null) return;

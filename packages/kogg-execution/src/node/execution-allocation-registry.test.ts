@@ -258,6 +258,19 @@ test('quarantines cleanup identity mismatch and blocks admission', async () => {
   } finally { registry.onStop(); await rm(root, { recursive: true, force: true }); }
 });
 
+test('requalifies exact helper and mount authority before recording a cleanup effect intent', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'kogg-allocation-cleanup-qualification-')); process.env.KOGG_STATE_DIR = root; let qualified = true;
+  const registry = allocationRegistry(async () => qualified); await registry.onStart();
+  try {
+    let allocation = await registry.reserve(allocationRequest()); allocation = await registry.recordPhysicalAllocation(await physicalAllocationProof(registry, allocation, '37500000-0000-4000-8000-000000000001'));
+    qualified = false;
+    await assert.rejects(() => registry.preparePhysicalCleanup({ requestId: '37500000-0000-4000-8000-000000000002', worktreeId: allocation.worktreeId, expectedRevision: allocation.revision, bindingDigest: allocation.bindingDigest }),
+      (error: unknown) => error instanceof AllocationRegistryError && error.code === 'ALLOCATION_QUALIFICATION_INVALID');
+    const unchanged = await registry.getRun({ requestId: '37500000-0000-4000-8000-000000000003', runId: allocation.runId });
+    assert.equal(unchanged?.state, 'allocated'); assert.equal(unchanged?.revision, '2'); assert.equal(registry.diagnostics().pendingCleanupIntentCount, 0);
+  } finally { registry.onStop(); await rm(root, { recursive: true, force: true }); }
+});
+
 test('startup quarantines an ambiguous cleanup intent without replaying deletion', async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), 'kogg-allocation-cleanup-recovery-')); process.env.KOGG_STATE_DIR = root; const first = allocationRegistry(); await first.onStart();
   let allocation = await first.reserve(allocationRequest()); allocation = await first.recordPhysicalAllocation(await physicalAllocationProof(first, allocation, '38000000-0000-4000-8000-000000000001'));
