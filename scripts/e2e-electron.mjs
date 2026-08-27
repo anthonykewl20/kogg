@@ -458,6 +458,11 @@ async function exerciseElectronOperations(page, electronApplication) {
     await diagnosticMessage.waitFor({ timeout: 15_000 });
     assert.doesNotMatch(await diagnosticMessage.innerText(), /operations\.(?:projection|owners|correlations|timeline|stream|metrics|retention|support|actions|source-maps)/u);
     await exerciseElectronGovernedRunDetails(widget);
+    const beforeDiagnoseAction = await electronStreamSequence(widget);
+    await widget.getByRole('button', { name: 'Diagnose selected run' }).click();
+    await page.getByText('Diagnostics completed for the selected run.').filter({ visible: true }).first().waitFor({ timeout: 20_000 });
+    await waitForElectronStreamAdvance(widget, beforeDiagnoseAction);
+    assert.match(logs.join('\n'), /\[kogg:operations:actions\] owner-result.*actionKind: 'diagnose'.*status: 'forwarded'/su);
     await clearNotifications(page);
 
     await secondPage.close();

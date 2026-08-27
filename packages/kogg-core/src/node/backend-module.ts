@@ -6,6 +6,7 @@ import { ContainerModule } from '@theia/core/shared/inversify';
 import {
   KoggDiagnosticContribution,
   KoggDiagnosticsServicePath,
+  KoggDiagnosticsServiceToken,
   type KoggDiagnosticsService
 } from '@kogg/contracts';
 import { BrowserAuthContribution } from './browser-auth-contribution';
@@ -30,6 +31,7 @@ export default new ContainerModule((bind, unbind, isBound) => {
   bind(DiagnosticOwnerJournal).toSelf().inSingletonScope();
   bind(BackendApplicationContribution).toService(DiagnosticOwnerJournal);
   bind(KoggDiagnosticsServiceImpl).toSelf().inSingletonScope();
+  bind(KoggDiagnosticsServiceToken).toService(KoggDiagnosticsServiceImpl);
   bind(ConnectionHandler).toDynamicValue(context => new JsonRpcConnectionHandler<KoggDiagnosticsService>(
     KoggDiagnosticsServicePath,
     () => context.container.get(KoggDiagnosticsServiceImpl)

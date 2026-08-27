@@ -24,7 +24,7 @@ export class OperationsReadModelDiagnosticContributor implements KoggDiagnosticC
       const projectionReady = result.integrity && result.foreignKeys && this.projection.storagePermissionsValid() && result.lifecycle !== 'failed';
       const ownersReady = result.ownerCount === OWNER_KINDS.length && result.lifecycle === 'current';
       const streamReady = stream.clientCount > 0 && stream.cursorRoundTrip && stream.resyncRecovery && stream.bounded;
-      const actionsReady = actions.cancelRouteAvailable && actions.unsynchronizedOutcomeCount === 0;
+      const actionsReady = actions.cancelRouteAvailable && actions.diagnoseRouteAvailable && actions.unsynchronizedOutcomeCount === 0;
       const sourceMapsPresent = operationsSourceMapsPresent();
       return [
         { id: 'operations.projection', status: projectionReady ? 'pass' : 'fail', summary: projectionReady ? 'The disposable operations projection is structurally valid.' : 'The operations projection store or lifecycle failed verification.' },
@@ -35,7 +35,7 @@ export class OperationsReadModelDiagnosticContributor implements KoggDiagnosticC
         { id: 'operations.metrics', status: result.metricViolationCount ? 'fail' : 'pass', summary: result.metricViolationCount ? 'A closed metric contract failed validation.' : 'Closed local metric cardinality is valid.' },
         { id: 'operations.retention', status: result.retentionViolationCount ? 'fail' : 'pass', summary: result.retentionViolationCount ? 'A retained hold lost its detailed projection.' : 'Detailed and metric-epoch retention honors every active owner hold.', details: { activeRetentionHoldCount: result.activeRetentionHoldCount, retainedMetricEpochCount: result.retainedMetricEpochCount } },
         { id: 'operations.support', status: support.permissions && support.expired ? 'pass' : 'fail', summary: support.permissions && support.expired ? 'Private bounded operations support export storage is valid.' : 'Private operations support export storage failed its safety checks.' },
-        { id: 'operations.actions', status: actionsReady ? 'pass' : 'fail', summary: actionsReady ? 'Cancel actions revalidate current projection authority and synchronize owner results.' : 'An authoritative action route is unavailable or has an unsynchronized outcome.', details: { cancelRouteAvailable: actions.cancelRouteAvailable, unsynchronizedOutcomeCount: actions.unsynchronizedOutcomeCount } },
+        { id: 'operations.actions', status: actionsReady ? 'pass' : 'fail', summary: actionsReady ? 'Cancel and diagnose actions revalidate current projection authority and synchronize owner results.' : 'An authoritative action route is unavailable or has an unsynchronized outcome.', details: { cancelRouteAvailable: actions.cancelRouteAvailable, diagnoseRouteAvailable: actions.diagnoseRouteAvailable, unsynchronizedOutcomeCount: actions.unsynchronizedOutcomeCount } },
         { id: 'operations.source-maps', status: sourceMapsPresent ? 'pass' : 'fail', summary: sourceMapsPresent ? 'Operations browser and backend debugger source maps are present.' : 'Operations browser or backend source maps are unavailable.' }
       ];
     } catch (error) {

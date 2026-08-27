@@ -95,6 +95,11 @@ export class OperationsReadModel implements BackendApplicationContribution {
       this.database.exec('PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000;');
       if (process.platform !== 'win32') chmodSync(this.databasePath, 0o600);
       this.migrate();
+      const interruptedActionCount = this.countRows(this.db(), "SELECT count(*) AS count FROM action_requests WHERE status='unknown' AND safe_code='ACTION_FORWARDING'");
+      if (interruptedActionCount) {
+        this.db().prepare("UPDATE action_requests SET safe_code='ACTION_OUTCOME_UNKNOWN' WHERE status='unknown' AND safe_code='ACTION_FORWARDING'").run();
+        console.warn('[kogg:operations:actions] recovery.unknown', { actionCount: interruptedActionCount, safeCode: 'ACTION_OUTCOME_UNKNOWN' });
+      }
       const configured = this.db().prepare('SELECT owner_kind FROM configured_owners').all() as Row[];
       this.db().exec("UPDATE configured_owners SET status='unavailable'");
       for (const owner of configured) console.warn('[kogg:operations:owners] unavailable', { ownerKind: String(owner.owner_kind), ownerSchemaVersion: 1, safeCode: 'OWNER_REVERIFY_REQUIRED' });
@@ -352,7 +357,7 @@ export class OperationsReadModel implements BackendApplicationContribution {
 
   actionDiagnostics(): { readonly unsynchronizedOutcomeCount: number } {
     this.start();
-    return { unsynchronizedOutcomeCount: this.count("SELECT count(*) AS count FROM action_requests WHERE status='unknown'") };
+    return { unsynchronizedOutcomeCount: this.count("SELECT count(*) AS count FROM action_requests WHERE status='unknown' AND safe_code='ACTION_OUTCOME_UNKNOWN'") };
   }
 
   recordAction(request: OperationsActionRequestV1, requestDigest: string, status: OperationsActionReceiptV1['status'], safeCode: string): OperationsActionReceiptV1 {

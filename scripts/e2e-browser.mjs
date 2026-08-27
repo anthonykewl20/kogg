@@ -1033,6 +1033,11 @@ async function exerciseOperationsStream(page) {
     await diagnosticMessage.waitFor({ timeout: 15_000 });
     assert.doesNotMatch(await diagnosticMessage.innerText(), /operations\.(?:projection|owners|correlations|timeline|stream|metrics|retention|support|actions|source-maps)/u);
     await exerciseGovernedRunDetails(first, 'diagnostic');
+    const beforeDiagnoseAction = await streamSequence(first);
+    await first.getByRole('button', { name: 'Diagnose selected run' }).click();
+    await page.getByText('Diagnostics completed for the selected run.').filter({ visible: true }).first().waitFor({ timeout: 20_000 });
+    await waitForStreamAdvance(first, beforeDiagnoseAction);
+    assert.match(logs.join('\n'), /\[kogg:operations:actions\] owner-result.*actionKind: 'diagnose'.*status: 'forwarded'/su);
     await clearNotifications(page);
 
     await secondPage.reload({ waitUntil: 'domcontentloaded' });

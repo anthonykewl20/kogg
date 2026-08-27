@@ -30,5 +30,5 @@ test('reports current owner actions and debugger source maps from runtime eviden
 });
 
 function actions(): OperationsActionRouter {
-  return { diagnostics: () => ({ cancelRouteAvailable: true, unsynchronizedOutcomeCount: 0 }) } as OperationsActionRouter;
+  return { diagnostics: () => ({ cancelRouteAvailable: true, diagnoseRouteAvailable: true, unsynchronizedOutcomeCount: 0 }) } as OperationsActionRouter;
 }

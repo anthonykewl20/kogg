@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { KoggDiagnosticsServiceToken, type KoggDiagnosticsService } from '@kogg/contracts';
 import { inject, injectable } from '@theia/core/shared/inversify';
 import type { OperationsActionReceiptV1, OperationsActionRequestV1 } from '../common/operations-read-model-protocol';
 import { KoggOperationRegistry, type OperationRegistryApi } from '../common/operations-protocol';
@@ -13,11 +14,12 @@ const SEQUENCE = /^(0|[1-9][0-9]{0,19})$/u;
 @injectable()
 export class OperationsActionRouter {
   constructor(@inject(OperationsReadModel) private readonly projection: OperationsReadModel,
-    @inject(KoggOperationRegistry) private readonly operations: OperationRegistryApi) {}
+    @inject(KoggOperationRegistry) private readonly operations: OperationRegistryApi,
+    @inject(KoggDiagnosticsServiceToken) private readonly diagnosticsService: KoggDiagnosticsService) {}
 
-  diagnostics(): { readonly cancelRouteAvailable: boolean; readonly unsynchronizedOutcomeCount: number } {
+  diagnostics(): { readonly cancelRouteAvailable: boolean; readonly diagnoseRouteAvailable: boolean; readonly unsynchronizedOutcomeCount: number } {
     const projection = this.projection.actionDiagnostics();
-    return { cancelRouteAvailable: typeof this.operations.cancel === 'function', unsynchronizedOutcomeCount: projection.unsynchronizedOutcomeCount };
+    return { cancelRouteAvailable: typeof this.operations.cancel === 'function', diagnoseRouteAvailable: typeof this.diagnosticsService.run === 'function', unsynchronizedOutcomeCount: projection.unsynchronizedOutcomeCount };
   }
 
   async request(request: OperationsActionRequestV1): Promise<OperationsActionReceiptV1> {
@@ -30,12 +32,15 @@ export class OperationsActionRouter {
     console.info('[kogg:operations:actions] requested', { requestId: request.requestId, runId: request.runId, actionKind: request.action });
     const snapshot = this.projection.snapshot();
     if (snapshot.lifecycle !== 'current' || snapshot.changeSequence !== request.expectedProjectionSequence) return this.refuse(request, digest, 'ACTION_PROJECTION_STALE');
-    if (request.action !== 'cancel' || !request.operationId) return this.refuse(request, digest, 'ACTION_OWNER_UNAVAILABLE');
-    if (!this.projection.operationBelongsToRun(request.runId, request.operationId)) return this.refuse(request, digest, 'ACTION_OWNER_MISMATCH');
+    if (!snapshot.runs.some(run => run.runId === request.runId)) return this.refuse(request, digest, 'ACTION_OWNER_MISMATCH');
+    if (!['cancel', 'diagnose'].includes(request.action)) return this.refuse(request, digest, 'ACTION_OWNER_UNAVAILABLE');
+    if (request.action === 'cancel' && (!request.operationId || !this.projection.operationBelongsToRun(request.runId, request.operationId))) return this.refuse(request, digest, 'ACTION_OWNER_MISMATCH');
+    if (request.action === 'diagnose' && request.operationId) return this.refuse(request, digest, 'ACTION_OWNER_MISMATCH');
     this.projection.recordAction(request, digest, 'unknown', 'ACTION_FORWARDING');
     try {
       console.info('[kogg:operations:actions] forwarded', { requestId: request.requestId, runId: request.runId, actionKind: request.action });
-      await this.operations.cancel({ requestId: request.requestId, operationId: request.operationId });
+      if (request.action === 'cancel') await this.operations.cancel({ requestId: request.requestId, operationId: request.operationId! });
+      else await this.diagnosticsService.run();
       const receipt = this.projection.recordAction(request, digest, 'forwarded', 'ACTION_OWNER_ACCEPTED');
       console.info('[kogg:operations:actions] owner-result', { requestId: request.requestId, runId: request.runId, actionKind: request.action, status: receipt.status }); return receipt;
     } catch (error) {
