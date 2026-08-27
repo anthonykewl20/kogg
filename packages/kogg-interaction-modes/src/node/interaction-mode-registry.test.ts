@@ -22,10 +22,31 @@ test('persists Plan as the task default and enforces the closed operation ceilin
     const refused = await first.authorizeOperation(mutationRequest); assert.equal(refused.allowed, false); assert.equal(refused.safeCode, 'PLAN_MUTATION_REFUSED');
     assert.deepEqual(await first.authorizeOperation(mutationRequest), refused);
     await assert.rejects(() => first.authorizeOperation({ ...mutationRequest, operation: 'merge-controlled' }), error => error instanceof InteractionModeError && error.code === 'MODE_REQUEST_CONFLICT');
-    assert.equal(first.diagnostics().modeCount, 1); assert.equal(first.diagnostics().eventChain, true); first.onStop();
+    assert.equal(first.diagnostics().modeCount, 1); assert.equal(first.diagnostics().eventChain, true); assert.equal(first.diagnostics().modeStateConsistent, true); assert.equal(first.diagnostics().immutableRequestLedgers, true); first.onStop();
     const restored = registry(authority); await restored.onStart();
     try { assert.equal((await restored.get({ requestId: '10000000-0000-4000-8000-000000000004', taskId: TASK.taskId })).selectedMode, 'plan'); assert.equal(restored.diagnostics().eventChain, true); }
     finally { restored.onStop(); }
+  } finally { first.onStop(); if (prior === undefined) delete process.env.KOGG_STATE_DIR; else process.env.KOGG_STATE_DIR = prior; await rm(root, { recursive: true, force: true }); }
+});
+
+test('blocks startup when the selected mode and effective authority digest diverge', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'kogg-interaction-mode-state-integrity-')); const prior = process.env.KOGG_STATE_DIR; process.env.KOGG_STATE_DIR = root;
+  const first = registry(new TaskAuthority()); await first.onStart();
+  try {
+    await first.get({ requestId: '41000000-0000-4000-8000-000000000001', taskId: TASK.taskId }); first.onStop();
+    const database = new DatabaseSync(path.join(root, 'interaction-modes', 'registry.sqlite3')); database.prepare("UPDATE task_modes SET selected_mode='build' WHERE task_id=?").run(TASK.taskId); database.close();
+    const recovered = registry(new TaskAuthority()); await assert.rejects(() => recovered.onStart(), error => error instanceof InteractionModeError && error.code === 'MODE_REGISTRY_INTEGRITY_FAILED'); recovered.onStop();
+  } finally { first.onStop(); if (prior === undefined) delete process.env.KOGG_STATE_DIR; else process.env.KOGG_STATE_DIR = prior; await rm(root, { recursive: true, force: true }); }
+});
+
+test('makes operation and transition request receipts immutable and requires every guard at startup', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'kogg-interaction-request-integrity-')); const prior = process.env.KOGG_STATE_DIR; process.env.KOGG_STATE_DIR = root;
+  const first = registry(new TaskAuthority()); await first.onStart();
+  try {
+    await first.get({ requestId: '42000000-0000-4000-8000-000000000001', taskId: TASK.taskId }); await first.authorizeOperation({ requestId: '42000000-0000-4000-8000-000000000002', taskId: TASK.taskId, operation: 'research' }); first.onStop();
+    const database = new DatabaseSync(path.join(root, 'interaction-modes', 'registry.sqlite3'));
+    assert.throws(() => database.prepare("UPDATE requests SET request_digest='tampered'").run(), /immutable mode request/u); database.exec('DROP TRIGGER mode_requests_no_update'); database.prepare("UPDATE requests SET request_digest='tampered'").run(); database.close();
+    const recovered = registry(new TaskAuthority()); await assert.rejects(() => recovered.onStart(), error => error instanceof InteractionModeError && error.code === 'MODE_REGISTRY_INTEGRITY_FAILED'); recovered.onStop();
   } finally { first.onStop(); if (prior === undefined) delete process.env.KOGG_STATE_DIR; else process.env.KOGG_STATE_DIR = prior; await rm(root, { recursive: true, force: true }); }
 });
 

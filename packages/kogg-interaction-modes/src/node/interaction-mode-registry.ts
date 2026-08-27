@@ -31,7 +31,8 @@ const CEILINGS: Readonly<Record<InteractionModeV1, readonly ModeCapabilityV1[]>>
 };
 
 export interface InteractionModeDiagnostics {
-  readonly integrity: boolean; readonly eventChain: boolean; readonly admission: 'enabled' | 'blocked';
+  readonly integrity: boolean; readonly eventChain: boolean; readonly modeStateConsistent: boolean; readonly immutableRequestLedgers: boolean;
+  readonly admission: 'enabled' | 'blocked';
   readonly modeCount: number; readonly degradedCount: number; readonly requestCount: number; readonly transitionCount: number;
   readonly pendingTransitionCount: number; readonly loggingViolationCount: number;
 }
@@ -83,7 +84,7 @@ export class InteractionModeRegistry implements BackendApplicationContribution {
     const capability = OPERATION_CAPABILITY[request.operation]; const allowed = projection.state === 'ready' && projection.effectiveCapabilities.includes(capability);
     const safeCode = allowed ? 'MODE_OK' : operationRefusal(projection.selectedMode, request.operation, projection.safeCode);
     const result: ModeOperationResultV1 = { schemaVersion: 1, allowed, safeCode, projection };
-    this.transaction(database => database.prepare('INSERT INTO requests(request_id,request_digest,result_json,created_at) VALUES(?,?,?,?)').run(request.requestId, digest, JSON.stringify(result), new Date().toISOString()));
+    this.transaction(database => { const createdAt = new Date().toISOString(); const resultJson = JSON.stringify(result); database.prepare('INSERT INTO requests(request_id,request_digest,result_json,created_at,receipt_digest) VALUES(?,?,?,?,?)').run(request.requestId, digest, resultJson, createdAt, requestReceiptDigest('operation', request.requestId, digest, resultJson, createdAt)); });
     modeLog(allowed ? 'mode.operation.approved' : 'mode.operation.refused', { requestId: request.requestId, taskId: request.taskId, selectedMode: projection.selectedMode, operation: request.operation, safeCode });
     return result;
   }
@@ -122,7 +123,7 @@ export class InteractionModeRegistry implements BackendApplicationContribution {
         .run(request.transitionId, request.requestId, request.taskId, Number(request.expectedSequence), request.fromMode, request.toMode, direction, request.requestedConfigurationDigest, actor.actorAuthorityDigest, actor.sessionId, state, safeCode, challengeDigest ?? null, createdAt.toISOString(), expiresAt ?? null, transitionDigest);
       appendEvent(database, request.taskId, `mode.transition.${state}`, safeCode, request.transitionId, transitionDigest);
       projection = this.transitionProjection(request.transitionId, task);
-      database.prepare('INSERT INTO transition_requests VALUES(?,?,?,?)').run(request.requestId, requestDigest, JSON.stringify(projection), createdAt.toISOString());
+      const resultJson = JSON.stringify(projection); database.prepare('INSERT INTO transition_requests(request_id,request_digest,result_json,created_at,receipt_digest) VALUES(?,?,?,?,?)').run(request.requestId, requestDigest, resultJson, createdAt.toISOString(), requestReceiptDigest('transition', request.requestId, requestDigest, resultJson, createdAt.toISOString()));
     });
     if (!projection) throw new InteractionModeError('MODE_REGISTRY_UNAVAILABLE');
     modeLog(direction === 'expand' ? 'mode.transition.awaiting-confirmation' : direction === 'reduce' ? 'mode.transition.cleanup-pending' : 'mode.transition.committed', {
@@ -141,7 +142,7 @@ export class InteractionModeRegistry implements BackendApplicationContribution {
     if (state !== 'awaiting-confirmation' && state !== 'cleanup-pending') throw new InteractionModeError('MODE_TRANSITION_CONFLICT');
     const task = await this.resolveTask(request.taskId);
     let projection: ModeTransitionProjectionV1 | undefined;
-    this.transaction(database => { database.prepare("UPDATE mode_transitions SET state='cancelled',safe_code='MODE_OK' WHERE transition_id=?").run(request.transitionId); appendEvent(database, request.taskId, 'mode.transition.cancelled', 'MODE_OK', request.transitionId, String(transition.transition_digest)); projection = this.transitionProjection(request.transitionId, task); database.prepare('INSERT INTO transition_requests VALUES(?,?,?,?)').run(request.requestId, requestDigest, JSON.stringify(projection), new Date().toISOString()); });
+    this.transaction(database => { database.prepare("UPDATE mode_transitions SET state='cancelled',safe_code='MODE_OK' WHERE transition_id=?").run(request.transitionId); appendEvent(database, request.taskId, 'mode.transition.cancelled', 'MODE_OK', request.transitionId, String(transition.transition_digest)); projection = this.transitionProjection(request.transitionId, task); const createdAt = new Date().toISOString(); const resultJson = JSON.stringify(projection); database.prepare('INSERT INTO transition_requests(request_id,request_digest,result_json,created_at,receipt_digest) VALUES(?,?,?,?,?)').run(request.requestId, requestDigest, resultJson, createdAt, requestReceiptDigest('transition', request.requestId, requestDigest, resultJson, createdAt)); });
     if (!projection) throw new InteractionModeError('MODE_REGISTRY_UNAVAILABLE');
     modeLog('mode.transition.cancelled', { requestId: request.requestId, taskId: request.taskId, fromMode: String(transition.from_mode) as InteractionModeV1, toMode: String(transition.to_mode) as InteractionModeV1, safeCode: 'MODE_OK' });
     return projection;
@@ -149,7 +150,8 @@ export class InteractionModeRegistry implements BackendApplicationContribution {
 
   diagnostics(): InteractionModeDiagnostics {
     this.expireChallenges(); const db = this.db(); const count = (sql: string): number => Number((db.prepare(sql).get() as Row).count);
-    return { integrity: String((db.prepare('PRAGMA integrity_check').get() as Row).integrity_check) === 'ok', eventChain: verifyEvents(db) && verifyTransitions(db), admission: metaAdmission(db),
+    return { integrity: String((db.prepare('PRAGMA integrity_check').get() as Row).integrity_check) === 'ok', eventChain: verifyEvents(db) && verifyTransitions(db),
+      modeStateConsistent: verifyModeStates(db), immutableRequestLedgers: immutableRequestLedgers(db), admission: metaAdmission(db),
       modeCount: count('SELECT count(*) AS count FROM task_modes'), degradedCount: count("SELECT count(*) AS count FROM task_modes WHERE state!='ready'"),
       requestCount: count('SELECT count(*) AS count FROM requests'), transitionCount: count('SELECT count(*) AS count FROM mode_transitions'),
       pendingTransitionCount: count("SELECT count(*) AS count FROM mode_transitions WHERE state IN ('awaiting-confirmation','cleanup-pending')"), loggingViolationCount: modeLoggingDiagnostics().violationCount };
@@ -163,7 +165,7 @@ export class InteractionModeRegistry implements BackendApplicationContribution {
       this.database = new DatabaseSync(this.databasePath, { enableForeignKeyConstraints: true, enableDoubleQuotedStringLiterals: false, allowExtension: false });
       this.database.exec('PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; PRAGMA foreign_keys=ON; PRAGMA trusted_schema=OFF; PRAGMA busy_timeout=5000;'); this.migrate();
       if (process.platform !== 'win32') await chmod(this.databasePath, 0o600);
-      if (String((this.db().prepare('PRAGMA integrity_check').get() as Row).integrity_check) !== 'ok' || !verifyEvents(this.db()) || !verifyTransitions(this.db())) throw new InteractionModeError('MODE_REGISTRY_INTEGRITY_FAILED');
+      if (String((this.db().prepare('PRAGMA integrity_check').get() as Row).integrity_check) !== 'ok' || !verifyEvents(this.db()) || !verifyTransitions(this.db()) || !verifyModeStates(this.db()) || !immutableRequestLedgers(this.db())) throw new InteractionModeError('MODE_REGISTRY_INTEGRITY_FAILED');
       this.db().prepare("UPDATE mode_meta SET admission='enabled' WHERE singleton=1").run();
       modeLog('registry.start.completed', { restoredCount: Number((this.db().prepare('SELECT count(*) AS count FROM task_modes').get() as Row).count) });
     } catch (error) {
@@ -175,13 +177,13 @@ export class InteractionModeRegistry implements BackendApplicationContribution {
     CREATE TABLE IF NOT EXISTS mode_meta(singleton INTEGER PRIMARY KEY CHECK(singleton=1),schema_version INTEGER NOT NULL CHECK(schema_version=1),admission TEXT NOT NULL CHECK(admission IN ('enabled','blocked')));
     CREATE TABLE IF NOT EXISTS task_modes(task_id TEXT PRIMARY KEY,task_revision TEXT NOT NULL,project_id TEXT NOT NULL,repository_id TEXT NOT NULL,selected_mode TEXT NOT NULL CHECK(selected_mode IN ('plan','build','kogg')),effective_digest TEXT NOT NULL,sequence INTEGER NOT NULL CHECK(sequence>=0),state TEXT NOT NULL CHECK(state IN ('ready','restore-degraded','quarantined')),active_stage TEXT NOT NULL,updated_at TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS mode_events(sequence INTEGER PRIMARY KEY AUTOINCREMENT,task_id TEXT NOT NULL,event_name TEXT NOT NULL,safe_code TEXT NOT NULL,subject_id TEXT NOT NULL,subject_digest TEXT NOT NULL,previous_digest TEXT NOT NULL,event_digest TEXT NOT NULL,created_at TEXT NOT NULL);
-    CREATE TABLE IF NOT EXISTS requests(request_id TEXT PRIMARY KEY,request_digest TEXT NOT NULL,result_json TEXT NOT NULL,created_at TEXT NOT NULL);
+    CREATE TABLE IF NOT EXISTS requests(request_id TEXT PRIMARY KEY,request_digest TEXT NOT NULL,result_json TEXT NOT NULL,created_at TEXT NOT NULL,receipt_digest TEXT);
     CREATE TABLE IF NOT EXISTS mode_transitions(transition_id TEXT PRIMARY KEY,request_id TEXT NOT NULL UNIQUE,task_id TEXT NOT NULL,expected_sequence INTEGER NOT NULL CHECK(expected_sequence>=0),from_mode TEXT NOT NULL CHECK(from_mode IN ('plan','build','kogg')),to_mode TEXT NOT NULL CHECK(to_mode IN ('plan','build','kogg')),direction TEXT NOT NULL CHECK(direction IN ('preserve','reduce','expand')),configuration_digest TEXT NOT NULL,actor_authority_digest TEXT NOT NULL,session_id TEXT NOT NULL,state TEXT NOT NULL CHECK(state IN ('committed','awaiting-confirmation','cleanup-pending','cancelled','expired')),safe_code TEXT NOT NULL,challenge_digest TEXT,created_at TEXT NOT NULL,expires_at TEXT,transition_digest TEXT NOT NULL);
-    CREATE TABLE IF NOT EXISTS transition_requests(request_id TEXT PRIMARY KEY,request_digest TEXT NOT NULL,result_json TEXT NOT NULL,created_at TEXT NOT NULL);
+    CREATE TABLE IF NOT EXISTS transition_requests(request_id TEXT PRIMARY KEY,request_digest TEXT NOT NULL,result_json TEXT NOT NULL,created_at TEXT NOT NULL,receipt_digest TEXT);
     CREATE TRIGGER IF NOT EXISTS mode_events_no_update BEFORE UPDATE ON mode_events BEGIN SELECT RAISE(ABORT,'immutable mode event'); END;
     CREATE TRIGGER IF NOT EXISTS mode_events_no_delete BEFORE DELETE ON mode_events BEGIN SELECT RAISE(ABORT,'immutable mode event'); END;
     INSERT OR IGNORE INTO mode_meta VALUES(1,1,'blocked');
-  `); }
+  `); ensureRequestReceiptSchema(this.db()); }
   private async resolveTask(taskId: string): Promise<TaskProjection> {
     try { const task = await this.tasks.get(taskId); if (task.lifecycle !== 'active') throw new InteractionModeError('MODE_TASK_UNAVAILABLE'); return task; }
     catch (error) { if (error instanceof InteractionModeError) throw error; throw new InteractionModeError('MODE_TASK_UNAVAILABLE'); }
@@ -226,6 +228,30 @@ function appendEvent(database: DatabaseSync, taskId: string, eventName: string, 
 }
 function verifyEvents(database: DatabaseSync): boolean { let previous = `sha256:${'0'.repeat(64)}`; for (const row of database.prepare('SELECT * FROM mode_events ORDER BY sequence').all() as Row[]) { const expected = digest('kogg:interaction-modes:event:v1', JSON.stringify({ createdAt: String(row.created_at), eventName: String(row.event_name), previousDigest: previous, safeCode: String(row.safe_code), subjectDigest: String(row.subject_digest), subjectId: String(row.subject_id), taskId: String(row.task_id) })); if (String(row.previous_digest) !== previous || String(row.event_digest) !== expected) return false; previous = expected; } return true; }
 function verifyTransitions(database: DatabaseSync): boolean { for (const row of database.prepare('SELECT * FROM mode_transitions').all() as Row[]) { const transitionDigest = transitionIntentDigest(row); if (String(row.transition_digest) !== transitionDigest) return false; const event = database.prepare('SELECT event_name,safe_code,subject_digest FROM mode_events WHERE subject_id=? ORDER BY sequence DESC LIMIT 1').get(String(row.transition_id)) as Row | undefined; if (!event || String(event.event_name) !== `mode.transition.${String(row.state)}` || String(event.safe_code) !== String(row.safe_code) || String(event.subject_digest) !== transitionDigest) return false; } return true; }
+function verifyModeStates(database: DatabaseSync): boolean {
+  for (const row of database.prepare('SELECT * FROM task_modes').all() as Row[]) {
+    const taskId = String(row.task_id); const selectedMode = String(row.selected_mode) as InteractionModeV1;
+    if (!UUID.test(taskId) || !UUID.test(String(row.project_id)) || !UUID.test(String(row.repository_id)) || !/^(0|[1-9][0-9]*)$/u.test(String(row.task_revision)) || !Object.hasOwn(CEILINGS, selectedMode)) return false;
+    if (String(row.effective_digest) !== capabilityDigest(CEILINGS[selectedMode])) return false;
+    const committed = database.prepare("SELECT to_mode FROM mode_transitions WHERE task_id=? AND state='committed' AND from_mode<>to_mode ORDER BY created_at,transition_id").all(taskId) as Row[];
+    if (Number(row.sequence) !== committed.length || (committed.length ? String(committed.at(-1)!.to_mode) : 'plan') !== selectedMode) return false;
+  }
+  return true;
+}
+function immutableRequestLedgers(database: DatabaseSync): boolean {
+  if (Number((database.prepare("SELECT count(*) AS count FROM sqlite_master WHERE type='trigger' AND name IN ('mode_events_no_update','mode_events_no_delete','mode_requests_no_update','mode_requests_no_delete','mode_transition_requests_no_update','mode_transition_requests_no_delete')").get() as Row).count) !== 6) return false;
+  for (const [table, kind] of [['requests', 'operation'], ['transition_requests', 'transition']] as const) for (const row of database.prepare(`SELECT * FROM ${table}`).all() as Row[]) if (String(row.receipt_digest) !== requestReceiptDigest(kind, String(row.request_id), String(row.request_digest), String(row.result_json), String(row.created_at))) return false;
+  return true;
+}
+function ensureRequestReceiptSchema(database: DatabaseSync): void {
+  database.exec('DROP TRIGGER IF EXISTS mode_requests_no_update; DROP TRIGGER IF EXISTS mode_transition_requests_no_update;');
+  for (const [table, kind] of [['requests', 'operation'], ['transition_requests', 'transition']] as const) {
+    const columns = new Set((database.prepare(`PRAGMA table_info(${table})`).all() as Row[]).map(row => String(row.name))); if (!columns.has('receipt_digest')) database.exec(`ALTER TABLE ${table} ADD COLUMN receipt_digest TEXT`);
+    for (const row of database.prepare(`SELECT * FROM ${table} WHERE receipt_digest IS NULL`).all() as Row[]) database.prepare(`UPDATE ${table} SET receipt_digest=? WHERE request_id=?`).run(requestReceiptDigest(kind, String(row.request_id), String(row.request_digest), String(row.result_json), String(row.created_at)), String(row.request_id));
+  }
+  database.exec("CREATE TRIGGER IF NOT EXISTS mode_requests_no_update BEFORE UPDATE ON requests BEGIN SELECT RAISE(ABORT,'immutable mode request'); END; CREATE TRIGGER IF NOT EXISTS mode_requests_no_delete BEFORE DELETE ON requests BEGIN SELECT RAISE(ABORT,'immutable mode request'); END; CREATE TRIGGER IF NOT EXISTS mode_transition_requests_no_update BEFORE UPDATE ON transition_requests BEGIN SELECT RAISE(ABORT,'immutable transition request'); END; CREATE TRIGGER IF NOT EXISTS mode_transition_requests_no_delete BEFORE DELETE ON transition_requests BEGIN SELECT RAISE(ABORT,'immutable transition request'); END;");
+}
+function requestReceiptDigest(kind: 'operation' | 'transition', requestId: string, requestDigestValue: string, resultJson: string, createdAt: string): string { return digest(`kogg:interaction-modes:${kind}-receipt:v1`, JSON.stringify({ createdAt, requestDigest: requestDigestValue, requestId, resultJson })); }
 function transitionIntentDigest(row: Row): string { return digest('kogg:interaction-modes:transition-intent:v1', JSON.stringify({ actorAuthorityDigest: String(row.actor_authority_digest), challengeDigest: row.challenge_digest === null ? null : String(row.challenge_digest), configurationDigest: String(row.configuration_digest), createdAt: String(row.created_at), direction: String(row.direction), expectedSequence: Number(row.expected_sequence), expiresAt: row.expires_at === null ? null : String(row.expires_at), fromMode: String(row.from_mode), requestId: String(row.request_id), sessionId: String(row.session_id), taskId: String(row.task_id), toMode: String(row.to_mode), transitionId: String(row.transition_id) })); }
 function metaAdmission(database: DatabaseSync): InteractionModeDiagnostics['admission'] { return String((database.prepare('SELECT admission FROM mode_meta WHERE singleton=1').get() as Row).admission) as InteractionModeDiagnostics['admission']; }
 function digest(domain: string, value: string): string { return `sha256:${createHash('sha256').update(`${domain}\0${value}`).digest('hex')}`; }
