@@ -333,6 +333,12 @@ async function exerciseElectronTasks(page, electronApplication) {
     await tasks.locator('.kogg-review').getByText(canary).waitFor();
     await tasks.getByRole('button', { name: 'Approve this exact revision' }).click();
     await tasks.getByRole('button', { name: /Revoke approval/u }).waitFor();
+    await tasks.getByLabel('Existing run ID').fill('55555555-5555-4555-8555-555555555555');
+    await tasks.getByRole('button', { name: 'Authorize exact task admission' }).click();
+    const admission = tasks.locator('[data-admission-id]'); await admission.waitFor();
+    const admissionId = (await admission.innerText()).match(/[0-9a-f-]{36}/u)?.[0]; assert.ok(admissionId);
+    await exerciseElectronAgents(page, electronApplication, admissionId);
+    await openCommand(page, 'View: Toggle Kogg Tasks', electronApplication);
     await tasks.getByRole('button', { name: /Revoke approval/u }).click();
     assert.equal(logs.join('\n').includes(canary), false);
 }

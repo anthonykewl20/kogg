@@ -22,7 +22,7 @@ export class ProjectsContribution extends AbstractViewContribution<ProjectsWidge
     });
   }
 
-  async onStart(_application: FrontendApplication): Promise<void> {
+  async onDidInitializeLayout(_application: FrontendApplication): Promise<void> {
     const requestId = crypto.randomUUID();
     try {
       await this.workspace.ready;

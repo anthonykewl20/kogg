@@ -17,6 +17,7 @@ export class TasksWidget extends BaseWidget {
   private selected: TaskProjection | undefined;
   private review: ReviewProjection | undefined;
   private conflictBuffer: string | undefined;
+  private latestAdmissionId: string | undefined;
   private readonly sessionId = crypto.randomUUID();
   private status = 'Loading tasks…';
   private busy = false;
@@ -68,6 +69,8 @@ export class TasksWidget extends BaseWidget {
       + '<div class="kogg-package-actions"><button data-save>Save draft</button><button data-freeze>Freeze exact revision</button></div>';
     if (spec.lifecycle === 'frozen' && task.lifecycle === 'active') output += '<div class="kogg-package-actions"><button data-successor>Create successor draft</button>'
       + (task.currentApproval ? '<button data-revoke>Revoke approval ' + html(short(task.currentApproval.approvalId)) + '</button>' : '<button data-review>Review for approval</button>') + '</div>';
+    if (task.currentApproval) output += '<form data-admission class="kogg-form-grid"><label>Existing run ID<input name="runId" required></label><button>Authorize exact task admission</button></form>'
+      + (this.latestAdmissionId ? '<p data-admission-id>Task admission ID: ' + html(this.latestAdmissionId) + '</p>' : '');
     if (this.review?.projection?.taskId === task.taskId) output += '<article class="kogg-review"><h4>Review complete frozen revision</h4><p>Task ' + html(short(task.taskId)) + ', revision ' + html(task.taskRevision)
       + ', ' + String(spec.byteLength) + ' bytes, ' + html(spec.lineEnding.toUpperCase()) + '.</p><pre tabindex="0">' + html(spec.content) + '</pre><button data-approve>Approve this exact revision</button></article>';
     if (task.lifecycle === 'active') output += '<button data-archive>Archive task</button>';
@@ -86,6 +89,7 @@ export class TasksWidget extends BaseWidget {
     this.node.querySelector<HTMLElement>('[data-review]')?.addEventListener('click', () => void this.beginReview());
     this.node.querySelector<HTMLElement>('[data-approve]')?.addEventListener('click', () => void this.approve());
     this.node.querySelector<HTMLElement>('[data-revoke]')?.addEventListener('click', () => void this.mutate('Revoking approval…', request => this.service.revoke({ ...request, taskId: this.selected!.taskId })));
+    this.node.querySelector<HTMLFormElement>('[data-admission]')?.addEventListener('submit', event => { event.preventDefault(); const data = new FormData(event.currentTarget as HTMLFormElement); void this.authorizeAdmission(String(data.get('runId'))); });
     this.node.querySelector<HTMLElement>('[data-archive]')?.addEventListener('click', () => void this.mutate('Archiving task…', request => this.service.archive({ ...request, taskId: this.selected!.taskId })));
   }
 
@@ -115,10 +119,11 @@ export class TasksWidget extends BaseWidget {
     if (!this.review?.challenge || !this.selected) return;
     await this.mutate('Approving exact frozen revision…', request => this.service.approve({ ...request, taskId: this.selected!.taskId, sessionId: this.sessionId, challenge: this.review!.challenge! }));
   }
+  private async authorizeAdmission(runId: string): Promise<void> { if (!this.selected) return; await this.run(async () => { this.status = 'Authorizing exact task admission…'; this.render(); const result = await this.service.authorizeAdmission({ ...this.expectation(), taskId: this.selected!.taskId, runId }); if (result.kind !== 'completed' || !result.admission) throw new UiResult(result.code); this.latestAdmissionId = result.admission.taskAdmissionId; this.selected = result.projection; this.tasks = await this.service.list(this.projects.activeProjectId); this.status = 'Exact task admission authorized.'; }); }
   private expectation(): MutationPrecondition { return { requestId: crypto.randomUUID(), expectedRegistryRevision: this.selected!.registryRevision, expectedTaskRevision: this.selected!.taskRevision }; }
   private async mutate(status: string, action: (request: MutationPrecondition) => Promise<TaskMutationResult>): Promise<void> {
     if (!this.selected) return;
-    await this.run(async () => { this.status = status; this.render(); const result = await action(this.expectation()); await this.accept(result, 'Task registry updated.'); if (result.projection) this.selected = result.projection; this.conflictBuffer = undefined; this.review = undefined; this.tasks = await this.service.list(this.projects.activeProjectId); });
+    await this.run(async () => { this.status = status; this.render(); const result = await action(this.expectation()); await this.accept(result, 'Task registry updated.'); if (result.projection) this.selected = result.projection; this.conflictBuffer = undefined; this.review = undefined; this.latestAdmissionId = undefined; this.tasks = await this.service.list(this.projects.activeProjectId); });
   }
   private async accept(result: TaskMutationResult, success: string): Promise<void> { if (result.kind !== 'completed') throw new UiResult(result.code); this.status = success; }
   private async run(action: () => Promise<void>, notify = true): Promise<void> {

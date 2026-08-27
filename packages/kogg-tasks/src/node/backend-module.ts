@@ -10,6 +10,7 @@ export default new ContainerModule(bind => {
   bind(TaskRegistry).toSelf().inSingletonScope();
   bind(TaskProjectionAuthority).toService(TaskRegistry);
   bind(BackendApplicationContribution).toService(TaskRegistry);
+  bind(TaskAdmissionAuthority).toService(TaskRegistry);
   bind(TaskDiagnosticContributor).toSelf().inSingletonScope();
   bind(KoggDiagnosticContribution).toService(TaskDiagnosticContributor);
   bind(ConnectionHandler).toDynamicValue(context => new JsonRpcConnectionHandler<KoggTasksService>(
