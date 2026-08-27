@@ -10,12 +10,15 @@ import { KernelEvidenceAdmissionService } from './kernel-evidence-admission-serv
 import { KernelGateEvaluationService } from './kernel-gate-evaluation-service';
 import { KernelVerdictReadService } from './kernel-verdict-read-service';
 import { RanexOperationsOwner } from './ranex-operations-owner';
+import { CheckOperationsOwner } from './check-operations-owner';
 
 export default new ContainerModule(bind => {
   bind(KernelBridgeImpl).toSelf().inSingletonScope();
   bind(KernelBridgeToken).toService(KernelBridgeImpl);
   bind(RanexOperationsOwner).toSelf().inSingletonScope();
   bind(BackendApplicationContribution).toService(RanexOperationsOwner);
+  bind(CheckOperationsOwner).toSelf().inSingletonScope();
+  bind(BackendApplicationContribution).toService(CheckOperationsOwner);
   bind(KernelBackendContribution).toSelf().inSingletonScope();
   bind(BackendApplicationContribution).toService(KernelBackendContribution);
   bind(KernelDiagnosticContributor).toSelf().inSingletonScope();

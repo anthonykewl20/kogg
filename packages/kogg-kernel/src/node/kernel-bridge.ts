@@ -45,6 +45,8 @@ import { inject, injectable, named } from '@theia/core/shared/inversify';
 import { Process, ProcessType, type IProcessExitEvent } from '@theia/process/lib/node/process';
 import { ProcessManager } from '@theia/process/lib/node/process-manager';
 import { PassThrough, type Readable, type Writable } from 'node:stream';
+import { CheckOperationsOwner } from './check-operations-owner';
+import { RanexOwnerIntegrityError } from './ranex-operations-owner';
 
 // diagnostic-coverage: kernel.protocol, kernel.bridge, kernel.cleanup
 
@@ -76,7 +78,8 @@ export class KernelBridgeImpl implements KernelBridge {
   constructor(
     @inject(KoggOperationRegistry) private readonly operations: OperationRegistryApi,
     @inject(ProcessManager) private readonly processManager: ProcessManager,
-    @inject(ILogger) @named('kogg:kernel:bridge') private readonly logger: ILogger
+    @inject(ILogger) @named('kogg:kernel:bridge') private readonly logger: ILogger,
+    @inject(CheckOperationsOwner) private readonly checkOwner: CheckOperationsOwner
   ) {}
 
   async start(): Promise<KernelCapabilities> {
@@ -221,9 +224,20 @@ export class KernelBridgeImpl implements KernelBridge {
       return refusedCheckExecution();
     }
     const executionDigest = domainDigest('check-execution', execution as unknown as KernelJson);
-    return this.requestResult<CheckExecutionProjectionV1>('suite.execute', {
+    const result = await this.requestResult<CheckExecutionProjectionV1>('suite.execute', {
       execution: execution as unknown as KernelJson, executionDigest, processAuthority: authority as unknown as KernelJson
     });
+    if (result.status !== 'succeeded') return result;
+    try {
+      this.checkOwner.refresh();
+      return result;
+    } catch (error) {
+      if (!(error instanceof RanexOwnerIntegrityError)) throw error;
+      console.warn('[kogg:kernel:bridge] check.execution.projection.failed', {
+        executionId: execution.executionId, safeCode: 'KERNEL_OUTCOME_UNKNOWN', errorType: error.name
+      });
+      return unknownCheckExecution();
+    }
   }
 
   admitEvidence(evidence: EvidenceManifestV1, currentSubject: RepositoryStateV1): Promise<KernelResultV2<EvidenceAdmissionProjectionV1>> {
@@ -542,6 +556,12 @@ function refusedCheckExecution(): KernelResultV2<CheckExecutionProjectionV1> {
   return {
     protocol: KOGG_RANEX_PROTOCOL, requestId: randomUUID(), operationId: randomUUID(), status: 'refused',
     safeCode: 'KERNEL_AUTHORITY_INVALID', resultDigest: null, journal: null, projection: null
+  };
+}
+function unknownCheckExecution(): KernelResultV2<CheckExecutionProjectionV1> {
+  return {
+    protocol: KOGG_RANEX_PROTOCOL, requestId: randomUUID(), operationId: randomUUID(), status: 'unknown',
+    safeCode: 'KERNEL_OUTCOME_UNKNOWN', resultDigest: null, journal: null, projection: null
   };
 }
 function refusedCancellation(cancellationRequestId: string, targetOperationId: string): KernelResultV2<OperationCancelProjectionV1> {
