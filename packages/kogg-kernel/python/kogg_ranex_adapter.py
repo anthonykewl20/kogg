@@ -20,7 +20,7 @@ from ranex.governed_execution.adapters.persistence.sqlite.journal import Journal
 
 PROTOCOL = "kogg.ranex/v2"
 PROTOCOL_VERSION = 2
-SCHEMA_SET_DIGEST = "sha256:90d8f437f914807b5eee9bcd4b1f701ebb34da9648bed1db83c6f2a0749192da"
+SCHEMA_SET_DIGEST = "sha256:3bc24f92c49c2e318640273e51091c93429a805c7fc2795f13e352f04dc57511"
 MAX_FRAME_BYTES = 1024 * 1024
 MAX_DEPTH = 32
 MAX_MEMBERS = 4096
@@ -177,11 +177,11 @@ def _repository_state(value: Any) -> dict[str, Any]:
 
 def _task_binding(value: Any) -> dict[str, Any]:
     binding = _closed(value, {
-        "taskId", "taskRevision", "specificationDigest", "approvalId", "approvalDigest", "authorityDigest",
+        "taskId", "runId", "taskRevision", "specificationDigest", "approvalId", "approvalDigest", "authorityDigest",
         "projectId", "repositoryId", "repositoryIdentityDigest", "protectedSource", "worktreeId",
         "worktreeIdentityDigest", "baseState", "executionProfileDigest", "expiresAt",
     })
-    for field in ("taskId", "approvalId", "projectId", "repositoryId", "worktreeId"):
+    for field in ("taskId", "runId", "approvalId", "projectId", "repositoryId", "worktreeId"):
         _uuid(binding[field])
     if not isinstance(binding["taskRevision"], int) or isinstance(binding["taskRevision"], bool) or binding["taskRevision"] < 1:
         raise ProtocolRefusal("KERNEL_TASK_BINDING_MISMATCH")

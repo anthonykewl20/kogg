@@ -4,7 +4,7 @@ export const KOGG_RANEX_PROTOCOL = 'kogg.ranex/v2' as const;
 export const KOGG_RANEX_PROTOCOL_VERSION = 2 as const;
 export const KOGG_RANEX_COMMIT = '5586d68b0936f554759022caabe847087f1d03ef' as const;
 export const KOGG_RANEX_TREE = '581ce66c54116d4be48b96c3a0359fbdd9d3077f' as const;
-export const KERNEL_SCHEMA_SET_DIGEST = 'sha256:90d8f437f914807b5eee9bcd4b1f701ebb34da9648bed1db83c6f2a0749192da' as const;
+export const KERNEL_SCHEMA_SET_DIGEST = 'sha256:3bc24f92c49c2e318640273e51091c93429a805c7fc2795f13e352f04dc57511' as const;
 export const KERNEL_MAX_FRAME_BYTES = 1024 * 1024;
 export const KERNEL_MAX_DEPTH = 32;
 export const KERNEL_MAX_MEMBERS = 4096;
@@ -114,6 +114,7 @@ export interface RepositoryStateV1 {
 
 export interface TaskExecutionBindingV1 {
   readonly taskId: string;
+  readonly runId: string;
   readonly taskRevision: number;
   readonly specificationDigest: KoggDigest;
   readonly approvalId: string;
