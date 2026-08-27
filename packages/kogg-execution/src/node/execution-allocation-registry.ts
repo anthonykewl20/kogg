@@ -4,6 +4,7 @@ import path from 'node:path';
 import { DatabaseSync, type SQLOutputValue } from 'node:sqlite';
 import { BackendApplicationContribution } from '@theia/core/lib/node';
 import { inject, injectable } from '@theia/core/shared/inversify';
+import { KoggModeOperationAuthorizer, type ModeOperationAuthorizer } from '@kogg/interaction-modes/lib/common/interaction-modes-protocol';
 import type {
   AdvanceExecutionStateV1, CandidateBindingV1, CandidateImportIntentV1, CompleteCandidateImportV1,
   CandidateRetentionV1, ExecutionAllocationSummaryV1, ExecutionBindingV1, ExecutionLifecycleCode, ExecutionRunListV1, ExecutionRunProjectionV1, ExecutionState,
@@ -82,7 +83,10 @@ export class ExecutionAllocationRegistry implements BackendApplicationContributi
   private readonly databasePath = path.join(stateRoot(), 'execution', 'registry.sqlite3');
   private ownerSink: OperationsOwnerSink | undefined;
 
-  constructor(@inject(ExecutionTargetRegistry) private readonly targets: Pick<ExecutionTargetRegistry, 'authorize' | 'authorizePhysicalAllocation'>) {}
+  constructor(
+    @inject(ExecutionTargetRegistry) private readonly targets: Pick<ExecutionTargetRegistry, 'authorize' | 'authorizePhysicalAllocation'>,
+    @inject(KoggModeOperationAuthorizer) private readonly modes: ModeOperationAuthorizer
+  ) {}
 
   onStart(): Promise<void> { return this.ensureStarted(); }
   onStop(): void { this.ownerSink = undefined; this.database?.close(); this.database = undefined; this.startup = undefined; }
@@ -152,6 +156,15 @@ export class ExecutionAllocationRegistry implements BackendApplicationContributi
       return this.summary(String(replay.worktree_id));
     }
     if (this.admission() !== 'enabled') {
+      log('request.refused', { requestId: request.requestId, runId: request.binding.runId, safeCode: 'ALLOCATION_ADMISSION_BLOCKED' });
+      throw new AllocationRegistryError('ALLOCATION_ADMISSION_BLOCKED');
+    }
+    let mode: Awaited<ReturnType<ModeOperationAuthorizer['authorizeOperation']>>;
+    try { mode = await this.modes.authorizeOperation({ requestId: request.requestId, taskId: request.binding.taskId, operation: 'worktree-create' }); }
+    catch { // observability-exempt: the immediately following closed refusal log records the allocation-domain denial without leaking authority error details.
+      mode = { allowed: false, safeCode: 'MODE_AUTHORITY_REFUSED' } as Awaited<ReturnType<ModeOperationAuthorizer['authorizeOperation']>>;
+    }
+    if (!mode.allowed) {
       log('request.refused', { requestId: request.requestId, runId: request.binding.runId, safeCode: 'ALLOCATION_ADMISSION_BLOCKED' });
       throw new AllocationRegistryError('ALLOCATION_ADMISSION_BLOCKED');
     }

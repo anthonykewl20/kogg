@@ -52,7 +52,7 @@ export class InteractionModeRegistry implements BackendApplicationContribution {
 
   async get(request: ModeReadRequestV1): Promise<ModeProjectionV1> {
     validateRead(request); await this.ensureStarted(); this.expireChallenges(); const task = await this.resolveTask(request.taskId);
-    const existing = this.row(request.taskId); const projection = existing ? this.project(existing, task) : this.createPlan(task);
+    const existing = this.row(request.taskId); const current = existing ? this.reconcilePlan(existing, task, request.requestId) : undefined; const projection = current ? this.project(current, task) : this.createPlan(task);
     modeLog(existing && projection.state === 'ready' ? 'mode.restored' : 'mode.selected', { requestId: request.requestId, taskId: request.taskId, selectedMode: projection.selectedMode, safeCode: projection.safeCode });
     return projection;
   }
@@ -71,7 +71,7 @@ export class InteractionModeRegistry implements BackendApplicationContribution {
     const digest = requestDigest(request); const replay = this.db().prepare('SELECT request_digest,result_json FROM requests WHERE request_id=?').get(request.requestId) as Row | undefined;
     if (replay) {
       if (String(replay.request_digest) !== digest) throw new InteractionModeError('MODE_REQUEST_CONFLICT');
-      const prior = JSON.parse(String(replay.result_json)) as ModeOperationResultV1; const task = await this.resolveTask(request.taskId); const row = this.row(request.taskId);
+      const prior = JSON.parse(String(replay.result_json)) as ModeOperationResultV1; const task = await this.resolveTask(request.taskId); const existing = this.row(request.taskId); const row = existing ? this.reconcilePlan(existing, task, request.requestId) : undefined;
       const current = row ? this.project(row, task) : this.createPlan(task);
       if (prior.allowed && (current.state !== 'ready' || current.taskRevision !== prior.projection.taskRevision || current.sequence !== prior.projection.sequence)) {
         const refused: ModeOperationResultV1 = { schemaVersion: 1, allowed: false, safeCode: current.safeCode === 'MODE_OK' ? 'MODE_TASK_STALE' : current.safeCode, projection: current };
@@ -79,7 +79,7 @@ export class InteractionModeRegistry implements BackendApplicationContribution {
       }
       return prior;
     }
-    const task = await this.resolveTask(request.taskId); const row = this.row(request.taskId); const projection = row ? this.project(row, task) : this.createPlan(task);
+    const task = await this.resolveTask(request.taskId); const existing = this.row(request.taskId); const row = existing ? this.reconcilePlan(existing, task, request.requestId) : undefined; const projection = row ? this.project(row, task) : this.createPlan(task);
     modeLog('mode.operation.requested', { requestId: request.requestId, taskId: request.taskId, selectedMode: projection.selectedMode, operation: request.operation });
     const capability = OPERATION_CAPABILITY[request.operation]; const allowed = projection.state === 'ready' && projection.effectiveCapabilities.includes(capability);
     const safeCode = allowed ? 'MODE_OK' : operationRefusal(projection.selectedMode, request.operation, projection.safeCode);
@@ -98,7 +98,7 @@ export class InteractionModeRegistry implements BackendApplicationContribution {
     }
     await this.ensureStarted(); this.expireChallenges();
     const replay = this.transitionReplay(request.requestId, requestDigest); if (replay) return replay;
-    const task = await this.resolveTask(request.taskId); let row = this.row(request.taskId); if (!row) { this.createPlan(task); row = this.row(request.taskId); }
+    const task = await this.resolveTask(request.taskId); let row = this.row(request.taskId); if (row) row = this.reconcilePlan(row, task, request.requestId); if (!row) { this.createPlan(task); row = this.row(request.taskId); }
     if (!row) throw new InteractionModeError('MODE_REGISTRY_UNAVAILABLE');
     const current = this.project(row, task); modeLog('mode.transition.requested', { requestId: request.requestId, taskId: request.taskId, fromMode: request.fromMode, toMode: request.toMode });
     if (current.state !== 'ready' || current.sequence !== request.expectedSequence || current.selectedMode !== request.fromMode) {
@@ -189,6 +189,17 @@ export class InteractionModeRegistry implements BackendApplicationContribution {
     catch (error) { if (error instanceof InteractionModeError) throw error; throw new InteractionModeError('MODE_TASK_UNAVAILABLE'); }
   }
   private row(taskId: string): Row | undefined { return this.db().prepare('SELECT * FROM task_modes WHERE task_id=?').get(taskId) as Row | undefined; }
+  private reconcilePlan(row: Row, task: TaskProjection, requestId: string): Row {
+    const sameSubject = String(row.project_id) === task.projectId && String(row.repository_id) === task.repositoryId;
+    const pending = !!this.db().prepare("SELECT 1 FROM mode_transitions WHERE task_id=? AND state IN ('awaiting-confirmation','cleanup-pending') LIMIT 1").get(task.taskId);
+    if (String(row.selected_mode) !== 'plan' || String(row.task_revision) === task.taskRevision || !sameSubject || pending) return row;
+    this.transaction(database => {
+      database.prepare("UPDATE task_modes SET task_revision=?,state='ready',active_stage='research',updated_at=? WHERE task_id=? AND selected_mode='plan'").run(task.taskRevision, new Date().toISOString(), task.taskId);
+      appendEvent(database, task.taskId, 'mode.plan.rebound', 'MODE_OK');
+    });
+    modeLog('mode.restored', { requestId, taskId: task.taskId, selectedMode: 'plan', safeCode: 'MODE_OK' });
+    return this.row(task.taskId)!;
+  }
   private createPlan(task: TaskProjection): ModeProjectionV1 {
     const now = new Date().toISOString(); const capabilities = CEILINGS.plan; const effectiveDigest = capabilityDigest(capabilities);
     this.transaction(database => { database.prepare("INSERT INTO task_modes VALUES(?,?,?,?, 'plan',?,0,'ready','research',?)").run(task.taskId, task.taskRevision, task.projectId, task.repositoryId, effectiveDigest, now); appendEvent(database, task.taskId, 'mode.selected', 'MODE_OK'); });

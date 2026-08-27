@@ -964,6 +964,13 @@ async function createInteractionModeFixture(page) {
     // a user does when changing task context after a prior binding degraded.
     await page.reload({ waitUntil: 'domcontentloaded' });
     await page.locator('body.kogg-application').waitFor({ timeout: 20_000 });
+    projects = await ensureProjectsWidget(page);
+    await projects.locator('[data-project-row]').filter({ hasText: /Active/u }).first().waitFor({ state: 'visible', timeout: 15_000 });
+    // Project restoration and frontend contributions start concurrently. Reload
+    // once the exact project is active so the task-scoped mode selector resolves
+    // the newest task against the restored project binding instead of racing it.
+    await page.reload({ waitUntil: 'domcontentloaded' });
+    await page.locator('body.kogg-application').waitFor({ timeout: 20_000 });
 }
 
 async function exerciseOperations(page) {

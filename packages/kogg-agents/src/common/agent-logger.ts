@@ -1,4 +1,5 @@
 import type { AgentSafeCode, AttemptState, UsageProjectionV1 } from './agents-protocol';
+import type { ModeSafeCodeV1 } from '@kogg/interaction-modes/lib/common/interaction-modes-protocol';
 
 // diagnostic-coverage: agents.logging
 
@@ -14,6 +15,7 @@ export interface AgentLogFields {
   'binding.resolve.approved': { roleRevisionId: string; providerId: string; modelId: string; adapterKey: string; adapterVersion: string; safeCode: AgentSafeCode };
   'binding.resolve.refused': { roleRevisionId: string; providerId: string; modelId: string; adapterKey: string; adapterVersion: string; safeCode: AgentSafeCode };
   'attempt.requested': { requestId: string; attemptId: string; rootAttemptId: string; parentAttemptId?: string };
+  'attempt.mode.refused': { requestId: string; taskId: string; safeCode: ModeSafeCodeV1 };
   'attempt.admitted': { requestId: string; attemptId: string; roleRevisionId: string; projectId: string; taskId: string; runId?: string; worktreeId?: string; safeCode: AgentSafeCode };
   'attempt.refused': { requestId?: string; attemptId: string; roleRevisionId: string; projectId: string; taskId: string; safeCode: AgentSafeCode };
   'adapter.resolved': { attemptId: string; adapterKey: string; adapterVersion: string; protocolId: string; protocolVersion: string; providerId: string; modelId: string };
@@ -62,6 +64,7 @@ const SCHEMAS: Record<AgentLogEvent, Schema> = {
   'binding.resolve.approved': schema('adapter', 'info', ['roleRevisionId', 'providerId', 'modelId', 'adapterKey', 'adapterVersion', 'safeCode']),
   'binding.resolve.refused': schema('adapter', 'warn', ['roleRevisionId', 'providerId', 'modelId', 'adapterKey', 'adapterVersion', 'safeCode']),
   'attempt.requested': schema('registry', 'debug', ['requestId', 'attemptId', 'rootAttemptId'], ['parentAttemptId']),
+  'attempt.mode.refused': schema('registry', 'warn', ['requestId', 'taskId', 'safeCode']),
   'attempt.admitted': schema('registry', 'info', ['requestId', 'attemptId', 'roleRevisionId', 'projectId', 'taskId', 'safeCode'], ['runId', 'worktreeId']),
   'attempt.refused': schema('registry', 'warn', ['attemptId', 'roleRevisionId', 'projectId', 'taskId', 'safeCode'], ['requestId']),
   'adapter.resolved': schema('adapter', 'info', ['attemptId', 'adapterKey', 'adapterVersion', 'protocolId', 'protocolVersion', 'providerId', 'modelId']),
