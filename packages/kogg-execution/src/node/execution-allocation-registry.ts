@@ -67,6 +67,7 @@ export interface PreparePhysicalCleanupV1 { readonly requestId: string; readonly
 export interface PhysicalCleanupIntentV1 {
   readonly schemaVersion: 1; readonly intentId: string; readonly worktreeId: string; readonly fencingToken: string;
   readonly expectedRevision: string; readonly expectedIdentityDigest: string; readonly allocationName: string; readonly allocationNonce: string;
+  readonly ownerInstanceId: string; readonly createdAt: string;
   readonly filesystemDevice: string; readonly filesystemInode: string; readonly ownerUid: string; readonly mode: '0700'; readonly mountId: string;
   readonly quotaProjectId: string; readonly quotaBytes: string; readonly quotaInodes: string; readonly helperDigest: string; readonly mountQuotaDigest: string;
 }
@@ -500,6 +501,8 @@ export class ExecutionAllocationRegistry implements BackendApplicationContributi
     if (String(row.binding_digest) !== request.bindingDigest) refuseCleanup(request, 'ALLOCATION_BINDING_MISMATCH');
     if (String(row.revision) !== request.expectedRevision) refuseCleanup(request, 'ALLOCATION_REVISION_CONFLICT');
     const state = String(row.state) as ExecutionState; if (!LEGAL_TRANSITIONS[state].includes('cleaning')) refuseCleanup(request, 'ALLOCATION_STATE_INVALID');
+    const binding = JSON.parse(String(row.binding_json)) as ExecutionBindingV1;
+    if (!await this.targets.authorizePhysicalAllocation(binding, String(row.helper_digest), String(row.mount_quota_digest))) refuseCleanup(request, 'ALLOCATION_QUALIFICATION_INVALID');
     if (state === 'retained') {
       const retention = this.databaseOrThrow().prepare('SELECT retention_class,retention_until FROM candidates WHERE worktree_id=?').get(request.worktreeId) as SqlRow | undefined;
       if (!retention || String(retention.retention_class) === 'pending-evidence' || !validTime(String(retention.retention_until))) refuseCleanup(request, 'ALLOCATION_INTEGRITY_FAILED');
@@ -692,7 +695,7 @@ export class ExecutionAllocationRegistry implements BackendApplicationContributi
   private cleanupIntent(intentId: string): PhysicalCleanupIntentV1 {
     const row = this.databaseOrThrow().prepare("SELECT i.intent_id,i.fencing_token,i.expected_identity_digest,a.* FROM allocation_intents i JOIN allocations a ON a.worktree_id=i.worktree_id WHERE i.intent_id=? AND i.intent_type='cleanup'").get(intentId) as SqlRow | undefined;
     if (!row || !physicalIdentityValid(row)) throw new AllocationRegistryError('ALLOCATION_INTEGRITY_FAILED');
-    return { schemaVersion: 1, intentId, worktreeId: String(row.worktree_id), fencingToken: String(row.fencing_token), expectedRevision: String(row.revision), expectedIdentityDigest: String(row.expected_identity_digest), allocationName: String(row.allocation_name), allocationNonce: String(row.allocation_nonce), filesystemDevice: String(row.filesystem_device), filesystemInode: String(row.filesystem_inode), ownerUid: String(row.owner_uid), mode: '0700', mountId: String(row.mount_id), quotaProjectId: String(row.quota_project_id), quotaBytes: String(row.quota_bytes), quotaInodes: String(row.quota_inodes), helperDigest: String(row.helper_digest), mountQuotaDigest: String(row.mount_quota_digest) };
+    return { schemaVersion: 1, intentId, worktreeId: String(row.worktree_id), fencingToken: String(row.fencing_token), expectedRevision: String(row.revision), expectedIdentityDigest: String(row.expected_identity_digest), allocationName: String(row.allocation_name), allocationNonce: String(row.allocation_nonce), ownerInstanceId: String(row.owner_instance_id), createdAt: String(row.created_at), filesystemDevice: String(row.filesystem_device), filesystemInode: String(row.filesystem_inode), ownerUid: String(row.owner_uid), mode: '0700', mountId: String(row.mount_id), quotaProjectId: String(row.quota_project_id), quotaBytes: String(row.quota_bytes), quotaInodes: String(row.quota_inodes), helperDigest: String(row.helper_digest), mountQuotaDigest: String(row.mount_quota_digest) };
   }
   private physicalAllocationIntent(intentId: string): PhysicalAllocationIntentV1 {
     const row = this.databaseOrThrow().prepare("SELECT i.intent_id,i.fencing_token,i.expected_revision AS intent_expected_revision,i.helper_digest AS intent_helper_digest,i.mount_quota_digest AS intent_mount_quota_digest,q.project_id AS lease_project_id,q.phase AS lease_phase,a.* FROM allocation_intents i JOIN allocations a ON a.worktree_id=i.worktree_id JOIN quota_project_leases q ON q.intent_id=i.intent_id WHERE i.intent_id=? AND i.intent_type='allocation'").get(intentId) as SqlRow | undefined;
