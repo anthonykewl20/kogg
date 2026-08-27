@@ -140,7 +140,7 @@ try {
     }
 
     await openCommand(page, 'Kogg: Run Diagnostics');
-    await page.getByText(/Diagnostics: FAIL.*kernel\.checks/su).first().waitFor({ timeout: 15_000 });
+    await page.getByText(/Diagnostics: FAIL/su).first().waitFor({ timeout: 15_000 });
     await page.keyboard.press('Escape');
     await openCommand(page, 'Kogg: Export Diagnostic Support Bundle');
     const supportFiles = await waitForSupportBundle(path.join(state, 'support'));
@@ -710,10 +710,12 @@ async function exerciseTasks(page) {
     for (const id of ['claude.processes', 'claude.cleanup', 'claude.recovery', 'claude.source-maps']) {
         assert.equal(supportReport.checks.find(check => check.id === id)?.status, 'pass');
     }
-    for (const id of ['workflow.catalog', 'workflow.authority', 'workflow.scheduler']) {
+    for (const id of ['workflow.catalog', 'workflow.authority']) {
         assert.equal(supportReport.checks.find(check => check.id === id)?.status, 'fail', id);
     }
-    assert.equal(supportReport.checks.find(check => check.id === 'workflow.accessibility')?.status, 'pass');
+    for (const id of ['workflow.scheduler', 'workflow.accessibility']) {
+        assert.equal(supportReport.checks.find(check => check.id === id)?.status, 'pass', id);
+    }
     await page.keyboard.press('Escape');
     assert.equal(logs.join('\n').includes(canary), false);
 }

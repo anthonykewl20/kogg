@@ -353,6 +353,19 @@ async function exerciseElectronTasks(page, electronApplication) {
     assert.equal(logs.join('\n').includes(canary), false);
 }
 
+async function exerciseElectronAgents(page, electronApplication, admissionId) {
+    const agents = page.locator('.kogg-agents-widget').last();
+    if (!await agents.count()) {
+        await openCommand(page, 'View: Toggle Kogg Agents', electronApplication);
+        await agents.waitFor({ state: 'attached', timeout: 30_000 });
+    }
+    await agents.getByRole('button', { name: 'Save immutable revision' }).click();
+    await agents.locator('section').filter({ hasText: 'Role Revisions' }).locator('li').filter({ hasText: /implementer · [0-9a-f-]{36}/u }).waitFor();
+    await agents.getByLabel('Task admission ID').fill(admissionId);
+    await agents.getByRole('button', { name: 'Confirm and start exact attempt' }).click();
+    await agents.getByText(/cleaned · AGENT_OK.*resources 0/iu).waitFor({ timeout: 15_000 });
+}
+
 async function exerciseElectronWorkflowEditor(page, electronApplication) {
     let widget = page.locator('.kogg-workflow-editor-widget:visible').first();
     if (!await widget.count()) {
