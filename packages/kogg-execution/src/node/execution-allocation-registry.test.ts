@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import { mkdtemp, rm } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
@@ -9,7 +10,7 @@ import { CANDIDATE_MUTATION_POLICY_DIGEST } from './candidate-sealer';
 import { AllocationRegistryError, ExecutionAllocationRegistry } from './execution-allocation-registry';
 import { OperationsReadModel } from '@kogg/operations/lib/node/operations-read-model';
 
-// diagnostic-coverage: execution.worktree-registry, execution.capacity, execution.recovery
+// diagnostic-coverage: execution.worktree-registry, execution.process-cleanup, execution.capacity, execution.recovery, execution.retention
 test('reserves one opaque allocation identity before effects and replays only an identical request', async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), 'kogg-allocation-registry-')); process.env.KOGG_STATE_DIR = root;
   const registry = allocationRegistry(); await registry.onStart();
@@ -165,9 +166,59 @@ test('requires a durable authority-bound retention fact and refuses cleanup befo
     assert.equal(registry.diagnostics().retentionViolationCount, 0); assert.equal(registry.diagnostics().loggingViolationCount, 0);
     await assert.rejects(() => registry.recordRetention({ ...request, retentionClass: 'completed' }),
       (error: unknown) => error instanceof AllocationRegistryError && error.code === 'ALLOCATION_REQUEST_REPLAY_MISMATCH');
-    await assert.rejects(() => registry.advance({ requestId: '35000000-0000-4000-8000-000000000005', worktreeId: allocation.worktreeId, expectedRevision: retained.revision, bindingDigest: allocation.bindingDigest, nextState: 'cleaning', safeCode: 'ALLOCATION_OK' }),
+    await assert.rejects(() => registry.preparePhysicalCleanup({ requestId: '35000000-0000-4000-8000-000000000005', worktreeId: allocation.worktreeId, expectedRevision: retained.revision, bindingDigest: allocation.bindingDigest }),
       (error: unknown) => error instanceof AllocationRegistryError && error.code === 'RETENTION_ACTIVE');
   } finally { registry.onStop(); await rm(root, { recursive: true, force: true }); }
+});
+
+test('fences cleanup behind a durable exact-identity intent and absence proof', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'kogg-allocation-cleanup-')); process.env.KOGG_STATE_DIR = root; const registry = allocationRegistry(); await registry.onStart();
+  try {
+    const request = allocationRequest(); let allocation = await registry.reserve(request);
+    allocation = await registry.recordPhysicalAllocation(physicalAllocationProof(allocation, request, '36000000-0000-4000-8000-000000000001'));
+    await assert.rejects(() => registry.advance({ requestId: '36000000-0000-4000-8000-000000000002', worktreeId: allocation.worktreeId, expectedRevision: allocation.revision, bindingDigest: allocation.bindingDigest, nextState: 'cleaning', safeCode: 'ALLOCATION_OK' }),
+      (error: unknown) => error instanceof AllocationRegistryError && error.code === 'ALLOCATION_STATE_INVALID');
+    const prepare = { requestId: '36000000-0000-4000-8000-000000000003', worktreeId: allocation.worktreeId, expectedRevision: allocation.revision, bindingDigest: allocation.bindingDigest };
+    const intent = await registry.preparePhysicalCleanup(prepare); assert.deepEqual(await registry.preparePhysicalCleanup(prepare), intent);
+    assert.equal(intent.expectedRevision, '3'); assert.match(intent.allocationNonce, /^[0-9a-f]{64}$/u); assert.equal(intent.mode, '0700');
+    assert.equal(registry.diagnostics().pendingCleanupIntentCount, 1);
+    const completionBase = { requestId: '36000000-0000-4000-8000-000000000004', intentId: intent.intentId, worktreeId: intent.worktreeId, expectedRevision: intent.expectedRevision, bindingDigest: allocation.bindingDigest, fencingToken: intent.fencingToken, expectedIdentityDigest: intent.expectedIdentityDigest, preDeleteIdentityDigest: intent.expectedIdentityDigest, helperDigest: intent.helperDigest, mountQuotaDigest: intent.mountQuotaDigest };
+    const completion = { ...completionBase, absenceProofDigest: cleanupProof(completionBase) };
+    const cleaned = await registry.completePhysicalCleanup(completion); assert.equal(cleaned.state, 'cleaned'); assert.equal(cleaned.cleanupState, 'cleaned'); assert.equal(cleaned.revision, '4');
+    assert.deepEqual(await registry.completePhysicalCleanup(completion), cleaned); assert.equal(registry.diagnostics().pendingCleanupIntentCount, 0);
+    assert.equal(JSON.stringify(await registry.getRun({ requestId: '36000000-0000-4000-8000-000000000005', runId: cleaned.runId })).includes(intent.allocationNonce), false);
+    await assert.rejects(() => registry.completePhysicalCleanup({ ...completion, absenceProofDigest: `sha256:${'0'.repeat(64)}` }),
+      (error: unknown) => error instanceof AllocationRegistryError && error.code === 'ALLOCATION_REQUEST_REPLAY_MISMATCH');
+  } finally { registry.onStop(); await rm(root, { recursive: true, force: true }); }
+});
+
+test('quarantines cleanup identity mismatch and blocks admission', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'kogg-allocation-cleanup-mismatch-')); process.env.KOGG_STATE_DIR = root; const registry = allocationRegistry(); await registry.onStart();
+  try {
+    let allocation = await registry.reserve(allocationRequest()); allocation = await registry.recordPhysicalAllocation(physicalAllocationProof(allocation, allocationRequest(), '37000000-0000-4000-8000-000000000001'));
+    const intent = await registry.preparePhysicalCleanup({ requestId: '37000000-0000-4000-8000-000000000002', worktreeId: allocation.worktreeId, expectedRevision: allocation.revision, bindingDigest: allocation.bindingDigest });
+    const failure = { requestId: '37000000-0000-4000-8000-000000000003', intentId: intent.intentId, worktreeId: allocation.worktreeId, expectedRevision: intent.expectedRevision, bindingDigest: allocation.bindingDigest, fencingToken: intent.fencingToken, expectedIdentityDigest: intent.expectedIdentityDigest, observedIdentityDigest: `sha256:${'0'.repeat(64)}`, safeCode: 'CLEANUP_IDENTITY_MISMATCH' as const };
+    const quarantined = await registry.failPhysicalCleanup(failure); assert.equal(quarantined.state, 'quarantined'); assert.equal(quarantined.cleanupState, 'failed'); assert.equal(quarantined.safeCode, 'CLEANUP_IDENTITY_MISMATCH');
+    assert.deepEqual(await registry.failPhysicalCleanup(failure), quarantined); const diagnostics = registry.diagnostics(); assert.equal(diagnostics.admission, 'blocked'); assert.equal(diagnostics.pendingCleanupIntentCount, 0); assert.equal(diagnostics.quarantinedCount, 1);
+  } finally { registry.onStop(); await rm(root, { recursive: true, force: true }); }
+});
+
+test('startup quarantines an ambiguous cleanup intent without replaying deletion', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'kogg-allocation-cleanup-recovery-')); process.env.KOGG_STATE_DIR = root; const first = allocationRegistry(); await first.onStart();
+  let allocation = await first.reserve(allocationRequest()); allocation = await first.recordPhysicalAllocation(physicalAllocationProof(allocation, allocationRequest(), '38000000-0000-4000-8000-000000000001'));
+  await first.preparePhysicalCleanup({ requestId: '38000000-0000-4000-8000-000000000002', worktreeId: allocation.worktreeId, expectedRevision: allocation.revision, bindingDigest: allocation.bindingDigest }); first.onStop();
+  const recovered = allocationRegistry(); await recovered.onStart();
+  try { const diagnostics = recovered.diagnostics(); assert.equal(diagnostics.admission, 'blocked'); assert.equal(diagnostics.quarantinedCount, 1); assert.equal(diagnostics.pendingCleanupIntentCount, 1); }
+  finally { recovered.onStop(); await rm(root, { recursive: true, force: true }); }
+});
+
+test('refuses startup when a persisted physical identity component is altered', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'kogg-allocation-identity-integrity-')); process.env.KOGG_STATE_DIR = root; const first = allocationRegistry(); await first.onStart();
+  let allocation = await first.reserve(allocationRequest()); allocation = await first.recordPhysicalAllocation(physicalAllocationProof(allocation, allocationRequest(), '39000000-0000-4000-8000-000000000001')); first.onStop();
+  try {
+    const database = new DatabaseSync(path.join(root, 'execution', 'registry.sqlite3')); database.prepare('UPDATE allocations SET filesystem_inode=? WHERE worktree_id=?').run('4002', allocation.worktreeId); database.close();
+    await assert.rejects(allocationRegistry().onStart(), /physical identity integrity/u);
+  } finally { await rm(root, { recursive: true, force: true }); }
 });
 
 test('allows only one durable import mutation lease per repository until terminal completion', async () => {
@@ -240,6 +291,9 @@ function physicalAllocationProof(allocation: ExecutionAllocationSummaryV1, reque
 function candidateFor(allocation: Awaited<ReturnType<typeof advanceToStopping>>, candidateId: string) {
   const base = allocationRequest().binding;
   return { schemaVersion: 1 as const, candidateId, worktreeId: allocation.worktreeId, runId: allocation.runId, attemptId: allocation.attemptId, baseCommit: base.baseCommit, baseTree: base.baseTree, candidateCommit: 'd'.repeat(40), candidateTree: 'e'.repeat(40), objectClosureDigest: `sha256:${'f'.repeat(64)}`, mutationPolicyDigest: CANDIDATE_MUTATION_POLICY_DIGEST, sealedAt: new Date().toISOString(), retentionClass: 'pending-evidence' as const, retentionUntil: '9999-12-31T23:59:59.999Z', safeCode: 'SEAL_OK' as const };
+}
+function cleanupProof(value: { expectedIdentityDigest: string; fencingToken: string; helperDigest: string; intentId: string; mountQuotaDigest: string; worktreeId: string }): string {
+  return `sha256:${createHash('sha256').update(`kogg-execution-cleanup-absence-v1\0${JSON.stringify({ expectedIdentityDigest: value.expectedIdentityDigest, fencingToken: value.fencingToken, helperDigest: value.helperDigest, intentId: value.intentId, mountQuotaDigest: value.mountQuotaDigest, worktreeId: value.worktreeId })}`).digest('hex')}`;
 }
 function binding(): ExecutionBindingV1 {
   const digest = `sha256:${'a'.repeat(64)}`;
