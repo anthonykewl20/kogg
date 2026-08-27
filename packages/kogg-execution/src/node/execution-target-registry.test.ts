@@ -38,6 +38,17 @@ test('fails the cleanup diagnostic while a durable physical cleanup intent is pe
   assert.equal(checks.find(check => check.id === 'execution.process-cleanup')?.status, 'fail');
 });
 
+test('fails registry and capacity diagnostics for unsafe quota-project lease state', async () => {
+  const registry = new ExecutionTargetRegistry(bridge(async () => qualification()), { platform: 'linux', arch: 'x64' }); await registry.onStart();
+  const healthy = healthyAllocations().diagnostics();
+  const quarantined = { diagnostics: () => ({ ...healthy, quarantinedQuotaProjectLeaseCount: 1 }) } as ExecutionAllocationRegistry;
+  const exhausted = { diagnostics: () => ({ ...healthy, activeQuotaProjectLeaseCount: 64 }) } as ExecutionAllocationRegistry;
+  const quarantineChecks = await new ExecutionDiagnosticContributor(registry, quarantined, healthyOperations()).diagnose();
+  const capacityChecks = await new ExecutionDiagnosticContributor(registry, exhausted, healthyOperations()).diagnose();
+  assert.equal(quarantineChecks.find(check => check.id === 'execution.worktree-registry')?.status, 'fail');
+  assert.equal(capacityChecks.find(check => check.id === 'execution.capacity')?.status, 'fail');
+});
+
 test('requalifies immediately before allocation and authorizes only the exact immutable fact', async () => {
   const fact = qualification(); let calls = 0;
   const registry = new ExecutionTargetRegistry(bridge(async () => { calls++; return fact; }), { platform: 'linux', arch: 'x64' });
@@ -75,5 +86,5 @@ function bindingFor(value: KernelExecutionQualification): ExecutionBindingV1 {
   const digest = `sha256:${'b'.repeat(64)}`;
   return { schemaVersion: 1, projectId: '10000000-0000-4000-8000-000000000011', projectRevision: '1', repositoryId: '10000000-0000-4000-8000-000000000012', repositoryBindingRevision: '1', taskId: '10000000-0000-4000-8000-000000000013', taskRevisionId: '10000000-0000-4000-8000-000000000014', taskRevisionDigest: digest, approvalDigest: digest, runId: '10000000-0000-4000-8000-000000000015', attemptId: '10000000-0000-4000-8000-000000000016', workflowPlanDigest: digest, baseCommit: 'b'.repeat(40), baseTree: 'c'.repeat(40), gitObjectFormat: 'sha1', targetId: value.targetId, qualificationId: value.qualificationId, qualificationDigest: qualificationDigest(value), profileId: value.profileId, profileDigest: value.profileDigest };
 }
-function healthyAllocations(): ExecutionAllocationRegistry { return { diagnostics: () => ({ integrity: true, foreignKeys: true, permissions: true, admission: 'enabled', activeCount: 0, quarantinedCount: 0, recoveryRequiredCount: 0, unverifiedCount: 0, cleanupFailureCount: 0, reservationCount: 0, candidateCount: 0, pendingImportIntentCount: 0, activeRepositoryLeaseCount: 0, quarantinedRepositoryLeaseCount: 0, pendingCleanupIntentCount: 0, retentionViolationCount: 0, loggingViolationCount: 0 }) } as ExecutionAllocationRegistry; }
+function healthyAllocations(): ExecutionAllocationRegistry { return { diagnostics: () => ({ integrity: true, foreignKeys: true, permissions: true, admission: 'enabled', activeCount: 0, quarantinedCount: 0, recoveryRequiredCount: 0, unverifiedCount: 0, cleanupFailureCount: 0, reservationCount: 0, candidateCount: 0, pendingAllocationIntentCount: 0, pendingImportIntentCount: 0, activeRepositoryLeaseCount: 0, quarantinedRepositoryLeaseCount: 0, activeQuotaProjectLeaseCount: 0, quarantinedQuotaProjectLeaseCount: 0, pendingCleanupIntentCount: 0, retentionViolationCount: 0, loggingViolationCount: 0 }) } as ExecutionAllocationRegistry; }
 function healthyOperations(): OperationRegistryApi { return { diagnostics: () => ({ integrity: true, foreignKeys: true, permissions: true, recoveryComplete: true, activeCount: 0, stalledCount: 0, residualCount: 0, cleanupFailureCount: 0, admission: 'enabled' }) } as OperationRegistryApi; }
