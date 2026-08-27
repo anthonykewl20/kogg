@@ -27,7 +27,7 @@ import type { OperationsOwnerSink, OwnerEventV1, SafeOwnerPayloadV1 } from '@kog
 import { OperationsReadModel } from '@kogg/operations/lib/node/operations-read-model';
 import { BackendApplicationContribution } from '@theia/core/lib/node';
 import { inject, injectable } from '@theia/core/shared/inversify';
-import type { KoggProjectsService, ProjectBindingAuthority, ProjectBindingSnapshot } from '../common/projects-protocol';
+import type { KoggProjectsService, ProjectBindingAuthority, ProjectBindingSnapshot, ProjectSourceBindingAuthority, ProjectSourceBindingSnapshot } from '../common/projects-protocol';
 import { ProjectError, errorType } from './project-errors';
 import { ProjectRepositoryProbe, type RepositoryProbeResult } from './project-repository-probe';
 import { ProjectWorkspaceProjection } from './project-workspace-projection';
@@ -47,7 +47,7 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{1
 const SAFE_ID = /^[a-z0-9][a-z0-9._:-]{0,127}$/u;
 
 @injectable()
-export class ProjectRegistry implements KoggProjectsService, ProjectBindingAuthority, BackendApplicationContribution {
+export class ProjectRegistry implements KoggProjectsService, ProjectBindingAuthority, ProjectSourceBindingAuthority, BackendApplicationContribution {
   private database: DatabaseSync | undefined;
   private accepting = false;
   private readonly trackedOperations = new Map<string, OperationLease>();
@@ -137,6 +137,30 @@ export class ProjectRegistry implements KoggProjectsService, ProjectBindingAutho
       repositoryIdentityDigest: stringValue(this.db().prepare('SELECT identity_digest FROM repositories WHERE id = ? AND project_id = ?')
         .get(repositoryId, projectId) as SqlRow, 'identity_digest')
     };
+  }
+
+  async resolveSourceBinding(projectId: string, repositoryId: string): Promise<ProjectSourceBindingSnapshot | undefined> {
+    console.debug('[kogg:projects:git] repository.source.measurement.requested', { projectId, repositoryId });
+    try {
+      const before = await this.resolveBinding(projectId, repositoryId);
+      if (!before?.available || !before.active) return this.sourceBindingRefused(projectId, repositoryId, 'PROJECT_SOURCE_UNAVAILABLE');
+      const stored = this.db().prepare('SELECT git_dir_uri FROM repositories WHERE id=? AND project_id=?').get(repositoryId, projectId) as SqlRow | undefined;
+      if (!stored) return this.sourceBindingRefused(projectId, repositoryId, 'PROJECT_SOURCE_UNAVAILABLE');
+      const source = await this.repositories.measureSource(fileURLToPath(before.rootUri), repositoryId);
+      const after = await this.resolveBinding(projectId, repositoryId);
+      if (!after || !sameBinding(before, after) || source.rootUri !== after.rootUri || source.gitDirectoryUri !== stringValue(stored, 'git_dir_uri')) {
+        return this.sourceBindingRefused(projectId, repositoryId, 'PROJECT_SOURCE_CHANGED');
+      }
+      console.info('[kogg:projects:git] repository.source.measurement.completed', { projectId, repositoryId });
+      return { ...after, gitDirectoryUri: source.gitDirectoryUri, baseCommit: source.baseCommit, baseTree: source.baseTree, gitObjectFormat: source.gitObjectFormat };
+    } catch (error) {
+      console.warn('[kogg:projects:git] repository.source.measurement.refused', { projectId, repositoryId, safeCode: 'PROJECT_SOURCE_UNAVAILABLE', errorType: errorType(error) });
+      return undefined;
+    }
+  }
+
+  private sourceBindingRefused(projectId: string, repositoryId: string, safeCode: 'PROJECT_SOURCE_UNAVAILABLE' | 'PROJECT_SOURCE_CHANGED'): undefined {
+    console.warn('[kogg:projects:git] repository.source.measurement.refused', { projectId, repositoryId, safeCode }); return undefined;
   }
 
   async createProject(request: ProjectMutationExpectation & { displayName: string; repositoryPath: string }): Promise<ProjectRegistrySnapshot> {
@@ -852,6 +876,12 @@ function nullableString(row: SqlRow, key: string): string | null {
 }
 function numberValue(row: SqlRow | undefined, key: string): number {
   const value = row?.[key]; if (typeof value !== 'number') throw new ProjectError('PROJECT_REGISTRY_INTEGRITY_FAILED', 'The registry contains invalid data.'); return value;
+}
+function sameBinding(left: ProjectBindingSnapshot, right: ProjectBindingSnapshot): boolean {
+  return left.projectId === right.projectId && left.repositoryId === right.repositoryId
+    && left.registryRevision === right.registryRevision && left.bindingRevision === right.bindingRevision
+    && left.available === right.available && left.active === right.active && left.executionProfileId === right.executionProfileId
+    && left.rootUri === right.rootUri && left.repositoryIdentityDigest === right.repositoryIdentityDigest;
 }
 function stateRoot(): string {
   const root = process.env.KOGG_ROOT ? path.resolve(process.env.KOGG_ROOT) : process.cwd();

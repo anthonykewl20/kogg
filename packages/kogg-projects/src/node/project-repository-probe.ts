@@ -18,6 +18,12 @@ export interface RepositoryProbeResult {
   readonly gitDirUri: string;
   readonly identityDigest: string;
 }
+export interface RepositorySourceMeasurement {
+  readonly rootUri: string; readonly gitDirectoryUri: string; readonly baseCommit: string; readonly baseTree: string;
+  readonly gitObjectFormat: 'sha1' | 'sha256';
+}
+const PROBE_ARGUMENTS = ['rev-parse', '--path-format=absolute', '--show-toplevel', '--absolute-git-dir', '--is-bare-repository', '--is-inside-work-tree'] as const;
+const SOURCE_ARGUMENTS = ['rev-parse', '--path-format=absolute', '--show-object-format', 'HEAD^{commit}', 'HEAD^{tree}', '--absolute-git-dir', '--show-toplevel'] as const;
 
 @injectable()
 export class ProjectRepositoryProbe {
@@ -38,7 +44,7 @@ export class ProjectRepositoryProbe {
     const processLease = operation.registerProcess({ kind: 'git', owner: 'kogg-supervisor', cancel: async () => managed?.cancel() });
     try {
       const canonicalRepositoryPath = await realpath(repositoryPath);
-      managed = new KoggGitProcess(this.processManager, this.logger, processLease, canonicalRepositoryPath, operationId, repositoryId, this.timeoutMs);
+      managed = new KoggGitProcess(this.processManager, this.logger, processLease, canonicalRepositoryPath, operationId, repositoryId, this.timeoutMs, 'validate', PROBE_ARGUMENTS);
       this.active.set(operationId, managed);
       const output = await managed.result();
       operation.active();
@@ -72,9 +78,52 @@ export class ProjectRepositoryProbe {
 
   activeCount(): number { return this.active.size; }
 
+  async measureSource(repositoryPath: string, repositoryId: string): Promise<RepositorySourceMeasurement> {
+    const first = await this.measureSourceOnce(repositoryPath, randomUUID(), repositoryId);
+    const second = await this.measureSourceOnce(repositoryPath, randomUUID(), repositoryId);
+    if (!sameSourceMeasurement(first, second)) throw new ProjectError('PROJECT_REPOSITORY_OUTPUT_INVALID', 'The repository source changed during measurement.');
+    return second;
+  }
+
+  private async measureSourceOnce(repositoryPath: string, operationId: string, repositoryId: string): Promise<RepositorySourceMeasurement> {
+    let managed: KoggGitProcess | undefined;
+    const operation = await this.operations.startOperation({ id: operationId, kind: 'repository-probe' }); operation.start();
+    const processLease = operation.registerProcess({ kind: 'git', owner: 'kogg-supervisor', cancel: async () => managed?.cancel() });
+    try {
+      const canonicalRepositoryPath = await realpath(repositoryPath);
+      managed = new KoggGitProcess(this.processManager, this.logger, processLease, canonicalRepositoryPath, operationId, repositoryId, this.timeoutMs, 'source.measurement', SOURCE_ARGUMENTS);
+      this.active.set(operationId, managed); const lines = (await managed.result()).trim().split(/\r?\n/gu); operation.active();
+      if (lines.length !== 5 || (lines[0] !== 'sha1' && lines[0] !== 'sha256')) throw new ProjectError('PROJECT_REPOSITORY_OUTPUT_INVALID', 'Git returned an invalid source measurement.');
+      const [gitObjectFormat, baseCommit, baseTree, rawGitDirectory, rawRoot] = lines as ['sha1' | 'sha256', string, string, string, string];
+      const object = gitObjectFormat === 'sha1' ? /^[0-9a-f]{40}$/u : /^[0-9a-f]{64}$/u;
+      if (!object.test(baseCommit) || !object.test(baseTree)) throw new ProjectError('PROJECT_REPOSITORY_OUTPUT_INVALID', 'Git returned an invalid object identity.');
+      const [gitDirectory, root] = await Promise.all([realpath(rawGitDirectory), realpath(rawRoot)]);
+      if (root !== canonicalRepositoryPath) throw new ProjectError('PROJECT_REPOSITORY_OUTPUT_INVALID', 'Git returned a different worktree.');
+      await operation.cleanup(); operation.complete();
+      return { rootUri: pathToFileURL(root).href, gitDirectoryUri: pathToFileURL(gitDirectory).href, baseCommit, baseTree, gitObjectFormat };
+    } catch (error) {
+      await operation.cleanup().catch(() => undefined);
+      const failureCode = error instanceof ProjectError && error.code === 'PROJECT_REPOSITORY_PROBE_TIMEOUT'
+        ? 'OPERATION_ABSOLUTE_TIMEOUT'
+        : error instanceof ProjectError && error.code === 'PROJECT_REPOSITORY_PROBE_CANCELLED'
+          ? 'OPERATION_CANCELLED'
+          : 'PROCESS_EXIT_NONZERO';
+      operation.fail(failureCode, error instanceof Error ? error.name : 'UnknownError');
+      throw error;
+    } finally { this.active.delete(operationId); }
+  }
+
   async shutdown(): Promise<void> {
     await Promise.all([...this.active.values()].map(process => process.cancel()));
   }
+}
+
+function sameSourceMeasurement(left: RepositorySourceMeasurement, right: RepositorySourceMeasurement): boolean {
+  return left.rootUri === right.rootUri
+    && left.gitDirectoryUri === right.gitDirectoryUri
+    && left.baseCommit === right.baseCommit
+    && left.baseTree === right.baseTree
+    && left.gitObjectFormat === right.gitObjectFormat;
 }
 
 class KoggGitProcess extends Process {
@@ -98,17 +147,16 @@ class KoggGitProcess extends Process {
     repositoryPath: string,
     private readonly operationId: string,
     private readonly repositoryId: string,
-    private readonly timeoutMs: number
+    private readonly timeoutMs: number,
+    private readonly purpose: 'validate' | 'source.measurement',
+    args: readonly string[]
   ) {
     super(processManager, logger, ProcessType.Raw, { command: 'git', args: [], options: {} });
     console.info('[kogg:projects:git] repository.process.registered', { operationId, repositoryId, processRegistrationId: this.id });
     this.completion = new Promise<string>((resolve, reject) => { this.settle = resolve; this.fail = reject; });
     try {
       this.processLease.spawning();
-      this.child = spawn('git', [
-        'rev-parse', '--path-format=absolute', '--show-toplevel', '--absolute-git-dir',
-        '--is-bare-repository', '--is-inside-work-tree'
-      ], {
+      this.child = spawn('git', [...args], {
         cwd: path.resolve(repositoryPath),
         detached: process.platform !== 'win32',
         env: { PATH: process.env.PATH ?? '', LC_ALL: 'C', LANG: 'C', GIT_TERMINAL_PROMPT: '0' },
@@ -158,11 +206,7 @@ class KoggGitProcess extends Process {
   protected override handleOnError(_error: Error): void { this._killed = true; }
 
   private attach(): void {
-    console.info('[kogg:projects:git] repository.validate.started', {
-      operationId: this.operationId,
-      repositoryId: this.repositoryId,
-      processRegistrationId: this.id
-    });
+    this.lifecycle('started');
     this.outputStream.on('data', chunk => {
       this.processLease.activity();
       this.stdout += String(chunk);
@@ -181,9 +225,7 @@ class KoggGitProcess extends Process {
       if (code === 0) {
         this.terminal = true;
         this._killed = true;
-        console.info('[kogg:projects:git] repository.validate.completed', {
-          operationId: this.operationId, repositoryId: this.repositoryId, processRegistrationId: this.id, exitClass: 'zero'
-        });
+        this.lifecycle('completed', 'zero');
         this.settle?.(this.stdout);
         this.processLease.exited('zero');
         this.cleanup();
@@ -214,11 +256,14 @@ class KoggGitProcess extends Process {
       processRegistrationId: this.id, exitClass, errorType: error.name
     };
     if (error instanceof ProjectError && error.code === 'PROJECT_REPOSITORY_PROBE_TIMEOUT') {
-      console.warn('[kogg:projects:git] repository.validate.timeout', fields);
+      if (this.purpose === 'validate') console.warn('[kogg:projects:git] repository.validate.timeout', fields);
+      else console.warn('[kogg:projects:git] repository.source.measurement.timeout', fields);
     } else if (error instanceof ProjectError && error.code === 'PROJECT_REPOSITORY_PROBE_CANCELLED') {
-      console.warn('[kogg:projects:git] repository.validate.cancelled', fields);
+      if (this.purpose === 'validate') console.warn('[kogg:projects:git] repository.validate.cancelled', fields);
+      else console.warn('[kogg:projects:git] repository.source.measurement.cancelled', fields);
     } else {
-      console.error('[kogg:projects:git] repository.validate.failed', fields);
+      if (this.purpose === 'validate') console.error('[kogg:projects:git] repository.validate.failed', fields);
+      else console.error('[kogg:projects:git] repository.source.measurement.failed', fields);
     }
     this.fail?.(error);
     this.processLease.exited(exitClass === 'signal' || exitClass === 'timeout' || exitClass === 'cancelled' ? 'signal' : 'nonzero');
@@ -235,5 +280,14 @@ class KoggGitProcess extends Process {
     console.info('[kogg:projects:git] repository.process.cleanup.completed', {
       operationId: this.operationId, repositoryId: this.repositoryId, processRegistrationId: this.id
     });
+  }
+
+  private lifecycle(event: 'started' | 'completed', exitClass?: 'zero'): void {
+    const fields = { operationId: this.operationId, repositoryId: this.repositoryId, processRegistrationId: this.id, ...(exitClass ? { exitClass } : {}) };
+    if (this.purpose === 'validate') {
+      if (event === 'started') console.info('[kogg:projects:git] repository.validate.started', fields);
+      else console.info('[kogg:projects:git] repository.validate.completed', fields);
+    } else if (event === 'started') console.info('[kogg:projects:git] repository.source.measurement.started', fields);
+    else console.info('[kogg:projects:git] repository.source.measurement.completed', fields);
   }
 }
