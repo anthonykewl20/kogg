@@ -327,6 +327,7 @@ async function exerciseElectronTasks(page, electronApplication) {
     await tasks.getByLabel('Initial specification').fill(canary + '\nElectron requirement\n');
     await tasks.getByRole('button', { name: 'Create task' }).click();
     await tasks.getByText(/Revision 1 · active · draft/iu).waitFor({ timeout: 10_000 });
+    await exerciseElectronInteractionModes(page);
     await tasks.getByRole('button', { name: 'Freeze exact revision' }).click();
     await tasks.getByRole('button', { name: 'Review for approval' }).click();
     await tasks.locator('.kogg-review').getByText(canary).waitFor();
@@ -342,50 +343,26 @@ async function exerciseElectronTasks(page, electronApplication) {
     assert.equal(logs.join('\n').includes(canary), false);
 }
 
-async function exerciseElectronAgents(page, electronApplication, admissionId) {
-    const agents = page.locator('.kogg-agents-widget').last();
-    if (!await agents.count()) {
-        await openCommand(page, 'View: Toggle Kogg Agents', electronApplication);
-        await agents.waitFor({ state: 'attached', timeout: 30_000 });
-    }
-    await agents.locator('[data-adapter-row="codex-app-server@1.0.0"]').filter({ hasText: /disabled · codex\.app-server-v2 1\.0\.0/iu }).waitFor();
-    await agents.locator('[data-adapter-row="claude-agent-sdk@1.0.0"]').filter({ hasText: /disabled · claude\.agent-sdk 1\.0\.0/iu }).waitFor();
-    await agents.getByRole('button', { name: 'Save immutable revision' }).click();
-    await agents.locator('section').filter({ hasText: 'Role Revisions' }).locator('li').filter({ hasText: /implementer · [0-9a-f-]{36}/u }).waitFor();
-    await agents.getByLabel('Task admission ID').fill(admissionId);
-    await agents.getByRole('button', { name: 'Confirm and start exact attempt' }).click();
-    await agents.getByText(/cleaned · AGENT_OK.*resources 0/iu).waitFor({ timeout: 15_000 });
-
-    await agents.getByLabel('Role key', { exact: true }).fill('codex-refusal');
-    await agents.getByLabel('Display name').fill('Codex refusal probe');
-    await agents.getByLabel('Provider IDs').fill('openai');
-    await agents.getByLabel('Model IDs').fill('gpt-5');
-    await agents.getByRole('button', { name: 'Save immutable revision' }).click();
-    const codexRole = agents.getByLabel('Role revision').locator('option').filter({ hasText: /^codex-refusal ·/u });
-    await codexRole.waitFor({ state: 'attached' });
-    await agents.getByLabel('Role revision').selectOption(await codexRole.getAttribute('value'));
-    await agents.getByLabel('Task admission ID').fill(admissionId);
-    await agents.getByLabel('Exact adapter and version').fill('codex-app-server@1.0.0');
-    await agents.getByLabel('Provider', { exact: true }).fill('openai');
-    await agents.getByLabel('Model', { exact: true }).fill('gpt-5');
-    await agents.getByRole('button', { name: 'Confirm and start exact attempt' }).click();
-    await agents.getByText(/cleaned · ADAPTER_DISABLED.*codex-app-server@1\.0\.0.*openai\/gpt-5.*resources 0/iu).waitFor({ timeout: 10_000 });
-    await agents.getByText('The exact adapter is registered but disabled; no process or provider request was started.').waitFor();
-
-    await agents.getByLabel('Role key', { exact: true }).fill('claude-refusal');
-    await agents.getByLabel('Display name').fill('Claude refusal probe');
-    await agents.getByLabel('Provider IDs').fill('anthropic');
-    await agents.getByLabel('Model IDs').fill('claude-sonnet-4-5');
-    await agents.getByRole('button', { name: 'Save immutable revision' }).click();
-    const claudeRole = agents.getByLabel('Role revision').locator('option').filter({ hasText: /^claude-refusal ·/u });
-    await claudeRole.waitFor({ state: 'attached' });
-    await agents.getByLabel('Role revision').selectOption(await claudeRole.getAttribute('value'));
-    await agents.getByLabel('Task admission ID').fill(admissionId);
-    await agents.getByLabel('Exact adapter and version').fill('claude-agent-sdk@1.0.0');
-    await agents.getByLabel('Provider', { exact: true }).fill('anthropic');
-    await agents.getByLabel('Model', { exact: true }).fill('claude-sonnet-4-5');
-    await agents.getByRole('button', { name: 'Confirm and start exact attempt' }).click();
-    await agents.getByText(/cleaned · ADAPTER_DISABLED.*claude-agent-sdk@1\.0\.0.*anthropic\/claude-sonnet-4-5.*resources 0/iu).waitFor({ timeout: 10_000 });
+async function exerciseElectronInteractionModes(page) {
+    const selector = page.getByLabel(/Mode: Plan; authority: \d+ bounded capabilities; stage: research/u);
+    await selector.waitFor({ state: 'visible', timeout: 15_000 });
+    await selector.click();
+    const build = page.getByRole('option', { name: /Build\./u });
+    await build.waitFor({ state: 'visible', timeout: 10_000 });
+    await build.click();
+    await page.getByRole('button', { name: 'Request switch' }).click();
+    let pending = page.getByLabel(/Mode: Plan; authority: disabled during transition/u);
+    await pending.waitFor({ state: 'visible', timeout: 10_000 });
+    await page.reload({ waitUntil: 'domcontentloaded' });
+    await page.locator('body.kogg-application').waitFor({ timeout: 20_000 });
+    pending = page.getByLabel(/Mode: Plan; authority: disabled during transition/u);
+    await pending.waitFor({ state: 'visible', timeout: 10_000 });
+    await pending.click();
+    await page.getByRole('button', { name: 'Cancel request' }).click();
+    await selector.waitFor({ state: 'visible', timeout: 10_000 });
+    assert.match(logs.join('\n'), /\[kogg:interaction-modes:transition-authority\] authority\.mint\.completed.*electron/su);
+    assert.match(logs.join('\n'), /\[kogg:interaction-modes:service\] mode\.transition\.cancelled/u);
+    await clearNotifications(page);
 }
 
 async function exerciseElectronOperations(page, electronApplication) {
@@ -506,8 +483,8 @@ async function exerciseNodeDebug(page, electronApplication, configuration, expec
     await page.locator('[title="Continue (F5)"]').waitFor({ state: 'visible', timeout: pauseTimeout });
     await page.locator('[title^="Stop"]:visible').evaluate(element => element.click());
     await page.locator('[title="Continue (F5)"]').waitFor({ state: 'hidden', timeout: 10_000 });
-    await page.keyboard.press('F5');
-    await page.locator('[title="Continue (F5)"]').waitFor({ state: 'visible', timeout: pauseTimeout });
+    await page.waitForTimeout(500);
+    await start();
     await page.locator('[title="Continue (F5)"]:visible').evaluate(element => element.click());
     await page.getByText(expectedOutput).waitFor({ timeout: 10_000 });
 }

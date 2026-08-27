@@ -4,6 +4,7 @@ import { inject, injectable, postConstruct } from '@theia/core/shared/inversify'
 import { KoggProjectsService, type KoggProjectsService as ProjectsService } from '@kogg/projects/lib/common/projects-protocol';
 import type { ProjectRegistrySnapshot } from '@kogg/contracts';
 import { KoggTasksService, type ReviewProjection, type TaskMutationResult, type TaskProjection, type TaskSummary, type MutationPrecondition } from '../common/tasks-protocol';
+import { KOGG_TASKS_CHANGED_EVENT } from './tasks-events';
 
 // diagnostic-coverage: tasks.registry, tasks.revisions, tasks.bindings, tasks.approvals
 
@@ -129,7 +130,7 @@ export class TasksWidget extends BaseWidget {
     this.busy = true; this.render();
     try { await action(); }
     catch (error) { const code = error instanceof UiResult ? error.code : 'INTERNAL_FAILURE'; console.error('[kogg:tasks:widget] operation.failed', { errorType: error instanceof Error ? error.name : 'UnknownError', safeCode: code }); this.status = textFor(code); if (notify) void this.messages.error(this.status); }
-    finally { this.busy = false; this.render(); }
+    finally { this.busy = false; this.render(); window.dispatchEvent(new Event(KOGG_TASKS_CHANGED_EVENT)); }
   }
 }
 

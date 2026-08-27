@@ -3,7 +3,7 @@
 
 export const KoggTasksServicePath = '/services/kogg-tasks';
 export const KoggTasksService = Symbol('KoggTasksService');
-export const TaskAdmissionAuthority = Symbol('TaskAdmissionAuthority');
+export const TaskProjectionAuthority = Symbol('TaskProjectionAuthority');
 
 export type TaskResultKind = 'completed' | 'refused' | 'conflict' | 'failed';
 export type TaskLifecycle = 'active' | 'archived';
@@ -75,3 +75,4 @@ export interface KoggTasksService {
   archive(input: MutationPrecondition & { readonly taskId: string }): Promise<TaskMutationResult>;
   authorizeAdmission(input: MutationPrecondition & { readonly taskId: string; readonly runId: string }): Promise<TaskMutationResult & { readonly admission?: TaskAdmissionSnapshot }>;
 }
+export interface TaskProjectionAuthority { get(taskId: string): Promise<TaskProjection>; }

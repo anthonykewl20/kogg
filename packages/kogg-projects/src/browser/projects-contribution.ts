@@ -25,9 +25,6 @@ export class ProjectsContribution extends AbstractViewContribution<ProjectsWidge
   async onDidInitializeLayout(_application: FrontendApplication): Promise<void> {
     const requestId = crypto.randomUUID();
     try {
-      // Reconciliation needs the actual restored workspace URI. Running after
-      // layout initialization avoids blocking WorkspaceService's own startup
-      // while still fencing preserve-window project-switch reconciliation.
       await this.workspace.ready;
       const reconciliation = await this.service.reconcileWorkspace({ requestId, currentWorkspaceUri: this.workspace.workspace?.resource.toString() });
       if (reconciliation.action === 'open' && reconciliation.workspaceUri) {

@@ -9,7 +9,7 @@ import { chromium } from 'playwright';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const resultRoot = path.join(root, 'test-results', 'browser');
-const temporary = await mkdtemp(path.join(os.tmpdir(), 'kogg-browser-e2e-'));
+const temporary = await mkdtemp(path.join(await realpath(os.tmpdir()), 'kogg-browser-e2e-'));
 const workspace = path.join(temporary, 'workspace');
 const secondaryRepository = path.join(temporary, 'secondary-repository');
 const relocatedRepository = path.join(temporary, 'secondary-repository-relocated');
@@ -75,6 +75,17 @@ try {
     await page.waitForTimeout(2_000);
     assert.match(await page.title(), /^workspace(?: - Kogg)?$/u);
 
+    if (process.env.KOGG_E2E_MODES_ONLY === '1') {
+        await createInteractionModeFixture(page);
+        await exerciseInteractionModes(page);
+        process.stdout.write('Kogg browser interaction-mode selector E2E passed.\n');
+        await browser.close(); browser = undefined;
+        await stop(backend); backend = undefined;
+        await stop(registry); registry = undefined;
+        await rm(temporary, { recursive: true, force: true });
+        process.exit(0);
+    }
+
     if (process.env.KOGG_E2E_PROJECTS_ONLY === '1') {
         await exerciseProjects(page);
         process.stdout.write('Kogg browser Projects-only E2E passed.\n');
@@ -88,6 +99,8 @@ try {
     if (process.env.KOGG_E2E_TASKS_ONLY === '1') {
         await exerciseProjects(page);
         await exerciseTasks(page);
+        await createInteractionModeFixture(page);
+        await exerciseInteractionModes(page);
         process.stdout.write('Kogg browser governed-tasks E2E passed.\n');
         await browser.close(); browser = undefined;
         await stop(backend); backend = undefined;
@@ -227,6 +240,8 @@ try {
 
     await exerciseProjects(page);
     await exerciseTasks(page);
+    await createInteractionModeFixture(page);
+    await exerciseInteractionModes(page);
     await exerciseOperations(page);
 
     for (let cycle = 0; cycle < 25; cycle++) {
@@ -794,6 +809,58 @@ async function ensureTasksWidget(page) {
     }
     assert.doesNotMatch(await widget.textContent(), /Loading tasks/iu);
     return widget;
+}
+
+async function exerciseInteractionModes(page) {
+    const selector = page.getByLabel(/Mode: Plan; authority: \d+ bounded capabilities; stage: research/u);
+    await selector.waitFor({ state: 'visible', timeout: 15_000 });
+    await selector.click();
+    const build = page.getByRole('option', { name: /Build\./u });
+    await build.waitFor({ state: 'visible', timeout: 10_000 });
+    await build.click();
+    await page.getByRole('button', { name: 'Request switch' }).click();
+    const pending = page.getByLabel(/Mode: Plan; authority: disabled during transition/u);
+    await pending.waitFor({ state: 'visible', timeout: 10_000 });
+    const second = await page.context().newPage();
+    await second.goto(page.url(), { waitUntil: 'domcontentloaded' });
+    await second.locator('body.kogg-application').waitFor({ timeout: 20_000 });
+    const restoredPending = second.getByLabel(/Mode: Plan; authority: disabled during transition/u);
+    await restoredPending.waitFor({ state: 'visible', timeout: 10_000 });
+    await restoredPending.click();
+    await second.getByRole('button', { name: 'Cancel request' }).click();
+    await selector.waitFor({ state: 'visible', timeout: 10_000 });
+    await second.close();
+    assert.match(logs.join('\n'), /\[kogg:ui:mode-selector\] mode\.transition-requested/u);
+    assert.match(logs.join('\n'), /\[kogg:interaction-modes:service\] mode\.transition\.restored/u);
+    assert.match(logs.join('\n'), /\[kogg:interaction-modes:service\] mode\.transition\.cancelled/u);
+}
+
+async function createInteractionModeFixture(page) {
+    let projects = await ensureProjectsWidget(page);
+    let active = projects.locator('[data-project-row]').filter({ hasText: /Active/u });
+    if (!await active.count()) {
+        await createProjectThroughPicker(page, projects, 'Mode fixture', workspace);
+        const row = projects.locator('[data-project-row]').filter({ hasText: 'Mode fixture' });
+        await row.getByRole('button', { name: 'Switch' }).click();
+        await page.waitForURL(/\.theia-workspace(?:$|[?#])/u, { timeout: 20_000 });
+        await page.locator('body.kogg-application').waitFor({ timeout: 20_000 });
+        const trust = page.getByRole('button', { name: 'Yes, I trust the authors' });
+        await trust.waitFor({ state: 'visible', timeout: 10_000 }).catch(() => undefined);
+        if (await trust.isVisible().catch(() => false)) await trust.click();
+        projects = await ensureProjectsWidget(page);
+        await waitForProjectText(projects, /Mode fixture[\s\S]*Active/u);
+        active = projects.locator('[data-project-row]').filter({ hasText: /Active/u });
+    }
+    await active.first().waitFor({ state: 'visible', timeout: 10_000 });
+    const tasks = await ensureTasksWidget(page);
+    await tasks.getByLabel('Initial specification').fill('Create the disposable interaction-mode acceptance fixture.');
+    await tasks.getByRole('button', { name: 'Create task' }).click();
+    await tasks.getByText(/Revision 1 · active · draft/iu).waitFor({ timeout: 10_000 });
+    // The selector intentionally preserves its current active task while a
+    // window is open. Reconnect so it selects the newest fresh task, exactly as
+    // a user does when changing task context after a prior binding degraded.
+    await page.reload({ waitUntil: 'domcontentloaded' });
+    await page.locator('body.kogg-application').waitFor({ timeout: 20_000 });
 }
 
 async function exerciseOperations(page) {

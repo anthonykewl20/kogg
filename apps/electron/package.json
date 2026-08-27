@@ -18,6 +18,7 @@
     "@kogg/contracts": "0.1.0",
     "@kogg/core": "0.1.0",
     "@kogg/kernel": "0.1.0",
+    "@kogg/interaction-modes": "0.1.0",
     "@kogg/marketplace": "0.1.0",
     "@kogg/operations": "0.1.0",
     "@kogg/projects": "0.1.0",
