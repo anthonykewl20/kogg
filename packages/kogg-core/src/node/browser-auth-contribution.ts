@@ -9,6 +9,15 @@ import { inject, injectable, optional } from '@theia/core/shared/inversify';
 
 const COOKIE_NAME = 'kogg_session';
 
+export interface BrowserMutationActorV1 {
+  readonly sessionId: string; readonly actorAuthorityDigest: string; readonly role: 'owner';
+  readonly originVerified: true; readonly csrfVerified: true;
+}
+
+export class BrowserMutationAuthorizationError extends Error {
+  constructor(readonly code: 'authentication_required' | 'mutation_authority_refused') { super(code); this.name = 'BrowserMutationAuthorizationError'; }
+}
+
 @injectable()
 export class BrowserAuthContribution implements BackendApplicationContribution {
   @inject(EarlyExpressMiddleware) @optional()
@@ -19,6 +28,7 @@ export class BrowserAuthContribution implements BackendApplicationContribution {
   private readonly session = this.enabled
     ? createHmac('sha256', this.token).update('kogg-browser-session-v1').digest('base64url')
     : '';
+  private readonly csrf = this.enabled ? createHmac('sha256', this.token).update('kogg-browser-csrf-v1').digest('base64url') : '';
 
   initialize(): void {
     if (!this.enabled || !this.earlyMiddleware) return;
@@ -45,11 +55,37 @@ export class BrowserAuthContribution implements BackendApplicationContribution {
     app.get('/kogg/auth/status', (request, response) => {
       response.status(this.authorized(request.headers.cookie, request.headers.authorization) ? 204 : 401).end();
     });
+    app.get('/kogg/auth/csrf', (request, response) => {
+      if (!this.cookieAuthorized(request.headers.cookie)) { response.status(401).json({ error: 'authentication_required' }); return; }
+      response.setHeader('Cache-Control', 'no-store'); response.status(200).json({ csrfToken: this.csrf });
+      console.info('[kogg:core:browser-auth] csrf.issued');
+    });
     app.use((request: Request, response: Response, next: NextFunction) => {
       if (this.authorized(request.headers.cookie, request.headers.authorization)) next();
       else if (request.accepts('html')) response.redirect(303, '/kogg/auth/login');
       else response.status(401).json({ error: 'authentication_required' });
     });
+  }
+
+  browserMutationsEnabled(): boolean { return this.enabled; }
+
+  verifyMutation(request: Request): BrowserMutationActorV1 {
+    if (!this.enabled || !this.cookieAuthorized(request.headers.cookie)) {
+      console.warn('[kogg:core:browser-auth] mutation.refused', { safeCode: 'authentication_required' });
+      throw new BrowserMutationAuthorizationError('authentication_required');
+    }
+    const origin = typeof request.headers.origin === 'string' ? request.headers.origin : '';
+    const csrf = typeof request.headers['x-kogg-csrf'] === 'string' ? request.headers['x-kogg-csrf'] : '';
+    if (origin !== this.expectedOrigin(request) || !this.equal(csrf, this.csrf)) {
+      console.warn('[kogg:core:browser-auth] mutation.refused', { safeCode: 'mutation_authority_refused' });
+      throw new BrowserMutationAuthorizationError('mutation_authority_refused');
+    }
+    console.info('[kogg:core:browser-auth] mutation.authorized', { role: 'owner' });
+    return {
+      sessionId: createHmac('sha256', this.token).update('kogg-browser-session-id-v1').digest('base64url'),
+      actorAuthorityDigest: `sha256:${createHmac('sha256', this.token).update('kogg-browser-owner-authority-v1').digest('hex')}`,
+      role: 'owner', originVerified: true, csrfVerified: true
+    };
   }
 
   onStart(server: Server): void {
@@ -72,11 +108,26 @@ export class BrowserAuthContribution implements BackendApplicationContribution {
   private authorized(cookieHeader?: string, authorization?: string): boolean {
     const bearer = authorization?.startsWith('Bearer ') ? authorization.slice(7) : '';
     if (bearer && this.equal(bearer, this.token)) return true;
+    return this.cookieAuthorized(cookieHeader);
+  }
+
+  private cookieAuthorized(cookieHeader?: string): boolean {
     const cookies = new Map((cookieHeader ?? '').split(';').map(item => {
       const separator = item.indexOf('=');
       return separator < 0 ? [item.trim(), ''] : [item.slice(0, separator).trim(), item.slice(separator + 1)];
     }));
     return this.equal(cookies.get(COOKIE_NAME) ?? '', this.session);
+  }
+
+  private expectedOrigin(request: Request): string {
+    const configured = process.env.KOGG_PUBLIC_ORIGIN; if (configured) return new URL(configured).origin;
+    const host = request.headers.host ?? ''; let parsed: URL;
+    try { parsed = new URL(`${request.protocol}://${host}`); } catch {
+      // observability-exempt: An invalid Host is intentionally normalized to an origin mismatch and logged by verifyMutation.
+      return '';
+    }
+    if (!['localhost', '127.0.0.1', '::1'].includes(parsed.hostname)) return '';
+    return parsed.origin;
   }
 
   private equal(left: string, right: string): boolean {

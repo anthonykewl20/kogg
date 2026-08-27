@@ -5,7 +5,7 @@ import { DatabaseSync, type SQLOutputValue } from 'node:sqlite';
 import { BackendApplicationContribution } from '@theia/core/lib/node';
 import { inject, injectable } from '@theia/core/shared/inversify';
 import { ProjectBindingAuthority, type ProjectBindingAuthority as BindingAuthority, type ProjectBindingSnapshot } from '@kogg/projects/lib/common/projects-protocol';
-import type { ApprovalProjection, KoggTasksService, MutationPrecondition, ReviewProjection, TaskAdmissionSnapshot, TaskMutationResult, TaskProjection, TaskSafeCode, TaskSummary } from '../common/tasks-protocol';
+import type { ApprovalProjection, KoggTasksService, MutationPrecondition, ReviewProjection, TaskAdmissionAuthority, TaskAdmissionSnapshot, TaskMutationResult, TaskProjection, TaskSafeCode, TaskSummary } from '../common/tasks-protocol';
 import { canonicalRequestDigest, canonicalSpecification, SpecificationValidationError } from '../common/canonical-specification';
 import type { OperationsOwnerSink, OwnerEventV1, SafeOwnerPayloadV1 } from '@kogg/operations/lib/common/operations-read-model-protocol';
 import { OperationsReadModel } from '@kogg/operations/lib/node/operations-read-model';
@@ -18,7 +18,7 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{1
 const DECIMAL = /^(?:0|[1-9][0-9]*)$/u;
 
 @injectable()
-export class TaskRegistry implements KoggTasksService, BackendApplicationContribution {
+export class TaskRegistry implements KoggTasksService, TaskAdmissionAuthority, BackendApplicationContribution {
   private database: DatabaseSync | undefined;
   private readonly challenges = new Map<string, Challenge>();
   private readonly databasePath = path.join(stateRoot(), 'tasks', 'registry.sqlite3');
@@ -187,7 +187,7 @@ export class TaskRegistry implements KoggTasksService, BackendApplicationContrib
   }
 
   async authorizeAdmission(input: MutationPrecondition & { taskId: string; runId: string }): Promise<TaskMutationResult & { admission?: TaskAdmissionSnapshot }> {
-    uuid(input.runId); let admission: TaskAdmissionSnapshot | undefined;
+    uuid(input.runId);
     const result = await this.mutate('admission', input, await this.binding(input.taskId), (db, task, current, revision) => {
       const approval = optional(task, 'current_approval_id');
       if (!approval || str(current, 'lifecycle') !== 'frozen') throw new Refusal('ADMISSION_NOT_AUTHORIZED');
@@ -196,14 +196,53 @@ export class TaskRegistry implements KoggTasksService, BackendApplicationContrib
       admission = { taskId: input.taskId, specificationId: str(current, 'specification_id'), approvalId: approval,
         projectId: str(task, 'project_id'), repositoryId: str(task, 'repository_id'), bindingRevision: dec(task, 'binding_revision'),
         registryRevision: String(revision), taskRevision: String(next), runId: input.runId };
+      db.prepare('INSERT INTO task_admissions VALUES(?,?,?,?,?,?,?,?,?,?,?)').run(taskAdmissionId, input.taskId, str(current, 'specification_id'), approval, str(task, 'project_id'), str(task, 'repository_id'), num(task, 'binding_revision'), revision, next, input.runId, new Date().toISOString());
     });
-    return { ...result, admission };
+    const row = result.kind === 'completed' ? this.db().prepare('SELECT * FROM admissions WHERE run_id = ?').get(input.runId) as Row | undefined : undefined;
+    return { ...result, admission: row ? this.admission(row) : undefined };
+  }
+
+  async resolveAdmission(admission: TaskAdmissionSnapshot): Promise<TaskKernelAuthoritySnapshot> {
+    console.debug('[kogg:tasks:registry] kernel-binding.validation.started', { taskId: safe(admission.taskId), runId: safe(admission.runId) });
+    try {
+      uuid(admission.taskId); uuid(admission.runId); uuid(admission.specificationId); uuid(admission.approvalId);
+      const task = this.task(admission.taskId); const specification = this.spec(str(task, 'current_specification_id'));
+      const approval = this.db().prepare('SELECT * FROM approvals WHERE approval_id = ?').get(admission.approvalId) as Row | undefined;
+      const storedAdmission = this.db().prepare('SELECT * FROM admissions WHERE run_id = ?').get(admission.runId) as Row | undefined;
+      const binding = await this.projects.resolveBinding(str(task, 'project_id'), str(task, 'repository_id'));
+      if (!approval || !storedAdmission || !equal(canonicalRequestDigest(admission), str(storedAdmission, 'admission_digest'))
+        || Date.parse(admission.expiresAt) <= Date.now() || !binding || !matches(task, binding) || str(task, 'lifecycle') !== 'active' || str(specification, 'lifecycle') !== 'frozen'
+        || str(task, 'current_specification_id') !== admission.specificationId || optional(task, 'current_approval_id') !== admission.approvalId
+        || str(approval, 'specification_id') !== admission.specificationId || dec(task, 'task_revision') !== admission.taskRevision
+        || str(task, 'project_id') !== admission.projectId || str(task, 'repository_id') !== admission.repositoryId
+        || dec(task, 'binding_revision') !== admission.bindingRevision) throw new Refusal('ADMISSION_NOT_AUTHORIZED');
+      const result = {
+        taskId: admission.taskId, taskRevision: num(task, 'task_revision'), specificationDigest: str(specification, 'specification_digest'),
+        approvalId: admission.approvalId, approvalDigest: `sha256:${str(approval, 'approval_digest')}`, approvalCreatedAt: str(approval, 'created_at'),
+        projectId: admission.projectId, repositoryId: admission.repositoryId, bindingRevision: num(task, 'binding_revision'),
+        runId: admission.runId, authorizedAt: admission.authorizedAt, expiresAt: admission.expiresAt,
+        executionProfileId: binding.executionProfileId, rootUri: binding.rootUri,
+        repositoryIdentityDigest: binding.repositoryIdentityDigest
+      } satisfies TaskKernelAuthoritySnapshot;
+      console.info('[kogg:tasks:registry] kernel-binding.validation.completed', { taskId: admission.taskId, runId: admission.runId });
+      return result;
+    } catch (error) {
+      console.warn('[kogg:tasks:registry] kernel-binding.validation.refused', { taskId: safe(admission.taskId), runId: safe(admission.runId), safeCode: 'ADMISSION_NOT_AUTHORIZED', errorType: errorName(error) });
+      throw new Refusal('ADMISSION_NOT_AUTHORIZED');
+    }
+  }
+
+  async resolveAdmission(taskAdmissionId: string): Promise<TaskAdmissionSnapshot | undefined> {
+    uuid(taskAdmissionId); const row = this.db().prepare('SELECT * FROM task_admissions WHERE task_admission_id=?').get(taskAdmissionId) as Row | undefined; if (!row) return undefined;
+    const task = this.task(str(row, 'task_id')); const binding = await this.projects.resolveBinding(str(row, 'project_id'), str(row, 'repository_id'));
+    if (str(task, 'lifecycle') !== 'active' || optional(task, 'current_approval_id') !== str(row, 'approval_id') || str(task, 'current_specification_id') !== str(row, 'specification_id') || !matches(task, binding)) return undefined;
+    return { taskAdmissionId, taskId: str(row, 'task_id'), specificationId: str(row, 'specification_id'), approvalId: str(row, 'approval_id'), projectId: str(row, 'project_id'), repositoryId: str(row, 'repository_id'), bindingRevision: dec(row, 'binding_revision'), registryRevision: dec(row, 'registry_revision'), taskRevision: dec(row, 'task_revision'), runId: str(row, 'run_id') };
   }
 
   async diagnostics(): Promise<{ integrity: boolean; foreignKeys: boolean; immutableTriggers: boolean; revisionMismatchCount: number; bindingMismatchCount: number; approvalMismatchCount: number; taskCount: number; openTransactionCount: number }> {
     const db = this.db(); const integrity = str(db.prepare('PRAGMA quick_check').get() as Row, 'quick_check') === 'ok';
     const foreignKeys = db.prepare('PRAGMA foreign_key_check').all().length === 0;
-    const immutableTriggers = num(db.prepare("SELECT count(*) AS count FROM sqlite_master WHERE type='trigger' AND name LIKE 'tasks_immutable_%'").get() as Row, 'count') === 6;
+    const immutableTriggers = num(db.prepare("SELECT count(*) AS count FROM sqlite_master WHERE type='trigger' AND name LIKE 'tasks_immutable_%'").get() as Row, 'count') === 8;
     let revisionMismatchCount = 0; let bindingMismatchCount = 0;
     for (const spec of db.prepare('SELECT * FROM specifications ORDER BY task_id,sequence').all() as Row[]) {
       try { const task = this.task(str(spec, 'task_id')); const canonical = canonicalSpecification({ content: bytes(spec, 'content').toString('utf8'), taskId: str(spec, 'task_id'), projectId: str(task, 'project_id'), repositoryId: str(task, 'repository_id'), bindingRevision: dec(task, 'binding_revision') }); if (canonical.digest !== str(spec, 'specification_digest')) revisionMismatchCount++; }
@@ -267,10 +306,13 @@ export class TaskRegistry implements KoggTasksService, BackendApplicationContrib
       CREATE TABLE IF NOT EXISTS approvals(approval_id TEXT PRIMARY KEY,task_id TEXT NOT NULL REFERENCES tasks(task_id),specification_id TEXT NOT NULL REFERENCES specifications(specification_id),approval_digest TEXT NOT NULL UNIQUE,created_at TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS task_events(event_sequence INTEGER PRIMARY KEY AUTOINCREMENT,event_id TEXT NOT NULL UNIQUE,task_id TEXT NOT NULL REFERENCES tasks(task_id),task_revision INTEGER NOT NULL,registry_revision INTEGER NOT NULL UNIQUE,event_type TEXT NOT NULL,subject_id TEXT NOT NULL,run_id TEXT,observed_at TEXT NOT NULL,previous_event_digest TEXT NOT NULL,event_digest TEXT NOT NULL UNIQUE);
       CREATE TABLE IF NOT EXISTS idempotency(request_id TEXT PRIMARY KEY,request_digest TEXT NOT NULL,operation_type TEXT NOT NULL,result_projection TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS task_admissions(task_admission_id TEXT PRIMARY KEY,task_id TEXT NOT NULL REFERENCES tasks(task_id),specification_id TEXT NOT NULL REFERENCES specifications(specification_id),approval_id TEXT NOT NULL REFERENCES approvals(approval_id),project_id TEXT NOT NULL,repository_id TEXT NOT NULL,binding_revision INTEGER NOT NULL,registry_revision INTEGER NOT NULL,task_revision INTEGER NOT NULL,run_id TEXT NOT NULL,created_at TEXT NOT NULL);
       CREATE TRIGGER IF NOT EXISTS tasks_immutable_specifications_update BEFORE UPDATE ON specifications BEGIN SELECT RAISE(ABORT,'immutable specification'); END;
       CREATE TRIGGER IF NOT EXISTS tasks_immutable_specifications_delete BEFORE DELETE ON specifications BEGIN SELECT RAISE(ABORT,'immutable specification'); END;
       CREATE TRIGGER IF NOT EXISTS tasks_immutable_approvals_update BEFORE UPDATE ON approvals BEGIN SELECT RAISE(ABORT,'immutable approval'); END;
       CREATE TRIGGER IF NOT EXISTS tasks_immutable_approvals_delete BEFORE DELETE ON approvals BEGIN SELECT RAISE(ABORT,'immutable approval'); END;
+      CREATE TRIGGER IF NOT EXISTS tasks_immutable_admissions_update BEFORE UPDATE ON admissions BEGIN SELECT RAISE(ABORT,'immutable admission'); END;
+      CREATE TRIGGER IF NOT EXISTS tasks_immutable_admissions_delete BEFORE DELETE ON admissions BEGIN SELECT RAISE(ABORT,'immutable admission'); END;
       CREATE TRIGGER IF NOT EXISTS tasks_immutable_events_update BEFORE UPDATE ON task_events BEGIN SELECT RAISE(ABORT,'immutable event'); END;
       CREATE TRIGGER IF NOT EXISTS tasks_immutable_events_delete BEFORE DELETE ON task_events BEGIN SELECT RAISE(ABORT,'immutable event'); END;`);
     ensureTaskOwnerColumns(db);
@@ -290,6 +332,9 @@ export class TaskRegistry implements KoggTasksService, BackendApplicationContrib
         bindingRevision: dec(task, 'binding_revision')
       });
       if (canonical.digest !== str(spec, 'specification_digest') || canonical.bytes.length !== num(spec, 'byte_length')) throw new Failure('INTEGRITY_FAILED');
+    }
+    for (const row of db.prepare('SELECT * FROM admissions ORDER BY run_id').all() as Row[]) {
+      if (!equal(canonicalRequestDigest(this.admission(row)), str(row, 'admission_digest'))) throw new Failure('INTEGRITY_FAILED');
     }
     const approvalMismatchCount = num(db.prepare(`SELECT count(*) AS count FROM tasks t LEFT JOIN approvals a ON a.approval_id=t.current_approval_id
       WHERE t.current_approval_id IS NOT NULL AND (a.approval_id IS NULL OR a.specification_id!=t.current_specification_id)`).get() as Row, 'count');
@@ -336,6 +381,14 @@ export class TaskRegistry implements KoggTasksService, BackendApplicationContrib
   }
   private task(id: string, db = this.db()): Row { const row = db.prepare('SELECT * FROM tasks WHERE task_id=?').get(id) as Row | undefined; if (!row) throw new Failure('TASK_NOT_AVAILABLE'); return row; }
   private spec(id: string, db = this.db()): Row { const row = db.prepare('SELECT * FROM specifications WHERE specification_id=?').get(id) as Row | undefined; if (!row) throw new Failure('INTEGRITY_FAILED'); return row; }
+  private admission(row: Row): TaskAdmissionSnapshot {
+    return {
+      taskId: str(row, 'task_id'), taskRevision: dec(row, 'task_revision'), specificationId: str(row, 'specification_id'),
+      approvalId: str(row, 'approval_id'), projectId: str(row, 'project_id'), repositoryId: str(row, 'repository_id'),
+      bindingRevision: dec(row, 'binding_revision'), registryRevision: dec(row, 'registry_revision'), runId: str(row, 'run_id'),
+      authorizedAt: str(row, 'authorized_at'), expiresAt: str(row, 'expires_at')
+    };
+  }
   private async binding(taskId: string): Promise<ProjectBindingSnapshot | undefined> {
     try { uuid(taskId); const task = this.task(taskId); return this.projects.resolveBinding(str(task, 'project_id'), str(task, 'repository_id')); }
     catch (error) { console.warn('[kogg:tasks:registry] binding.resolve.failed', { taskId: safe(taskId), errorType: errorName(error) }); return undefined; }

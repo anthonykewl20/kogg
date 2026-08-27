@@ -3,8 +3,17 @@
   "checks": [
     { "id": "core.runtime", "owner": "kogg-core", "description": "Kogg runtime and platform information is available." },
     { "id": "core.browser-auth", "owner": "kogg-core", "description": "Browser authentication configuration is internally consistent." },
-    { "id": "kernel.health", "owner": "kogg-kernel", "description": "The embedded Ranex kernel answers its health request." },
-    { "id": "kernel.journal", "owner": "kogg-kernel", "description": "The Ranex evidence journal verifies successfully." },
+    { "id": "kernel.protocol", "owner": "kogg-kernel", "description": "The framed protocol, schema set, operation closure, and canonical fixtures match." },
+    { "id": "kernel.bridge", "owner": "kogg-kernel", "description": "The pinned Ranex artifact, registered process, and bounded transport are healthy." },
+    { "id": "kernel.bindings", "owner": "kogg-kernel", "description": "Task, approval, authority, and repository bindings verify exactly." },
+    { "id": "kernel.producers", "owner": "kogg-kernel", "description": "Producer identity, role, attempt, and process ownership verify." },
+    { "id": "kernel.suites", "owner": "kogg-kernel", "description": "Frozen suite, gate catalog, and check-definition bindings verify." },
+    { "id": "kernel.checks", "owner": "kogg-kernel", "description": "Check execution bindings, deadlines, results, and cleanup proofs verify." },
+    { "id": "kernel.evidence", "owner": "kogg-kernel", "description": "Evidence admission, idempotency, journal integrity, and applicability verify." },
+    { "id": "kernel.verdicts", "owner": "kogg-kernel", "description": "Verdicts bind a complete current evidence set and verified journal root." },
+    { "id": "kernel.cleanup", "owner": "kogg-kernel", "description": "Cancellation and escalation leave zero owned descendants." },
+    { "id": "kernel.recovery", "owner": "kogg-kernel", "description": "Unknown outcomes reconcile uniquely without repeating side effects." },
+    { "id": "kernel.source-maps", "owner": "kogg-kernel", "description": "Browser, backend, Electron, and Python kernel boundaries are debugger-reachable." },
     { "id": "marketplace.configuration", "owner": "kogg-marketplace", "description": "The exclusive Kogg registry configuration is valid." },
     { "id": "marketplace.registry", "owner": "kogg-marketplace", "description": "The configured signed registry is reachable and returns verifiable manifests." },
     { "id": "marketplace.installed", "owner": "kogg-marketplace", "description": "Installed marketplace package pointers are readable." },
@@ -31,6 +40,15 @@
     { "id": "tasks.registry", "owner": "kogg-tasks", "description": "The task registry schema, integrity, permissions, immutable triggers, and writer state are valid." },
     { "id": "tasks.revisions", "owner": "kogg-tasks", "description": "Task specification revisions and canonical digests verify successfully." },
     { "id": "tasks.bindings", "owner": "kogg-tasks", "description": "Task repository bindings remain current and available." },
-    { "id": "tasks.approvals", "owner": "kogg-tasks", "description": "Current task approvals match immutable frozen revisions." }
+    { "id": "tasks.approvals", "owner": "kogg-tasks", "description": "Current task approvals match immutable frozen revisions." },
+    { "id": "interaction-modes.registry", "owner": "kogg-interaction-modes", "description": "The task mode registry and immutable event chain are valid." },
+    { "id": "interaction-modes.authority", "owner": "kogg-interaction-modes", "description": "Selected mode ceilings agree with effective task-bound authority." },
+    { "id": "interaction-modes.transitions", "owner": "kogg-interaction-modes", "description": "Mode transition intents, confirmation, cleanup, and commits are consistent." },
+    { "id": "interaction-modes.operations", "owner": "kogg-interaction-modes", "description": "Closed operation capabilities agree with current mode authority." },
+    { "id": "interaction-modes.restoration", "owner": "kogg-interaction-modes", "description": "Persisted task modes restore without silently broadening authority." },
+    { "id": "interaction-modes.worktrees", "owner": "kogg-interaction-modes", "description": "Build and Kogg worktree ownership and cleanup are proven." },
+    { "id": "interaction-modes.anchors", "owner": "kogg-interaction-modes", "description": "The governed Kogg workflow trust anchors are available." },
+    { "id": "interaction-modes.accessibility", "owner": "kogg-interaction-modes", "description": "Mode selector status and blocked reasons retain accessible semantics." },
+    { "id": "interaction-modes.source-maps", "owner": "kogg-interaction-modes", "description": "Interaction mode frontend and backend source maps are present." }
   ]
 }

@@ -332,13 +332,42 @@ async function exerciseElectronTasks(page, electronApplication) {
     await tasks.getByLabel('Initial specification').fill(canary + '\nElectron requirement\n');
     await tasks.getByRole('button', { name: 'Create task' }).click();
     await tasks.getByText(/Revision 1 · active · draft/iu).waitFor({ timeout: 10_000 });
+    await exerciseElectronInteractionModes(page);
     await tasks.getByRole('button', { name: 'Freeze exact revision' }).click();
     await tasks.getByRole('button', { name: 'Review for approval' }).click();
     await tasks.locator('.kogg-review').getByText(canary).waitFor();
     await tasks.getByRole('button', { name: 'Approve this exact revision' }).click();
     await tasks.getByRole('button', { name: /Revoke approval/u }).waitFor();
+    await tasks.getByLabel('Existing run ID').fill('55555555-5555-4555-8555-555555555555');
+    await tasks.getByRole('button', { name: 'Authorize exact task admission' }).click();
+    const admission = tasks.locator('[data-admission-id]'); await admission.waitFor();
+    const admissionId = (await admission.innerText()).match(/[0-9a-f-]{36}/u)?.[0]; assert.ok(admissionId);
+    await exerciseElectronAgents(page, electronApplication, admissionId);
+    await openCommand(page, 'View: Toggle Kogg Tasks', electronApplication);
     await tasks.getByRole('button', { name: /Revoke approval/u }).click();
     assert.equal(logs.join('\n').includes(canary), false);
+}
+
+async function exerciseElectronInteractionModes(page) {
+    const selector = page.getByLabel(/Mode: Plan; authority: \d+ bounded capabilities; stage: research/u);
+    await selector.waitFor({ state: 'visible', timeout: 15_000 });
+    await selector.click();
+    const build = page.getByRole('option', { name: /Build\./u });
+    await build.waitFor({ state: 'visible', timeout: 10_000 });
+    await build.click();
+    await page.getByRole('button', { name: 'Request switch' }).click();
+    let pending = page.getByLabel(/Mode: Plan; authority: disabled during transition/u);
+    await pending.waitFor({ state: 'visible', timeout: 10_000 });
+    await page.reload({ waitUntil: 'domcontentloaded' });
+    await page.locator('body.kogg-application').waitFor({ timeout: 20_000 });
+    pending = page.getByLabel(/Mode: Plan; authority: disabled during transition/u);
+    await pending.waitFor({ state: 'visible', timeout: 10_000 });
+    await pending.click();
+    await page.getByRole('button', { name: 'Cancel request' }).click();
+    await selector.waitFor({ state: 'visible', timeout: 10_000 });
+    assert.match(logs.join('\n'), /\[kogg:interaction-modes:transition-authority\] authority\.mint\.completed.*electron/su);
+    assert.match(logs.join('\n'), /\[kogg:interaction-modes:service\] mode\.transition\.cancelled/u);
+    await clearNotifications(page);
 }
 
 async function exerciseElectronOperations(page, electronApplication) {
@@ -527,8 +556,8 @@ async function exerciseNodeDebug(page, electronApplication, configuration, expec
     await page.locator('[title="Continue (F5)"]').waitFor({ state: 'visible', timeout: pauseTimeout });
     await page.locator('[title^="Stop"]:visible').evaluate(element => element.click());
     await page.locator('[title="Continue (F5)"]').waitFor({ state: 'hidden', timeout: 10_000 });
-    await page.keyboard.press('F5');
-    await page.locator('[title="Continue (F5)"]').waitFor({ state: 'visible', timeout: pauseTimeout });
+    await page.waitForTimeout(500);
+    await start();
     await page.locator('[title="Continue (F5)"]:visible').evaluate(element => element.click());
     await page.getByText(expectedOutput).waitFor({ timeout: 10_000 });
 }

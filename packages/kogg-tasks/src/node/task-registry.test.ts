@@ -41,7 +41,18 @@ test('persists the governed draft, freeze, review, approval, revocation, conflic
     assert.equal(forged.code, 'REVIEW_SESSION_CHANGED');
     const approved = await registry.approve({ ...expectation(frozen.projection!, taskId), sessionId: SESSION, challenge: review.challenge! });
     assert.equal(approved.projection?.currentApproval?.lifecycle, 'current');
-    const revoked = await registry.revoke(expectation(approved.projection!, taskId));
+    const runId = crypto.randomUUID();
+    const admissionRequest = { ...expectation(approved.projection!, taskId), runId };
+    const admitted = await registry.authorizeAdmission(admissionRequest);
+    const replayedAdmission = await registry.authorizeAdmission(admissionRequest);
+    assert.equal(replayedAdmission.replay, true);
+    assert.deepEqual(replayedAdmission.admission, admitted.admission);
+    const authoritySnapshot = await registry.resolveAdmission(admitted.admission!);
+    assert.equal(authoritySnapshot.taskRevision, Number(admitted.projection!.taskRevision));
+    assert.equal(authoritySnapshot.approvalDigest.startsWith('sha256:'), true);
+    assert.equal(authoritySnapshot.runId, runId);
+    await assert.rejects(registry.resolveAdmission({ ...admitted.admission!, taskRevision: '1' }), /ADMISSION_NOT_AUTHORIZED/u);
+    const revoked = await registry.revoke(expectation(admitted.projection!, taskId));
     assert.equal(revoked.projection?.currentApproval, undefined);
 
     const checks = await new TaskDiagnosticContributor(registry).diagnose();
@@ -110,7 +121,10 @@ test('refuses startup when immutable specification bytes no longer match their d
 class FixtureAuthority implements ProjectBindingAuthority {
   async resolveBinding(projectId: string, repositoryId: string): Promise<ProjectBindingSnapshot | undefined> {
     if (projectId !== PROJECT || repositoryId !== REPOSITORY) return undefined;
-    return { projectId, repositoryId, registryRevision: 1, bindingRevision: 1, available: true, active: true, executionProfileId: 'default' };
+    return {
+      projectId, repositoryId, registryRevision: 1, bindingRevision: 1, available: true, active: true,
+      executionProfileId: 'default', rootUri: 'file:///fixture', repositoryIdentityDigest: 'fixture-identity'
+    };
   }
 }
 function expectation(projection: { registryRevision: string; taskRevision: string }, taskId: string) {

@@ -1,0 +1,46 @@
+import assert from 'node:assert/strict';
+import { mkdtemp, rm } from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
+import test from 'node:test';
+import type { VerdictQueryV1 } from '../common/verdict-merge-protocol';
+import { verdictMergeDigest } from '../common/verdict-merge-canonical';
+import { VerdictMergeDiagnosticContributor, VERDICT_MERGE_CHECKS } from './verdict-merge-diagnostic-contributor';
+import { VerdictMergeService } from './verdict-merge-service';
+import { VerdictProjectionAuthority, type UnsealedVerdictExplanationV1 } from './verdict-projection-authority';
+
+// diagnostic-coverage: verdict.provenance, verdict.bindings, verdict.currentness, verdict.explanation, merge.authorization, merge.preflight, merge.processes, merge.atomicity, merge.recovery, merge.source-maps
+test('refuses and durably replays a valid exact query when the Ranex projection owner is unavailable', async () => {
+  await withService(new VerdictProjectionAuthority(), async service => { const result = await service.explain(query()); assert.deepEqual(result, { kind: 'refused', safeCode: 'VERDICT_UNKNOWN' }); assert.deepEqual(await service.explain(query()), result); const conflict = await service.explain({ ...query(), subjectOid: '9'.repeat(40) }); assert.equal(conflict.safeCode, 'REQUEST_CONFLICT'); const diagnostics = await new VerdictMergeDiagnosticContributor(service).diagnose(); assert.deepEqual(diagnostics.map(check => check.id), [...VERDICT_MERGE_CHECKS]); assert.equal(diagnostics.find(check => check.id === 'verdict.provenance')?.status, 'fail'); assert.equal(diagnostics.find(check => check.id === 'merge.processes')?.status, 'pass'); });
+});
+test('stores one immutable closed explanation, replays it exactly, and verifies it across restart', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'kogg-verdict-store-')); const database = path.join(root, 'registry.sqlite3');
+  try { const service = new VerdictMergeService(new PassingAuthority(), database); await service.onStart(); const first = await service.explain(query()); assert.equal(first.kind, 'completed'); if (first.kind !== 'completed') throw new Error('Expected completed explanation'); assert.equal(first.safeCode, 'VERDICT_OK'); assert.equal(first.replay, false); assert.match(first.explanation.explanationDigest, /^[0-9a-f]{64}$/u); const replay = await service.explain(query()); assert.equal(replay.kind, 'completed'); if (replay.kind === 'completed') assert.equal(replay.replay, true); assert.equal(service.diagnostics().explanationCount, 1); service.onStop(); const restarted = new VerdictMergeService(new VerdictProjectionAuthority(), database); await restarted.onStart(); assert.equal(restarted.diagnostics().integrity, true); assert.equal(restarted.diagnostics().explanationCount, 1); restarted.onStop(); }
+  finally { await rm(root, { recursive: true, force: true }); }
+});
+test('refuses startup after immutable explanation corruption', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'kogg-verdict-corrupt-')); const database = path.join(root, 'registry.sqlite3');
+  try { const service = new VerdictMergeService(new PassingAuthority(), database); await service.onStart(); await service.explain(query()); service.onStop(); const corrupt = new DatabaseSync(database); corrupt.exec('DROP TRIGGER verdict_explanations_update'); corrupt.prepare('UPDATE explanations SET explanation_digest=?').run('f'.repeat(64)); corrupt.close(); await assert.rejects(new VerdictMergeService(new VerdictProjectionAuthority(), database).onStart(), /STORE_INTEGRITY_FAILED/u); }
+  finally { await rm(root, { recursive: true, force: true }); }
+});
+test('refuses startup after immutable request-result corruption', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'kogg-verdict-result-corrupt-')); const database = path.join(root, 'registry.sqlite3');
+  try { const service = new VerdictMergeService(new PassingAuthority(), database); await service.onStart(); await service.explain(query()); service.onStop(); const corrupt = new DatabaseSync(database); corrupt.exec('DROP TRIGGER verdict_requests_update'); corrupt.prepare('UPDATE requests SET result_json=?').run(JSON.stringify({ kind: 'completed', safeCode: 'VERDICT_OK', explanation: {}, replay: false })); corrupt.close(); await assert.rejects(new VerdictMergeService(new VerdictProjectionAuthority(), database).onStart(), /STORE_INTEGRITY_FAILED/u); }
+  finally { await rm(root, { recursive: true, force: true }); }
+});
+test('migrates the pre-query-record schema and refuses unverifiable legacy requests', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'kogg-verdict-legacy-')); const database = path.join(root, 'registry.sqlite3');
+  try { const legacy = new DatabaseSync(database); legacy.exec("CREATE TABLE requests(request_id TEXT PRIMARY KEY,query_digest TEXT NOT NULL,result_json TEXT NOT NULL); CREATE TABLE explanations(explanation_id TEXT PRIMARY KEY,query_digest TEXT NOT NULL UNIQUE,explanation_digest TEXT NOT NULL UNIQUE,explanation_json TEXT NOT NULL,created_at TEXT NOT NULL); INSERT INTO requests VALUES('10000000-0000-4000-8000-000000000002','aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa','{\"kind\":\"refused\",\"safeCode\":\"VERDICT_UNKNOWN\"}')"); legacy.close(); await assert.rejects(new VerdictMergeService(new VerdictProjectionAuthority(), database).onStart(), /STORE_INTEGRITY_FAILED/u); const inspected = new DatabaseSync(database); assert.equal((inspected.prepare('PRAGMA table_info(requests)').all() as RowForTest[]).some(row => row.name === 'query_json'), true); inspected.close(); }
+  finally { await rm(root, { recursive: true, force: true }); }
+});
+test('rejects inconsistent or open authority projections without persisting an explanation', async () => {
+  class InvalidAuthority extends PassingAuthority { override async explain(value: VerdictQueryV1, digest: string): Promise<UnsealedVerdictExplanationV1> { return { ...await super.explain(value, digest), ranexDecision: 'fail', extra: true } as UnsealedVerdictExplanationV1; } }
+  await withService(new InvalidAuthority(), async service => { const result = await service.explain(query()); assert.equal(result.safeCode, 'PROTOCOL_INVALID'); assert.equal(service.diagnostics().explanationCount, 0); });
+});
+test('rejects unknown fields, unsafe refs, malformed object ids, and open protocol versions before authority access', async () => { await withService(new VerdictProjectionAuthority(), async service => { assert.equal((await service.explain({ ...query(), extra: true })).safeCode, 'PROTOCOL_INVALID'); assert.equal((await service.explain({ ...query(), destinationRef: 'refs/heads/../main' })).safeCode, 'PROTOCOL_INVALID'); assert.equal((await service.explain({ ...query(), subjectOid: 'a'.repeat(39) })).safeCode, 'PROTOCOL_INVALID'); assert.equal((await service.explain({ ...query(), ranexProtocolVersion: '3' })).safeCode, 'PROTOCOL_INVALID'); }); });
+
+class PassingAuthority extends VerdictProjectionAuthority { override async explain(value: VerdictQueryV1, queryDigest: string): Promise<UnsealedVerdictExplanationV1> { return { explanationId:'20000000-0000-4000-8000-000000000001',queryDigest,ranexDecision:'pass',currentness:'current',currentnessCode:'VERDICT_OK',gateRows:[{gateId:'tests',gateVersion:'1',required:true,result:'pass',safeReasonCode:'CHECK_PASS',producerRoleDigest:'4'.repeat(64),verifierRoleDigest:'5'.repeat(64),evidenceDigest:'6'.repeat(64),subjectDigest:verdictMergeDigest('query', { oid:value.subjectOid }),journalSeq:value.ranexJournalSeq}],requiredCount:1,passCount:1,failCount:0,blockedCount:0,verifiedAt:'2026-08-27T00:00:00.000Z',expiresAt:'2026-08-27T00:01:00.000Z',ranexProvenanceDigest:'7'.repeat(64),journalRoot:value.ranexJournalRoot,journalSeq:value.ranexJournalSeq }; } }
+async function withService(authority: VerdictProjectionAuthority, action: (service: VerdictMergeService) => Promise<void>): Promise<void> { const root = await mkdtemp(path.join(os.tmpdir(), 'kogg-verdict-test-')); const service = new VerdictMergeService(authority, path.join(root,'registry.sqlite3')); try { await service.onStart(); await action(service); } finally { service.onStop(); await rm(root,{recursive:true,force:true}); } }
+function query(): VerdictQueryV1 { return { queryId:'10000000-0000-4000-8000-000000000001',requestId:'10000000-0000-4000-8000-000000000002',taskId:'10000000-0000-4000-8000-000000000003',taskRevisionId:'10000000-0000-4000-8000-000000000004',approvalDigest:'a'.repeat(64),projectId:'10000000-0000-4000-8000-000000000005',repositoryId:'10000000-0000-4000-8000-000000000006',repositoryIdentityDigest:'b'.repeat(64),destinationRef:'refs/heads/main',expectedBaseOid:'c'.repeat(40),subjectOid:'d'.repeat(40),subjectTreeOid:'e'.repeat(40),evidenceSetDigest:'f'.repeat(64),gateCatalogDigest:'1'.repeat(64),ranexArtifactDigest:'2'.repeat(64),ranexProtocolVersion:'2',ranexJournalRoot:'3'.repeat(64),ranexJournalSeq:'1' }; }
+interface RowForTest { name?: unknown; }

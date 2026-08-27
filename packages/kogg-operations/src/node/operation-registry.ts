@@ -131,6 +131,20 @@ export class OperationRegistry implements OperationRegistryApi, BackendApplicati
     return this.readSnapshot();
   }
 
+  async recoveryResult(operationId: string): Promise<{ readonly status: 'cleaned' | 'unverified' | 'active' | 'missing'; readonly safeCode?: OperationSafeCode }> {
+    await this.ensureStarted();
+    if (!UUID.test(operationId)) return { status: 'missing' };
+    const row = this.requireDatabase().prepare(`SELECT o.state,o.cleanup_state,o.safe_code,
+      EXISTS(SELECT 1 FROM processes p WHERE p.operation_id=o.id AND (p.cleanup_state='failed' OR p.state='possible-residual')) AS unverified,
+      EXISTS(SELECT 1 FROM processes p WHERE p.operation_id=o.id AND p.cleanup_state!='cleaned') AS dirty
+      FROM operations o WHERE o.id=?`).get(operationId) as SqlRow | undefined;
+    if (!row) return { status: 'missing' };
+    const safeCode = row.safe_code ? String(row.safe_code) as OperationSafeCode : undefined;
+    if (Number(row.unverified) || row.cleanup_state === 'failed') return { status: 'unverified', ...(safeCode ? { safeCode } : {}) };
+    if (row.cleanup_state === 'cleaned' && !Number(row.dirty)) return { status: 'cleaned', ...(safeCode ? { safeCode } : {}) };
+    return { status: 'active', ...(safeCode ? { safeCode } : {}) };
+  }
+
   async cancel(request: { readonly requestId: string; readonly operationId: string }): Promise<OperationsSnapshot> {
     await this.ensureStarted();
     if (Object.keys(request).sort().join(',') !== 'operationId,requestId') throw new Error('Cancel request contains unknown fields');
