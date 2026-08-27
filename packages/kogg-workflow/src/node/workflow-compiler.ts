@@ -1,23 +1,17 @@
 import { randomUUID } from 'node:crypto';
-import { injectable } from '@theia/core/shared/inversify';
-import type { EditableNodeKind, EditableWorkflowGraphV1, WorkflowAuthorityEffect, WorkflowCompiledPlanProjection, WorkflowValidationProjection } from '../common/workflow-protocol';
+import { inject, injectable } from '@theia/core/shared/inversify';
+import type { EditableWorkflowGraphV1, WorkflowAuthorityEffect, WorkflowCompiledPlanProjection, WorkflowValidationProjection } from '../common/workflow-protocol';
 import { decodeGraph, WorkflowValidationError, workflowDigest } from '../common/workflow-canonical';
+import { WorkflowNodeCatalog } from './workflow-node-catalog';
 
 // observability-exempt: Pure deterministic compilation performs no I/O; WorkflowRegistry logs every external validation and compile boundary.
 // diagnostic-coverage: workflow.schema, workflow.catalog, workflow.graph, workflow.anchors, workflow.authority, workflow.source-maps
 
 const ANCHORS = ['anchor.spec-frozen','anchor.spec-approved','anchor.producer-separated','anchor.checks-complete','anchor.evidence-admitted','anchor.ranex-pass-current','anchor.merge-preflight','anchor.controlled-merge','anchor.cleanup-complete'] as const;
-const ALLOWED: Readonly<Record<EditableNodeKind, readonly WorkflowAuthorityEffect[]>> = {
-  'research.agent': ['read-repository','invoke-provider'], 'pseudocode.agent': ['read-repository','mutate-private-repository','invoke-provider'],
-  'probe.agent': ['read-repository','mutate-private-repository','invoke-provider','run-tool'], 'implementation.agent': ['read-repository','mutate-private-repository','invoke-provider','run-tool'],
-  'tool.git': ['read-repository','mutate-private-repository','run-tool'], 'tool.build': ['read-repository','run-tool'], 'check.deterministic': ['read-repository','run-tool','record-check'],
-  'approval.specification': ['record-approval'], 'approval.continue': ['record-approval'], 'control.condition': [], 'control.parallel': [], 'control.join': [], 'control.group': [], 'control.finally': []
-};
-const CONDITION_PORTS = new Set(['true','false','failure','finally']);
-const NORMAL_PORTS = new Set(['success','failure','finally']);
-
 @injectable()
 export class WorkflowCompiler {
+  constructor(@inject(WorkflowNodeCatalog) private readonly catalog: WorkflowNodeCatalog) {}
+  catalogStatus(): { readonly digest: string; readonly valid: boolean; readonly entryCount: number; readonly unavailableExecutorCount: number } { return { digest: this.catalog.digest, ...this.catalog.diagnostics() }; }
   validate(input: unknown): WorkflowValidationProjection {
     try { const graph = decodeGraph(input); const checked = this.check(graph); return { valid: true, code: 'WORKFLOW_OK', graphDigest: workflowDigest('template', graph), ...checked }; }
     catch (error) { /* observability-exempt: the RPC-owning registry logs the sanitized validation outcome; this pure projection retains no input. */ return { valid: false, code: error instanceof WorkflowValidationError ? error.code : 'WORKFLOW_INTERNAL', nodeCount: count(input, 'nodes'), edgeCount: count(input, 'edges'), rootCount: 0 }; }
@@ -31,8 +25,9 @@ export class WorkflowCompiler {
     this.check(graph);
     const graphDigest = workflowDigest('template', graph);
     const trustSpineDigest = workflowDigest('trust-spine', { schemaVersion: '1', anchors: ANCHORS });
-    const planBody = { schemaVersion: '1', versionId, graphDigest, trustSpineDigest, editableNodeIds: graph.nodes.map(node => node.nodeId), anchors: ANCHORS };
-    return { planId: randomUUID(), versionId, planDigest: workflowDigest('compiled-plan', planBody), graphDigest, trustSpineDigest, editableNodeCount: graph.nodes.length, injectedAnchorCount: ANCHORS.length };
+    const catalogDigest = this.catalog.digest;
+    const planBody = { schemaVersion: '1', versionId, graphDigest, catalogDigest, trustSpineDigest, editableNodeIds: graph.nodes.map(node => node.nodeId), anchors: ANCHORS };
+    return { planId: randomUUID(), versionId, planDigest: workflowDigest('compiled-plan', planBody), graphDigest, catalogDigest, trustSpineDigest, editableNodeCount: graph.nodes.length, injectedAnchorCount: ANCHORS.length };
   }
 
   private check(graph: EditableWorkflowGraphV1): { nodeCount: number; edgeCount: number; rootCount: number } {
@@ -40,13 +35,13 @@ export class WorkflowCompiler {
     if (nodes.size !== graph.nodes.length) throw new WorkflowValidationError('WORKFLOW_GRAPH_INVALID');
     const edgeIds = new Set<string>(); const incoming = new Map<string, number>(); const outgoing = new Map<string, string[]>();
     for (const node of graph.nodes) {
-      const allowed = new Set(ALLOWED[node.kind]); if (node.requestedEffects.some(effect => !allowed.has(effect))) throw new WorkflowValidationError('WORKFLOW_AUTHORITY_EXPANSION');
+      const allowed = new Set<WorkflowAuthorityEffect>(this.catalog.entry(node.kind).grantCeiling); if (node.requestedEffects.some(effect => !allowed.has(effect))) throw new WorkflowValidationError('WORKFLOW_AUTHORITY_EXPANSION');
       if (node.retry.maxAttempts > 1 && node.retry.sideEffectPolicy === 'none' && node.requestedEffects.some(effect => effect !== 'read-repository')) throw new WorkflowValidationError('WORKFLOW_AUTHORITY_EXPANSION');
       incoming.set(node.nodeId, 0); outgoing.set(node.nodeId, []);
     }
     for (const edge of graph.edges) {
       if (edgeIds.has(edge.edgeId) || edge.sourceNodeId === edge.targetNodeId || !nodes.has(edge.sourceNodeId) || !nodes.has(edge.targetNodeId)) throw new WorkflowValidationError('WORKFLOW_PORT_INVALID');
-      edgeIds.add(edge.edgeId); const source = nodes.get(edge.sourceNodeId)!; const ports = source.kind === 'control.condition' ? CONDITION_PORTS : NORMAL_PORTS;
+      edgeIds.add(edge.edgeId); const source = nodes.get(edge.sourceNodeId)!; const ports = new Set(this.catalog.entry(source.kind).outputPorts);
       if (!ports.has(edge.sourcePort)) throw new WorkflowValidationError('WORKFLOW_PORT_INVALID');
       incoming.set(edge.targetNodeId, (incoming.get(edge.targetNodeId) ?? 0) + 1); outgoing.get(edge.sourceNodeId)!.push(edge.targetNodeId);
     }

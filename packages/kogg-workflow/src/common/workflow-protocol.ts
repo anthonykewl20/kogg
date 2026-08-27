@@ -59,6 +59,7 @@ export interface WorkflowTemplateVersionProjection {
   readonly versionId: string;
   readonly versionNumber: number;
   readonly graphDigest: string;
+  readonly catalogDigest: string;
   readonly createdAt: string;
 }
 export interface WorkflowCompiledPlanProjection {
@@ -67,6 +68,7 @@ export interface WorkflowCompiledPlanProjection {
   readonly planDigest: string;
   readonly graphDigest: string;
   readonly trustSpineDigest: string;
+  readonly catalogDigest: string;
   readonly editableNodeCount: number;
   readonly injectedAnchorCount: number;
 }
