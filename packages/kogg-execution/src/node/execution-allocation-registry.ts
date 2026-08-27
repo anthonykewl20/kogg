@@ -256,6 +256,12 @@ export class ExecutionAllocationRegistry implements BackendApplicationContributi
     const existing = this.databaseOrThrow().prepare("SELECT intent_id FROM allocation_intents WHERE worktree_id=? AND intent_type='allocation' AND phase='requested'").get(request.worktreeId) as SqlRow | undefined;
     if (existing) refusePhysicalAllocation(request, 'ALLOCATION_STATE_INVALID');
     const binding = JSON.parse(String(row.binding_json)) as ExecutionBindingV1;
+    let mode: Awaited<ReturnType<ModeOperationAuthorizer['authorizeOperation']>>;
+    try { mode = await this.modes.authorizeOperation({ requestId: request.requestId, taskId: binding.taskId, operation: 'worktree-create' }); }
+    catch { // observability-exempt: the closed allocation refusal below records no authority error details.
+      mode = { allowed: false, safeCode: 'MODE_AUTHORITY_REFUSED' } as Awaited<ReturnType<ModeOperationAuthorizer['authorizeOperation']>>;
+    }
+    if (!mode.allowed) refusePhysicalAllocation(request, 'ALLOCATION_ADMISSION_BLOCKED');
     if (!await this.targets.authorizePhysicalAllocation(binding, request.helperDigest, request.mountQuotaDigest)) refusePhysicalAllocation(request, 'ALLOCATION_QUALIFICATION_INVALID');
     const intentId = randomUUID(); const fencingToken = randomBytes(32).toString('hex'); const now = new Date().toISOString(); let quotaProjectId = 0;
     this.transaction(database => {

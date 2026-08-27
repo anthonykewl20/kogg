@@ -106,6 +106,27 @@ test('refuses worktree reservation by durable mode authority before qualificatio
   } finally { registry.onStop(); await rm(root, { recursive: true, force: true }); }
 });
 
+test('rechecks mode authority before the physical-allocation intent and leaves no pre-effect state after authority loss', async () => {
+  for (const authorityLoss of ['downgraded', 'disconnected'] as const) {
+    const root = await mkdtemp(path.join(os.tmpdir(), `kogg-allocation-prepare-mode-${authorityLoss}-`)); process.env.KOGG_STATE_DIR = root;
+    let allow = true; let physicalQualificationCalls = 0;
+    const modes = { async authorizeOperation(request: { taskId: string; operation: string }) {
+      assert.equal(request.taskId, allocationRequest().binding.taskId); assert.equal(request.operation, 'worktree-create');
+      if (!allow && authorityLoss === 'disconnected') throw new Error('mode owner disconnected');
+      return { schemaVersion: 1, allowed: allow, safeCode: allow ? 'MODE_OK' : 'PLAN_MUTATION_REFUSED', projection: {} as never };
+    } } as ModeOperationAuthorizer;
+    const targets = { authorize: async () => true, authorizePhysicalAllocation: async () => { physicalQualificationCalls++; return true; } };
+    const registry = new ExecutionAllocationRegistry(targets, modes); await registry.onStart();
+    try {
+      const allocation = await registry.reserve(allocationRequest()); allow = false;
+      await assert.rejects(() => registry.preparePhysicalAllocation({ requestId: randomUUID(), worktreeId: allocation.worktreeId, expectedRevision: allocation.revision, bindingDigest: allocation.bindingDigest, helperDigest: `sha256:${'8'.repeat(64)}`, mountQuotaDigest: `sha256:${'9'.repeat(64)}` }),
+        (error: unknown) => error instanceof AllocationRegistryError && error.code === 'ALLOCATION_ADMISSION_BLOCKED');
+      const diagnostics = registry.diagnostics(); assert.equal(physicalQualificationCalls, 0); assert.equal(diagnostics.pendingAllocationIntentCount, 0); assert.equal(diagnostics.activeQuotaProjectLeaseCount, 0);
+      assert.equal((await registry.workspaceContext(allocation.worktreeId)).allocation.state, 'admitted');
+    } finally { registry.onStop(); await rm(root, { recursive: true, force: true }); }
+  }
+});
+
 test('projects execution runs through the closed path-free RPC contract and refuses extra fields', async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), 'kogg-allocation-projection-')); process.env.KOGG_STATE_DIR = root;
   const registry = allocationRegistry(); await registry.onStart();
