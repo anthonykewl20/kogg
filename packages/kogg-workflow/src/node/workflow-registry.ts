@@ -238,7 +238,7 @@ export class WorkflowRegistry implements KoggWorkflowService, BackendApplication
       const predecessorOutcomes = graph.edges.filter(edge => edge.targetNodeId === node.nodeId).map(edge => predecessorOutcome(edge, outputs));
       const now = new Date().toISOString(); const outboxId = randomUUID(); const requestDigest = workflowDigest('run-snapshot', { schemaVersion: '1', runId, nodeId: node.nodeId, attempt: 1, configurationDigest: node.configurationDigest });
       this.schedulerTransaction(() => { this.db().prepare("UPDATE workflow_runs SET state='running',revision=revision+1,updated_at=? WHERE run_id=? AND state IN ('admitted','running')").run(now, runId); this.db().prepare("UPDATE workflow_node_attempts SET state='running',updated_at=? WHERE run_id=? AND node_id=? AND attempt=1 AND state='pending'").run(now, runId, node.nodeId); this.db().prepare("INSERT INTO workflow_outbox(outbox_id,run_id,node_id,operation_kind,request_digest,fencing_token,phase,safe_code,created_at,updated_at) VALUES(?,?,?,?,?,?,'claimed','WORKFLOW_OK',?,?)").run(outboxId, runId, node.nodeId, node.kind, requestDigest, this.schedulerFencingToken, now, now); });
-      const result = node.kind.endsWith('.agent') ? await this.executeAgentNode(runId, taskAdmissionId, node, outboxId) : this.compiler.executeControl({ runId, node, attempt: 1, predecessorOutcomes }); const finishedAt = new Date().toISOString();
+      const result = node.kind.endsWith('.agent') ? await this.executeAgentNode(runId, taskAdmissionId, node, outboxId) : node.kind === 'approval.specification' ? await this.executeSpecificationApproval(runId, taskAdmissionId, node, predecessorOutcomes) : this.compiler.executeControl({ runId, node, attempt: 1, predecessorOutcomes }); const finishedAt = new Date().toISOString();
       this.schedulerTransaction(() => { this.db().prepare("UPDATE workflow_outbox SET phase='completed',safe_code=?,updated_at=? WHERE outbox_id=? AND phase='claimed'").run(result.code, finishedAt, outboxId); this.db().prepare("UPDATE workflow_node_attempts SET state=?,safe_code=?,updated_at=? WHERE run_id=? AND node_id=? AND attempt=1 AND state='running'").run(result.kind === 'completed' ? 'succeeded' : 'failed', result.code, finishedAt, runId, node.nodeId); });
       if (result.kind !== 'completed' || !result.output) return this.finishControlRun(runId, planId, 'failed', result.code, completedNodeCount, skippedNodeCount, 1, result.residualProcessCount);
       outputs.set(node.nodeId, result.output); pending.delete(node.nodeId); completedNodeCount++;
@@ -261,6 +261,16 @@ export class WorkflowRegistry implements KoggWorkflowService, BackendApplication
       return agentRefused(fields, agentWorkflowCode(terminalAttempt.terminalCode), residualProcessCount);
     } catch (error) { // observability-exempt: node.execution.refused emits only the closed workflow failure code and opaque correlations.
       const code = codeOf(error); return agentRefused(fields, code, code === 'WORKFLOW_RESIDUAL_PROCESS' ? 1 : 0);
+    }
+  }
+  private async executeSpecificationApproval(runId: string, taskAdmissionId: string, node: EditableWorkflowGraphV1['nodes'][number], predecessorOutcomes: readonly ('success' | 'failure' | 'skipped')[]) {
+    const fields = { runId, nodeId: node.nodeId, nodeKind: node.kind, attempt: 1, executorId: 'kogg.tasks.admission' };
+    try {
+      const admission = await this.taskAdmissionAuthority?.resolveAdmission(taskAdmissionId); const stored = this.db().prepare('SELECT task_admission_digest,task_id,repository_id FROM workflow_runs WHERE run_id=?').get(runId) as Row | undefined;
+      if (!admission || !stored || !validTaskAdmission(admission, taskAdmissionId) || admission.runId !== runId || admission.taskId !== text(stored, 'task_id') || admission.repositoryId !== text(stored, 'repository_id') || workflowDigest('run-snapshot', { schemaVersion: '1', taskAdmission: admission }) !== text(stored, 'task_admission_digest')) return authorityRefused(fields);
+      return this.compiler.executeTaskApproval({ runId, node, attempt: 1, predecessorOutcomes, taskAdmission: admission, taskAdmissionDigest: text(stored, 'task_admission_digest') });
+    } catch { // observability-exempt: the closed refusal excludes task and approval authority implementation details.
+      return authorityRefused(fields);
     }
   }
   private async waitForAgentAttempt(dispatcher: AgentAttemptDispatcher, initial: AttemptProjectionV1, deadlineMs: number): Promise<{ attempt: AttemptProjectionV1; timedOut: boolean }> {
@@ -356,6 +366,7 @@ function agentWorkflowCode(code: AgentSafeCode | undefined): WorkflowSafeCode {
   return 'WORKFLOW_EXTERNAL_FAILURE';
 }
 function agentRefused(fields: { runId: string; nodeId: string; nodeKind: string; attempt: number; executorId: string }, code: WorkflowSafeCode, residualProcessCount: number) { workflowLog('node.execution.refused', { ...fields, safeCode: code, processCount: 0, residualProcessCount }); return { kind: 'refused', code, processCount: 0, residualProcessCount } as const; }
+function authorityRefused(fields: { runId: string; nodeId: string; nodeKind: string; attempt: number; executorId: string }) { workflowLog('node.execution.started', fields); return agentRefused(fields, 'WORKFLOW_AUTHORITY_EXPANSION', 0); }
 function validTaskAdmission(admission: TaskAdmissionSnapshot, expectedId: string): boolean {
   const authorizedAt = Date.parse(admission.authorizedAt); const expiresAt = Date.parse(admission.expiresAt);
   return admission.taskAdmissionId === expectedId

@@ -3,7 +3,7 @@ import type { EditableNodeKind, WorkflowAuthorityEffect } from '../common/workfl
 import { workflowDigest } from '../common/workflow-canonical';
 import { WorkflowExecutorRegistry, type WorkflowExecutorBindingV1 } from './workflow-executor-registry';
 
-// The catalog is compiled in, canonical, and closed. Process-free control artifacts are exact-attested; external executors remain explicitly unavailable.
+// The catalog is compiled in, canonical, and closed. Controls, task approval, and agent dispatch are exact-attested; remaining executors stay unavailable.
 // observability-exempt: Pure immutable catalog declarations perform no operational I/O.
 // diagnostic-coverage: workflow.catalog, workflow.graph, workflow.authority, workflow.source-maps
 export interface WorkflowCatalogEntryV1 {
@@ -42,6 +42,7 @@ export class WorkflowNodeCatalog {
   }
   entry(kind: EditableNodeKind): WorkflowCatalogEntryV1 { const value = this.entries.find(item => item.kind === kind); if (!value) throw new Error('Closed workflow catalog is incomplete'); return value; }
   executeControl(request: Parameters<WorkflowExecutorRegistry['execute']>[0]) { const binding = this.executors.binding(request.node.kind); if (!binding) return { kind: 'refused', code: 'WORKFLOW_EXECUTOR_INCOMPATIBLE', processCount: 0, residualProcessCount: 0 } as const; return this.executors.execute(request, binding); }
+  executeTaskApproval(request: Parameters<WorkflowExecutorRegistry['executeTaskApproval']>[0]) { const binding = this.executors.binding(request.node.kind); if (!binding) return { kind: 'refused', code: 'WORKFLOW_EXECUTOR_INCOMPATIBLE', processCount: 0, residualProcessCount: 0 } as const; return this.executors.executeTaskApproval(request, binding); }
   diagnostics(): { readonly valid: boolean; readonly entryCount: number; readonly availableExecutorCount: number; readonly unavailableExecutorCount: number } {
     return { valid: this.entries.length === 14 && new Set(this.entries.map(entry => `${entry.kind}@${entry.kindVersion}`)).size === 14, entryCount: this.entries.length, availableExecutorCount: this.entries.filter(entry => entry.executor.status === 'available').length, unavailableExecutorCount: this.entries.filter(entry => entry.executor.status === 'unavailable').length };
   }
