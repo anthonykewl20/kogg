@@ -65,6 +65,7 @@ const METRIC_CONTRACTS: Readonly<Record<string, { readonly kind: OperationsMetri
 const STREAM_CHANGE_LIMIT = 1_000;
 const STREAM_BYTE_LIMIT = 1_048_576;
 const DETAIL_RETENTION_MS = 30 * 24 * 60 * 60_000;
+const METRIC_RETENTION_MS = 90 * 24 * 60 * 60_000;
 const HOLD_ACQUIRE: Readonly<Record<string, string>> = { 'task.retention-held': 'task', 'evidence.requested': 'evidence', 'evidence.admitted': 'evidence', 'verdict.requested': 'verdict', 'verdict.accepted': 'verdict', 'verdict.rejected': 'verdict', 'merge.requested': 'merge', 'merge.quarantined': 'quarantine', 'execution.quarantined': 'quarantine', 'process.quarantined': 'quarantine', 'process.residual': 'incident', 'process.lost': 'incident', 'process.inventory-unknown': 'incident' };
 const HOLD_RELEASE: Readonly<Record<string, string>> = { 'task.retention-released': 'task', 'evidence.retention-released': 'evidence', 'verdict.retention-released': 'verdict', 'merge.retention-released': 'merge', 'quarantine.retention-released': 'quarantine', 'incident.retention-released': 'incident' };
 
@@ -297,13 +298,19 @@ export class OperationsReadModel implements BackendApplicationContribution {
 
   applyRetention(now = Date.now()): number {
     this.start(); if (!Number.isFinite(now)) throw new ProjectionFault('PROJECTION_RETENTION_INVALID');
-    console.info('[kogg:operations:projection] retention.started'); const cutoff = new Date(now - DETAIL_RETENTION_MS).toISOString();
+    console.info('[kogg:operations:projection] retention.started'); const detailCutoff = new Date(now - DETAIL_RETENTION_MS).toISOString(); const metricCutoff = new Date(now - METRIC_RETENTION_MS).toISOString();
     try {
       const rows = this.db().prepare(`SELECT r.run_id FROM run_projection r WHERE r.lifecycle IN ('failed','recovered','completed') AND r.live_process_count=0 AND r.abnormal_process_count=0
         AND COALESCE((SELECT max(display_time) FROM timeline t WHERE t.run_id=r.run_id),'9999-12-31T23:59:59.999Z')<=?
-        AND NOT EXISTS(SELECT 1 FROM retention_holds h WHERE h.run_id=r.run_id AND h.active=1) ORDER BY r.run_id`).all(cutoff) as Row[];
-      if (rows.length) this.transaction(db => { for (const row of rows) { const runId = String(row.run_id); db.prepare('DELETE FROM timeline WHERE run_id=?').run(runId); db.prepare('DELETE FROM process_projection WHERE run_id=?').run(runId); db.prepare('DELETE FROM retention_holds WHERE run_id=?').run(runId); db.prepare('DELETE FROM run_projection WHERE run_id=?').run(runId); this.appendChange(db, 'retention', runId, true); } this.refreshGauges(db); });
-      console.info('[kogg:operations:projection] retention.completed', { expiredCount: rows.length }); if (rows.length) this.notifyLatestChange(); return rows.length;
+        AND NOT EXISTS(SELECT 1 FROM retention_holds h WHERE h.run_id=r.run_id AND h.active=1) ORDER BY r.run_id`).all(detailCutoff) as Row[];
+      const metricEpochs = this.db().prepare(`SELECT projection_epoch FROM metric_values WHERE projection_epoch<>? GROUP BY projection_epoch HAVING max(updated_at)<=?
+        AND NOT EXISTS(SELECT 1 FROM retention_holds WHERE active=1) ORDER BY projection_epoch`).all(String(this.meta().projection_epoch), metricCutoff) as Row[];
+      if (rows.length || metricEpochs.length) this.transaction(db => {
+        for (const row of rows) { const runId = String(row.run_id); db.prepare('DELETE FROM timeline WHERE run_id=?').run(runId); db.prepare('DELETE FROM process_projection WHERE run_id=?').run(runId); db.prepare('DELETE FROM retention_holds WHERE run_id=?').run(runId); db.prepare('DELETE FROM run_projection WHERE run_id=?').run(runId); this.appendChange(db, 'retention', runId, true); }
+        for (const epoch of metricEpochs) db.prepare('DELETE FROM metric_values WHERE projection_epoch=?').run(String(epoch.projection_epoch));
+        this.refreshGauges(db);
+      });
+      console.info('[kogg:operations:projection] retention.completed', { expiredCount: rows.length, expiredMetricEpochCount: metricEpochs.length }); if (rows.length) this.notifyLatestChange(); return rows.length;
     } catch (error) { console.error('[kogg:operations:projection] retention.failed', { safeCode: 'PROJECTION_RETENTION_FAILED', errorType: errorType(error) }); throw error; }
   }
 
@@ -318,6 +325,7 @@ export class OperationsReadModel implements BackendApplicationContribution {
       causalGapCount: this.count("SELECT count(*) AS count FROM projection_faults WHERE safe_code LIKE 'CAUSAL_%'"),
       processAbnormalCount: this.count('SELECT count(*) AS count FROM process_projection WHERE abnormal=1'),
       metricViolationCount: metricViolationCount(this.metricRows(String(this.meta().projection_epoch))),
+      retainedMetricEpochCount: this.count('SELECT count(DISTINCT projection_epoch) AS count FROM metric_values'),
       activeRetentionHoldCount: this.count('SELECT count(*) AS count FROM retention_holds WHERE active=1'),
       retentionViolationCount: this.count('SELECT count(*) AS count FROM retention_holds h LEFT JOIN run_projection r ON r.run_id=h.run_id WHERE h.active=1 AND r.run_id IS NULL')
     };
@@ -451,8 +459,8 @@ export class OperationsReadModel implements BackendApplicationContribution {
   private observeHistogram(db: DatabaseSync, name: string, labels: Record<string, string>, value: number): void { for (const bucket of HISTOGRAM_BUCKETS) if (value <= bucket) this.upsertMetric(db, name, 'histogram', labels, bucket, 1); }
   private upsertMetric(db: DatabaseSync, name: string, kind: string, labels: Record<string, string>, bucket: number | null, delta: number): void {
     const epoch = String((db.prepare('SELECT projection_epoch FROM projection_meta WHERE singleton=1').get() as Row).projection_epoch); const encoded = canonical(labels);
-    db.prepare(`INSERT INTO metric_values(projection_epoch,metric_name,metric_kind,labels_json,bucket_upper_bound,value) VALUES(?,?,?,?,?,?)
-      ON CONFLICT(projection_epoch,metric_name,labels_json,bucket_upper_bound) DO UPDATE SET value=value+excluded.value`).run(epoch, name, kind, encoded, bucket ?? -1, delta);
+    db.prepare(`INSERT INTO metric_values(projection_epoch,metric_name,metric_kind,labels_json,bucket_upper_bound,value,updated_at) VALUES(?,?,?,?,?,?,?)
+      ON CONFLICT(projection_epoch,metric_name,labels_json,bucket_upper_bound) DO UPDATE SET value=value+excluded.value,updated_at=excluded.updated_at`).run(epoch, name, kind, encoded, bucket ?? -1, delta, new Date().toISOString());
   }
   private refreshGauges(db: DatabaseSync): void {
     const epoch = String((db.prepare('SELECT projection_epoch FROM projection_meta WHERE singleton=1').get() as Row).projection_epoch);
@@ -463,9 +471,10 @@ export class OperationsReadModel implements BackendApplicationContribution {
 
   private rebuildDerived(changeEpoch: boolean): void {
     this.transaction(database => {
-      database.exec('DELETE FROM timeline; DELETE FROM process_projection; DELETE FROM retention_holds; DELETE FROM run_projection; DELETE FROM projection_changes; DELETE FROM metric_values;');
+      database.exec('DELETE FROM timeline; DELETE FROM process_projection; DELETE FROM retention_holds; DELETE FROM run_projection; DELETE FROM projection_changes;');
+      const priorEpoch = String((database.prepare('SELECT projection_epoch FROM projection_meta WHERE singleton=1').get() as Row).projection_epoch);
       if (changeEpoch) database.prepare('UPDATE projection_meta SET projection_epoch=?,change_sequence=0 WHERE singleton=1').run(randomUUID());
-      else database.prepare('UPDATE projection_meta SET change_sequence=0 WHERE singleton=1').run();
+      else { database.prepare('DELETE FROM metric_values WHERE projection_epoch=?').run(priorEpoch); database.prepare('UPDATE projection_meta SET change_sequence=0 WHERE singleton=1').run(); }
       for (const row of database.prepare('SELECT * FROM accepted_events ORDER BY rowid').all() as Row[]) { const event = rowToEvent(database, row); this.projectEvent(database, event); this.projectMetrics(database, event); }
     });
   }
@@ -510,12 +519,14 @@ export class OperationsReadModel implements BackendApplicationContribution {
       CREATE TABLE IF NOT EXISTS process_projection(process_id TEXT PRIMARY KEY,run_id TEXT NOT NULL REFERENCES run_projection(run_id),operation_id TEXT,attempt_id TEXT,process_kind TEXT NOT NULL,state TEXT NOT NULL,cleanup_state TEXT NOT NULL,abnormal INTEGER NOT NULL CHECK(abnormal IN (0,1)),live INTEGER NOT NULL CHECK(live IN (0,1)),safe_code TEXT) STRICT;
       CREATE TABLE IF NOT EXISTS timeline(timeline_sequence INTEGER PRIMARY KEY AUTOINCREMENT,entry_id TEXT NOT NULL UNIQUE,run_id TEXT NOT NULL REFERENCES run_projection(run_id),owner_kind TEXT NOT NULL,owner_sequence TEXT NOT NULL,event_kind TEXT NOT NULL,safe_code TEXT,attempt_id TEXT,process_id TEXT,display_time TEXT NOT NULL,event_digest TEXT NOT NULL UNIQUE) STRICT;
       CREATE TABLE IF NOT EXISTS projection_changes(sequence TEXT PRIMARY KEY,change_kind TEXT NOT NULL,run_id TEXT,protected INTEGER NOT NULL CHECK(protected IN (0,1)),approximate_bytes INTEGER NOT NULL CHECK(approximate_bytes>0)) STRICT;
-      CREATE TABLE IF NOT EXISTS metric_values(projection_epoch TEXT NOT NULL,metric_name TEXT NOT NULL,metric_kind TEXT NOT NULL,labels_json TEXT NOT NULL,bucket_upper_bound INTEGER NOT NULL CHECK(bucket_upper_bound>=-1),value INTEGER NOT NULL CHECK(value>=0),PRIMARY KEY(projection_epoch,metric_name,labels_json,bucket_upper_bound)) STRICT;
+      CREATE TABLE IF NOT EXISTS metric_values(projection_epoch TEXT NOT NULL,metric_name TEXT NOT NULL,metric_kind TEXT NOT NULL,labels_json TEXT NOT NULL,bucket_upper_bound INTEGER NOT NULL CHECK(bucket_upper_bound>=-1),value INTEGER NOT NULL CHECK(value>=0),updated_at TEXT NOT NULL,PRIMARY KEY(projection_epoch,metric_name,labels_json,bucket_upper_bound)) STRICT;
       CREATE TABLE IF NOT EXISTS projection_faults(fault_sequence INTEGER PRIMARY KEY AUTOINCREMENT,fault_id TEXT NOT NULL UNIQUE,owner_kind TEXT NOT NULL,owner_instance_id TEXT NOT NULL,epoch_id TEXT NOT NULL,owner_sequence TEXT NOT NULL,safe_code TEXT NOT NULL,created_at TEXT NOT NULL) STRICT;
       CREATE TABLE IF NOT EXISTS retention_holds(run_id TEXT NOT NULL,hold_kind TEXT NOT NULL CHECK(hold_kind IN ('task','incident','evidence','verdict','merge','quarantine')),owner_kind TEXT NOT NULL,owner_instance_id TEXT NOT NULL,fact_digest TEXT NOT NULL,active INTEGER NOT NULL CHECK(active IN (0,1)),updated_at TEXT NOT NULL,PRIMARY KEY(run_id,hold_kind)) STRICT;
       CREATE TABLE IF NOT EXISTS action_requests(request_id TEXT PRIMARY KEY,request_digest TEXT NOT NULL,action_kind TEXT NOT NULL,run_id TEXT NOT NULL,operation_id TEXT,projection_sequence TEXT NOT NULL,status TEXT NOT NULL CHECK(status IN ('forwarded','refused','unknown')),safe_code TEXT NOT NULL,created_at TEXT NOT NULL) STRICT;
       INSERT OR IGNORE INTO projection_meta(singleton,schema_version,projection_epoch,cursor_key,lifecycle,change_sequence) VALUES(1,1,'${randomUUID()}','${randomBytes(32).toString('hex')}','stopped','0');
     `);
+    const metricColumns = this.db().prepare('PRAGMA table_info(metric_values)').all() as Row[];
+    if (!metricColumns.some(column => String(column.name) === 'updated_at')) { this.db().exec('ALTER TABLE metric_values ADD COLUMN updated_at TEXT'); this.db().prepare('UPDATE metric_values SET updated_at=? WHERE updated_at IS NULL').run(new Date().toISOString()); }
     const meta = this.meta(); if (Number(meta.schema_version) !== 1) throw new ProjectionFault('PROJECTION_SCHEMA_INCOMPATIBLE');
   }
 

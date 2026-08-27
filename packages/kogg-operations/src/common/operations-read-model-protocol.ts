@@ -173,6 +173,7 @@ export interface OperationsProjectionDiagnosticsV1 {
   readonly causalGapCount: number;
   readonly processAbnormalCount: number;
   readonly metricViolationCount: number;
+  readonly retainedMetricEpochCount: number;
   readonly activeRetentionHoldCount: number;
   readonly retentionViolationCount: number;
 }
