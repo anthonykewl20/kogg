@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { executionStartGate, executionStateLabel } from '../common/execution-view-model';
+import { executionAuthorityNotice, executionStartGate, executionStateLabel } from '../common/execution-view-model';
 
 // diagnostic-exempt: Pure presentation-policy tests have no independent runtime state.
 test('keeps run start closed for unqualified and not-yet-wired qualified targets', () => {
@@ -9,4 +9,7 @@ test('keeps run start closed for unqualified and not-yet-wired qualified targets
   assert.deepEqual(executionStartGate({ qualified: true, targetId: 'local-qualified-linux', profileId: 'kogg-writable-agent-v1', safeCode: 'EXECUTION_OK', qualificationId: '10000000-0000-4000-8000-000000000001', expiresAt: '2026-08-27T03:00:00.000Z', sourceMapsPresent: true }),
     { enabled: false, safeCode: 'EXECUTION_INTERNAL_FAILED', summary: 'Run start unavailable: governed workflow start owner is not connected.' });
   assert.equal(executionStateLabel('candidate-imported'), 'Candidate Imported');
+  assert.equal(executionAuthorityNotice({ authorityMode: 'build' }), 'Build work is unverified. Continue in Kogg mode to run the required governed lifecycle.');
+  assert.match(executionAuthorityNotice({ authorityMode: 'kogg' }), /not PASS or completion/u);
+  assert.match(executionAuthorityNotice({ authorityMode: 'unknown' }), /cannot claim Build or governed Kogg completion/u);
 });

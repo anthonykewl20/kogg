@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { createHash, randomUUID } from 'node:crypto';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
@@ -106,25 +106,55 @@ test('refuses worktree reservation by durable mode authority before qualificatio
   } finally { registry.onStop(); await rm(root, { recursive: true, force: true }); }
 });
 
-test('rechecks mode authority before the physical-allocation intent and leaves no pre-effect state after authority loss', async () => {
-  for (const authorityLoss of ['downgraded', 'disconnected'] as const) {
+test('rechecks the immutable mode binding before the physical-allocation intent and leaves no pre-effect state after authority loss', async () => {
+  for (const authorityLoss of ['downgraded', 'disconnected', 'sequence-drift'] as const) {
     const root = await mkdtemp(path.join(os.tmpdir(), `kogg-allocation-prepare-mode-${authorityLoss}-`)); process.env.KOGG_STATE_DIR = root;
-    let allow = true; let physicalQualificationCalls = 0;
+    let authorityLost = false; let physicalQualificationCalls = 0;
     const modes = { async authorizeOperation(request: { taskId: string; operation: string }) {
       assert.equal(request.taskId, allocationRequest().binding.taskId); assert.equal(request.operation, 'worktree-create');
-      if (!allow && authorityLoss === 'disconnected') throw new Error('mode owner disconnected');
-      return { schemaVersion: 1, allowed: allow, safeCode: allow ? 'MODE_OK' : 'PLAN_MUTATION_REFUSED', projection: {} as never };
+      if (authorityLost && authorityLoss === 'disconnected') throw new Error('mode owner disconnected');
+      if (authorityLost && authorityLoss === 'downgraded') return modeAuthorization('plan', '2', false);
+      if (authorityLost && authorityLoss === 'sequence-drift') return modeAuthorization('kogg', '2', true);
+      return modeAuthorization();
     } } as ModeOperationAuthorizer;
     const targets = { authorize: async () => true, authorizePhysicalAllocation: async () => { physicalQualificationCalls++; return true; } };
     const registry = new ExecutionAllocationRegistry(targets, modes); await registry.onStart();
     try {
-      const allocation = await registry.reserve(allocationRequest()); allow = false;
+      const allocation = await registry.reserve(allocationRequest()); authorityLost = true;
       await assert.rejects(() => registry.preparePhysicalAllocation({ requestId: randomUUID(), worktreeId: allocation.worktreeId, expectedRevision: allocation.revision, bindingDigest: allocation.bindingDigest, helperDigest: `sha256:${'8'.repeat(64)}`, mountQuotaDigest: `sha256:${'9'.repeat(64)}` }),
         (error: unknown) => error instanceof AllocationRegistryError && error.code === 'ALLOCATION_ADMISSION_BLOCKED');
       const diagnostics = registry.diagnostics(); assert.equal(physicalQualificationCalls, 0); assert.equal(diagnostics.pendingAllocationIntentCount, 0); assert.equal(diagnostics.activeQuotaProjectLeaseCount, 0);
       assert.equal((await registry.workspaceContext(allocation.worktreeId)).allocation.state, 'admitted');
     } finally { registry.onStop(); await rm(root, { recursive: true, force: true }); }
   }
+});
+
+test('migrates a legacy terminal allocation to explicit unknown authority without inventing Build or Kogg trust', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'kogg-allocation-mode-migration-')); process.env.KOGG_STATE_DIR = root;
+  const directory = path.join(root, 'execution'); await mkdir(directory, { recursive: true }); const databasePath = path.join(directory, 'registry.sqlite3');
+  const database = new DatabaseSync(databasePath); const current = binding(); const worktreeId = '18000000-0000-4000-8000-000000000001'; const now = '2026-08-27T00:00:00.000Z';
+  database.exec(`
+    CREATE TABLE execution_meta(singleton INTEGER PRIMARY KEY CHECK(singleton=1),schema_version INTEGER NOT NULL CHECK(schema_version=1),revision INTEGER NOT NULL CHECK(revision>=1),owner_instance_id TEXT NOT NULL,owner_id TEXT,owner_epoch_id TEXT,admission TEXT NOT NULL CHECK(admission IN ('enabled','recovering','blocked')));
+    INSERT INTO execution_meta VALUES(1,1,1,'legacy-owner',NULL,NULL,'enabled');
+    CREATE TABLE allocations(worktree_id TEXT PRIMARY KEY,run_id TEXT NOT NULL UNIQUE,attempt_id TEXT NOT NULL,project_id TEXT NOT NULL,repository_id TEXT NOT NULL,binding_json TEXT NOT NULL,binding_digest TEXT NOT NULL,allocation_name TEXT NOT NULL UNIQUE,allocation_nonce TEXT NOT NULL,allocation_nonce_digest TEXT NOT NULL,filesystem_identity_digest TEXT,filesystem_device TEXT,filesystem_inode TEXT,owner_uid TEXT,allocation_mode TEXT,mount_id TEXT,quota_project_id TEXT,helper_digest TEXT,mount_quota_digest TEXT,quota_bytes TEXT NOT NULL,quota_inodes TEXT NOT NULL,owner_instance_id TEXT NOT NULL,state TEXT NOT NULL,cleanup_state TEXT NOT NULL,safe_code TEXT NOT NULL,revision INTEGER NOT NULL,created_at TEXT NOT NULL,updated_at TEXT NOT NULL);
+  `);
+  database.prepare(`INSERT INTO allocations(worktree_id,run_id,attempt_id,project_id,repository_id,binding_json,binding_digest,allocation_name,allocation_nonce,allocation_nonce_digest,quota_bytes,quota_inodes,owner_instance_id,state,cleanup_state,safe_code,revision,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,'cleaned','cleaned','ALLOCATION_OK',1,?,?)`)
+    .run(worktreeId, current.runId, current.attemptId, current.projectId, current.repositoryId, JSON.stringify(current), `sha256:${'1'.repeat(64)}`, 'r-legacyterminalallocation', '2'.repeat(64), `sha256:${'3'.repeat(64)}`, '1024', '100', 'legacy-owner', now, now);
+  database.close();
+  const registry = allocationRegistry();
+  try {
+    await registry.onStart(); const run = await registry.getRun({ requestId: randomUUID(), runId: current.runId });
+    assert.equal(run?.authorityMode, 'unknown'); assert.equal(run?.authoritySequence, '0');
+  } finally { registry.onStop(); await rm(root, { recursive: true, force: true }); }
+});
+
+test('refuses startup when an immutable execution authority sequence is corrupted', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'kogg-allocation-mode-integrity-')); process.env.KOGG_STATE_DIR = root;
+  const first = allocationRegistry(); await first.onStart(); const allocation = await first.reserve(allocationRequest()); first.onStop();
+  const database = new DatabaseSync(path.join(root, 'execution', 'registry.sqlite3')); database.prepare('UPDATE allocations SET authority_sequence=? WHERE worktree_id=?').run('not-a-sequence', allocation.worktreeId); database.close();
+  const reopened = allocationRegistry();
+  try { await assert.rejects(() => reopened.onStart(), /Execution mode binding integrity failed/u); }
+  finally { reopened.onStop(); await rm(root, { recursive: true, force: true }); }
 });
 
 test('projects execution runs through the closed path-free RPC contract and refuses extra fields', async () => {
@@ -136,7 +166,8 @@ test('projects execution runs through the closed path-free RPC contract and refu
     const run = await registry.getRun({ requestId, runId: allocation.runId });
     assert.deepEqual(run, {
       schemaVersion: 1, projectId: allocationRequest().binding.projectId, repositoryId: allocationRequest().binding.repositoryId,
-      runId: allocation.runId, attemptId: allocation.attemptId, state: 'admitted', revision: '1', cleanupState: 'required', safeCode: 'ALLOCATION_OK'
+      runId: allocation.runId, attemptId: allocation.attemptId, authorityMode: 'build', authoritySequence: '1',
+      state: 'admitted', revision: '1', cleanupState: 'required', safeCode: 'ALLOCATION_OK'
     });
     assert.deepEqual(await registry.getRun({ requestId: '10000000-0000-4000-8000-000000000021', runId: '10000000-0000-4000-8000-000000000099' }), undefined);
     const list = await registry.listRuns({ requestId: '10000000-0000-4000-8000-000000000022', projectId: allocationRequest().binding.projectId });
@@ -379,7 +410,13 @@ function allocationRequest(): ReserveExecutionAllocationV1 {
 function allocationRegistry(authorize: (binding: ExecutionBindingV1) => Promise<boolean> = async () => true, modes: ModeOperationAuthorizer = MODE_AUTHORITY): ExecutionAllocationRegistry {
   return new ExecutionAllocationRegistry({ authorize, authorizePhysicalAllocation: async (binding: ExecutionBindingV1) => authorize(binding) } as never, modes);
 }
-const MODE_AUTHORITY = { authorizeOperation: async () => ({ allowed: true, safeCode: 'MODE_OK' }) } as unknown as ModeOperationAuthorizer;
+const MODE_AUTHORITY = { authorizeOperation: async () => modeAuthorization() } as ModeOperationAuthorizer;
+function modeAuthorization(selectedMode: 'plan' | 'build' | 'kogg' = 'build', sequence = '1', allowed = true) {
+  const current = binding();
+  return { schemaVersion: 1 as const, allowed, safeCode: allowed ? 'MODE_OK' as const : 'PLAN_MUTATION_REFUSED' as const,
+    projection: { schemaVersion: 1 as const, taskId: current.taskId, projectId: current.projectId, repositoryId: current.repositoryId, taskRevision: '1', selectedMode,
+      effectiveCapabilities: [], sequence, state: 'ready' as const, activeStage: selectedMode, safeCode: allowed ? 'MODE_OK' as const : 'PLAN_MUTATION_REFUSED' as const } };
+}
 async function advanceToStopping(registry: ExecutionAllocationRegistry) {
   return advanceRequestToStopping(registry, allocationRequest());
 }
