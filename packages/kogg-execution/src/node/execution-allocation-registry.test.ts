@@ -4,6 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 import type { ExecutionBindingV1, ReserveExecutionAllocationV1 } from '../common/execution-protocol';
+import { CANDIDATE_MUTATION_POLICY_DIGEST } from './candidate-sealer';
 import { AllocationRegistryError, ExecutionAllocationRegistry } from './execution-allocation-registry';
 
 // diagnostic-coverage: execution.worktree-registry, execution.capacity, execution.recovery
@@ -52,8 +53,52 @@ test('refuses unknown allocation fields before creating durable state', async ()
   } finally { registry.onStop(); await rm(root, { recursive: true, force: true }); }
 });
 
+test('persists only legal binding-and-revision-fenced state transitions with exact request replay', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'kogg-allocation-state-')); process.env.KOGG_STATE_DIR = root; const registry = new ExecutionAllocationRegistry(); await registry.onStart();
+  try {
+    const allocation = await registry.reserve(allocationRequest()); const request = { requestId: '10000000-0000-4000-8000-00000000000c', worktreeId: allocation.worktreeId, expectedRevision: '1', bindingDigest: allocation.bindingDigest, nextState: 'allocated' as const, safeCode: 'ALLOCATION_OK' as const };
+    const advanced = await registry.advance(request); assert.equal(advanced.state, 'allocated'); assert.equal(advanced.revision, '2'); assert.deepEqual(await registry.advance(request), advanced);
+    await assert.rejects(() => registry.advance({ ...request, requestId: '10000000-0000-4000-8000-00000000000d', expectedRevision: '2', nextState: 'sealed' }), (error: unknown) => error instanceof AllocationRegistryError && error.code === 'ALLOCATION_STATE_INVALID');
+    await assert.rejects(() => registry.advance({ ...request, requestId: '10000000-0000-4000-8000-00000000000e', expectedRevision: '1', nextState: 'seeding' }), (error: unknown) => error instanceof AllocationRegistryError && error.code === 'ALLOCATION_REVISION_CONFLICT');
+    await assert.rejects(() => registry.advance({ ...request, requestId: '10000000-0000-4000-8000-00000000000f', expectedRevision: '2', bindingDigest: `sha256:${'b'.repeat(64)}`, nextState: 'seeding' }), (error: unknown) => error instanceof AllocationRegistryError && error.code === 'ALLOCATION_BINDING_MISMATCH');
+  } finally { registry.onStop(); await rm(root, { recursive: true, force: true }); }
+});
+
+test('records one sealed candidate only after the legal stopping state and replays the exact request', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'kogg-allocation-seal-')); process.env.KOGG_STATE_DIR = root; const registry = new ExecutionAllocationRegistry(); await registry.onStart();
+  try {
+    const allocation = await advanceToStopping(registry);
+    const candidate = { schemaVersion: 1 as const, candidateId: '30000000-0000-4000-8000-000000000001', worktreeId: allocation.worktreeId, runId: allocationRequest().binding.runId, attemptId: allocationRequest().binding.attemptId, baseCommit: allocationRequest().binding.baseCommit, baseTree: allocationRequest().binding.baseTree, candidateCommit: 'd'.repeat(40), candidateTree: 'e'.repeat(40), objectClosureDigest: `sha256:${'f'.repeat(64)}`, mutationPolicyDigest: CANDIDATE_MUTATION_POLICY_DIGEST, sealedAt: new Date().toISOString(), retentionClass: 'pending-evidence' as const, retentionUntil: '9999-12-31T23:59:59.999Z', safeCode: 'SEAL_OK' as const };
+    const request = { requestId: '30000000-0000-4000-8000-000000000002', worktreeId: allocation.worktreeId, expectedRevision: allocation.revision, bindingDigest: allocation.bindingDigest, candidate };
+    assert.deepEqual(await registry.recordSeal(request), candidate); assert.deepEqual(await registry.recordSeal(request), candidate);
+    const intentRequest = { requestId: '30000000-0000-4000-8000-000000000004', worktreeId: allocation.worktreeId, expectedRevision: String(Number(allocation.revision) + 1), bindingDigest: allocation.bindingDigest, candidateId: candidate.candidateId, expectedSourceIdentityDigest: `sha256:${'1'.repeat(64)}` };
+    const intent = await registry.prepareCandidateImport(intentRequest); assert.deepEqual(await registry.prepareCandidateImport(intentRequest), intent); assert.match(intent.fencingToken, /^[0-9a-f]{64}$/u);
+    assert.equal(registry.diagnostics().candidateCount, 1); assert.equal(registry.diagnostics().pendingImportIntentCount, 1);
+    const imported = await registry.completeCandidateImport({ requestId: '30000000-0000-4000-8000-000000000005', intentId: intent.intentId, worktreeId: allocation.worktreeId, expectedRevision: intentRequest.expectedRevision, bindingDigest: allocation.bindingDigest, candidateId: candidate.candidateId, fencingToken: intent.fencingToken, candidateCommit: candidate.candidateCommit, candidateTree: candidate.candidateTree, quarantineRefDigest: `sha256:${'2'.repeat(64)}` });
+    assert.equal(imported.safeCode, 'IMPORT_OK'); assert.equal(imported.quarantineRefDigest, `sha256:${'2'.repeat(64)}`);
+    assert.equal(registry.diagnostics().pendingImportIntentCount, 0);
+    await assert.rejects(() => registry.recordSeal({ ...request, requestId: '30000000-0000-4000-8000-000000000003', expectedRevision: '1' }), (error: unknown) => error instanceof AllocationRegistryError && error.code === 'ALLOCATION_REVISION_CONFLICT');
+  } finally { registry.onStop(); await rm(root, { recursive: true, force: true }); }
+});
+
+test('startup retains an ambiguous import intent and quarantines its allocation without replay', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'kogg-allocation-import-recovery-')); process.env.KOGG_STATE_DIR = root; const first = new ExecutionAllocationRegistry(); await first.onStart();
+  const allocation = await advanceToStopping(first); const base = allocationRequest().binding;
+  const candidate = { schemaVersion: 1 as const, candidateId: '30000000-0000-4000-8000-000000000011', worktreeId: allocation.worktreeId, runId: base.runId, attemptId: base.attemptId, baseCommit: base.baseCommit, baseTree: base.baseTree, candidateCommit: 'd'.repeat(40), candidateTree: 'e'.repeat(40), objectClosureDigest: `sha256:${'f'.repeat(64)}`, mutationPolicyDigest: CANDIDATE_MUTATION_POLICY_DIGEST, sealedAt: new Date().toISOString(), retentionClass: 'pending-evidence' as const, retentionUntil: '9999-12-31T23:59:59.999Z', safeCode: 'SEAL_OK' as const };
+  await first.recordSeal({ requestId: '30000000-0000-4000-8000-000000000012', worktreeId: allocation.worktreeId, expectedRevision: allocation.revision, bindingDigest: allocation.bindingDigest, candidate });
+  await first.prepareCandidateImport({ requestId: '30000000-0000-4000-8000-000000000013', worktreeId: allocation.worktreeId, expectedRevision: String(Number(allocation.revision) + 1), bindingDigest: allocation.bindingDigest, candidateId: candidate.candidateId, expectedSourceIdentityDigest: `sha256:${'1'.repeat(64)}` }); first.onStop();
+  const recovered = new ExecutionAllocationRegistry(); await recovered.onStart();
+  try { const diagnostics = recovered.diagnostics(); assert.equal(diagnostics.admission, 'blocked'); assert.equal(diagnostics.quarantinedCount, 1); assert.equal(diagnostics.pendingImportIntentCount, 1); assert.equal(diagnostics.candidateCount, 1); }
+  finally { recovered.onStop(); await rm(root, { recursive: true, force: true }); }
+});
+
 function allocationRequest(): ReserveExecutionAllocationV1 {
   return { requestId: '10000000-0000-4000-8000-00000000000b', binding: binding(), quotaBytes: '1073741824', quotaInodes: '100000' };
+}
+async function advanceToStopping(registry: ExecutionAllocationRegistry) {
+  let allocation = await registry.reserve(allocationRequest()); const states = ['allocated', 'seeding', 'verified', 'ready', 'leased', 'executing', 'stopping'] as const;
+  for (let index = 0; index < states.length; index++) allocation = await registry.advance({ requestId: `20000000-0000-4000-8000-00000000000${index}`, worktreeId: allocation.worktreeId, expectedRevision: allocation.revision, bindingDigest: allocation.bindingDigest, nextState: states[index]!, safeCode: 'ALLOCATION_OK' });
+  return allocation;
 }
 function binding(): ExecutionBindingV1 {
   const digest = `sha256:${'a'.repeat(64)}`;

@@ -24,7 +24,7 @@ export class ExecutionDiagnosticContributor implements KoggDiagnosticContributor
         { id: 'execution.target-qualification', ...result(target.qualified, target.qualified ? 'The exact writable-agent Linux target is currently qualified.' : `Execution target refused with ${target.safeCode}.`) },
         { id: 'execution.worktree-registry', ...result(registryHealthy, registryHealthy ? 'The durable private allocation registry is consistent.' : 'The durable private allocation registry requires recovery.') },
         { id: 'execution.git-independence', ...result(allocation.unverifiedCount === 0, 'No allocation is awaiting Git independence proof.') },
-        { id: 'execution.source-integrity', ...result(allocation.unverifiedCount === 0, 'No source-integrity verification is pending.') },
+        { id: 'execution.source-integrity', ...result(allocation.unverifiedCount === 0 && allocation.pendingImportIntentCount === 0, 'No source-integrity verification or candidate import is pending.') },
         { id: 'execution.process-cleanup', ...result(operation.residualCount === 0 && operation.cleanupFailureCount === 0, 'No execution process residual is recorded.') },
         { id: 'execution.capacity', ...result(allocation.admission === 'enabled' && allocation.reservationCount < 64, 'Execution reservation capacity is available.') },
         { id: 'execution.recovery', ...result(allocation.admission === 'enabled' && operation.recoveryComplete && operation.admission === 'enabled', 'Execution startup recovery is complete.') },

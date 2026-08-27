@@ -7,6 +7,7 @@ export type ExecutionGitCode = 'GIT_SEED_FAILED' | 'GIT_SEED_TIMEOUT' | 'GIT_SEE
   | 'GIT_BASE_CHANGED' | 'GIT_INDEPENDENCE_FAILED' | 'GIT_SOURCE_INTEGRITY_FAILED';
 export type ExecutionAllocationCode = 'ALLOCATION_OK' | 'ALLOCATION_ADMISSION_BLOCKED' | 'ALLOCATION_PROTOCOL_INVALID'
   | 'ALLOCATION_REQUEST_REPLAY_MISMATCH' | 'ALLOCATION_RUN_EXISTS' | 'ALLOCATION_INTEGRITY_FAILED'
+  | 'ALLOCATION_REVISION_CONFLICT' | 'ALLOCATION_BINDING_MISMATCH' | 'ALLOCATION_STATE_INVALID'
   | 'RECOVERY_OWNER_UNAVAILABLE';
 export type ExecutionSealCode = 'SEAL_OK' | 'SEAL_FAILED' | 'SEAL_BASE_MISMATCH' | 'SEAL_NO_CHANGE' | 'SEAL_DIRTY'
   | 'SEAL_HEAD_INVALID' | 'SEAL_ANCESTRY_INVALID' | 'SEAL_MERGE_COMMIT' | 'SEAL_MUTATION_POLICY' | 'SEAL_OBJECT_INVALID';
@@ -35,6 +36,11 @@ export interface ExecutionAllocationSummaryV1 {
   readonly state: ExecutionState; readonly revision: string; readonly cleanupState: 'required' | 'cleaning' | 'cleaned' | 'failed';
   readonly safeCode: ExecutionAllocationCode;
 }
+export interface AdvanceExecutionStateV1 {
+  readonly requestId: string; readonly worktreeId: string; readonly expectedRevision: string;
+  readonly bindingDigest: string; readonly nextState: ExecutionState;
+  readonly safeCode: ExecutionAllocationCode | ExecutionGitCode | ExecutionSealCode | ExecutionImportCode | ExecutionQualificationCode | 'PROCESS_EXIT_NONZERO' | 'CLEANUP_FAILED';
+}
 export interface SealCandidateV1 {
   readonly projectId: string; readonly runId: string; readonly attemptId: string; readonly worktreeId: string;
   readonly privateRoot: string; readonly baseCommit: string; readonly baseTree: string;
@@ -46,6 +52,23 @@ export interface CandidateBindingV1 {
   readonly candidateTree: string; readonly objectClosureDigest: string; readonly mutationPolicyDigest: string;
   readonly quarantineRefDigest?: string; readonly sealedAt: string; readonly retentionClass: 'pending-evidence'; readonly retentionUntil: string;
   readonly safeCode: ExecutionSealCode;
+}
+export interface RecordSealedCandidateV1 {
+  readonly requestId: string; readonly worktreeId: string; readonly expectedRevision: string;
+  readonly bindingDigest: string; readonly candidate: CandidateBindingV1;
+}
+export interface PrepareCandidateImportV1 {
+  readonly requestId: string; readonly worktreeId: string; readonly expectedRevision: string; readonly bindingDigest: string;
+  readonly candidateId: string; readonly expectedSourceIdentityDigest: string;
+}
+export interface CandidateImportIntentV1 {
+  readonly schemaVersion: 1; readonly intentId: string; readonly worktreeId: string; readonly candidateId: string;
+  readonly fencingToken: string; readonly phase: 'requested'; readonly safeCode: 'IMPORT_OK';
+}
+export interface CompleteCandidateImportV1 {
+  readonly requestId: string; readonly intentId: string; readonly worktreeId: string; readonly expectedRevision: string;
+  readonly bindingDigest: string; readonly candidateId: string; readonly fencingToken: string;
+  readonly candidateCommit: string; readonly candidateTree: string; readonly quarantineRefDigest: string;
 }
 export interface ImportCandidateV1 {
   readonly projectId: string; readonly repositoryId: string; readonly sourceRoot: string; readonly sourceGitDirectory: string; readonly privateRoot: string;
