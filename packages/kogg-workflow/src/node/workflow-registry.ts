@@ -3,7 +3,7 @@ import { existsSync, promises as fs } from 'node:fs';
 import path from 'node:path';
 import { DatabaseSync, type SQLOutputValue } from 'node:sqlite';
 import { BackendApplicationContribution } from '@theia/core/lib/node';
-import { inject, injectable, unmanaged } from '@theia/core/shared/inversify';
+import { inject, injectable, optional, unmanaged } from '@theia/core/shared/inversify';
 import type { EditableWorkflowGraphV1, KoggWorkflowService, WorkflowMutationResult, WorkflowNodeConfigurationV1, WorkflowRunProjection, WorkflowSafeCode, WorkflowTemplateVersionProjection, WorkflowValidationProjection } from '../common/workflow-protocol';
 import { canonicalJson, WorkflowValidationError, workflowDigest } from '../common/workflow-canonical';
 import { WorkflowCompiler } from './workflow-compiler';
@@ -12,6 +12,7 @@ import type { OperationsOwnerSink, OwnerEventV1, SafeOwnerPayloadV1 } from '@kog
 import { OperationsReadModel } from '@kogg/operations/lib/node/operations-read-model';
 import { KoggModeOperationAuthorizer, type ModeOperationAuthorizer } from '@kogg/interaction-modes/lib/common/interaction-modes-protocol';
 import { KoggAgentBindingAuthorizer, type AgentBindingAuthorizer, type AgentBindingAuthorizationRequestV1 } from '@kogg/agents/lib/common/agents-protocol';
+import { TaskAdmissionAuthority, type TaskAdmissionAuthority as TaskAdmissionResolver, type TaskAdmissionSnapshot } from '@kogg/tasks/lib/common/tasks-protocol';
 
 // Logs through the closed workflowLog schemas.
 // diagnostic-coverage: workflow.schema, workflow.catalog, workflow.graph, workflow.anchors, workflow.authority, workflow.scheduler, workflow.processes, workflow.cleanup, workflow.recovery, workflow.source-maps
@@ -22,6 +23,7 @@ const LEGACY_UNATTESTED_CATALOG = '0'.repeat(64);
 
 @injectable()
 export class WorkflowRegistry implements KoggWorkflowService, BackendApplicationContribution {
+  @inject(TaskAdmissionAuthority) @optional() private taskAdmissionAuthority: TaskAdmissionResolver | undefined;
   private database: DatabaseSync | undefined;
   private readonly schedulerEpochId = randomUUID();
   private readonly schedulerFencingToken = randomUUID();
@@ -51,12 +53,13 @@ export class WorkflowRegistry implements KoggWorkflowService, BackendApplication
   async onStop(): Promise<void> { workflowLog('registry.stop.started', {}); try { this.ownerSink = undefined; this.database?.prepare("UPDATE scheduler_lease SET phase='released',updated_at=? WHERE singleton=1 AND owner_epoch_id=? AND phase='active'").run(new Date().toISOString(), this.schedulerEpochId); this.database?.close(); this.database = undefined; workflowLog('registry.stop.completed', {}); } catch (error) { /* observability-exempt: registry.stop.failed emits only a normalized error type. */ workflowLog('registry.stop.failed', { errorType: error instanceof Error ? error.name : 'UnknownError' }); throw error; } }
 
   setOwnerSink(sink?: OperationsOwnerSink): void { this.ownerSink = sink; if (sink && this.database) this.publishOwnerEvents(); }
+  setTaskAdmissionAuthority(authority: TaskAdmissionResolver): void { this.taskAdmissionAuthority = authority; }
 
   publishOwnerEvents(): void {
     if (!this.ownerSink || !this.database) return;
     const meta = this.database.prepare('SELECT owner_id,owner_epoch_id FROM workflow_owner_meta WHERE singleton=1').get() as Row;
     let previous = '0'.repeat(64);
-    for (const row of this.database.prepare(`SELECT e.*,r.plan_id,v.graph_json FROM workflow_scheduler_events e JOIN workflow_runs r ON r.run_id=e.run_id JOIN compiled_plans p ON p.plan_id=r.plan_id JOIN template_versions v ON v.version_id=p.version_id ORDER BY e.sequence`).all() as Row[]) {
+    for (const row of this.database.prepare(`SELECT e.*,r.plan_id,r.task_id,v.graph_json FROM workflow_scheduler_events e JOIN workflow_runs r ON r.run_id=e.run_id JOIN compiled_plans p ON p.plan_id=r.plan_id JOIN template_versions v ON v.version_id=p.version_id ORDER BY e.sequence`).all() as Row[]) {
       if (text(row, 'previous_event_digest') !== sourcePreviousDigest(this.database, number(row, 'sequence')) || schedulerEventDigest(row) !== text(row, 'event_digest')) {
         workflowLog('owner.publish.failed', { safeCode: 'WORKFLOW_STORE_INTEGRITY', errorType: 'OwnerEventIntegrityError' }); break;
       }
@@ -116,27 +119,34 @@ export class WorkflowRegistry implements KoggWorkflowService, BackendApplication
     }
   }
 
-  async admitRun(input: { requestId: string; planId: string; taskId: string }): Promise<WorkflowMutationResult> {
-    workflowLog('run.admission.requested', { requestId: safeId(input.requestId), planId: safeId(input.planId) });
+  async admitRun(input: { requestId: string; planId: string; taskAdmissionId: string }): Promise<WorkflowMutationResult> {
+    workflowLog('run.admission.requested', { requestId: safeId(input.requestId), planId: safeId(input.planId), taskAdmissionId: safeId(input.taskAdmissionId) });
     let unavailableExecutorCount = 0;
     try {
-      uuid(input.requestId); uuid(input.planId); uuid(input.taskId);
+      uuid(input.requestId); uuid(input.planId); uuid(input.taskAdmissionId);
       const storedPlan = this.compiledPlan(input.planId); const storedVersion = this.version(text(storedPlan, 'version_id'));
       const graph = this.compiler.decodeAndValidate(JSON.parse(text(storedVersion, 'graph_json')) as unknown);
       const catalog = this.compiler.catalogStatus();
       if (text(storedPlan, 'catalog_digest') !== catalog.digest || text(storedVersion, 'catalog_digest') !== catalog.digest) throw new WorkflowValidationError('WORKFLOW_CATALOG_MISMATCH');
       this.compiler.assertPlanIntegrity(plan(storedPlan), graph);
-      const requestDigest = workflowDigest('run-snapshot', { schemaVersion: '1', planId: input.planId, planDigest: text(storedPlan, 'plan_digest'), taskId: input.taskId });
+      let taskAdmission: TaskAdmissionSnapshot | undefined;
+      try { taskAdmission = await this.taskAdmissionAuthority?.resolveAdmission(input.taskAdmissionId); }
+      catch { // observability-exempt: the closed authority refusal excludes task-admission implementation details.
+        taskAdmission = undefined;
+      }
+      const taskAdmissionDigest = taskAdmission ? workflowDigest('run-snapshot', { schemaVersion: '1', taskAdmission }) : LEGACY_UNATTESTED_CATALOG;
+      const requestDigest = workflowDigest('run-snapshot', { schemaVersion: '1', planId: input.planId, planDigest: text(storedPlan, 'plan_digest'), taskAdmissionId: input.taskAdmissionId, taskAdmissionDigest });
       const refuseAuthority = (): WorkflowMutationResult => {
         const result = this.transaction(input.requestId, requestDigest, () => ({ kind: 'refused', code: 'WORKFLOW_AUTHORITY_EXPANSION' } as const));
-        workflowLog('run.admission.refused', { requestId: input.requestId, planId: input.planId, safeCode: result.code, unavailableExecutorCount: 0 }); return result;
+        workflowLog('run.admission.refused', { requestId: input.requestId, planId: input.planId, taskAdmissionId: input.taskAdmissionId, safeCode: result.code, unavailableExecutorCount: 0 }); return result;
       };
+      if (!taskAdmission || !validTaskAdmission(taskAdmission, input.taskAdmissionId) || taskAdmission.projectId !== graph.projectId) return refuseAuthority();
       let authority: Awaited<ReturnType<ModeOperationAuthorizer['authorizeOperation']>>;
-      try { authority = await this.modeAuthority.authorizeOperation({ requestId: input.requestId, taskId: input.taskId, operation: 'governed-entry' }); }
+      try { authority = await this.modeAuthority.authorizeOperation({ requestId: input.requestId, taskId: taskAdmission.taskId, operation: 'governed-entry' }); }
       catch { // observability-exempt: the closed admission refusal records only the fixed authority safe code and no upstream error content.
         return refuseAuthority();
       }
-      if (!authority.allowed || authority.projection.state !== 'ready' || authority.projection.taskId !== input.taskId || authority.projection.projectId !== graph.projectId) {
+      if (!authority.allowed || authority.projection.state !== 'ready' || authority.projection.taskId !== taskAdmission.taskId || authority.projection.projectId !== graph.projectId || authority.projection.repositoryId !== taskAdmission.repositoryId) {
         return refuseAuthority();
       }
       for (const node of graph.nodes.filter(candidate => candidate.kind.endsWith('.agent'))) {
@@ -152,15 +162,15 @@ export class WorkflowRegistry implements KoggWorkflowService, BackendApplication
       unavailableExecutorCount = graph.nodes.filter(node => this.compiler.catalogEntry(node.kind).executor.status === 'unavailable').length;
       if (unavailableExecutorCount > 0) {
         const result = this.transaction(input.requestId, requestDigest, () => ({ kind: 'refused', code: 'WORKFLOW_EXECUTOR_INCOMPATIBLE' } as const));
-        workflowLog('run.admission.refused', { requestId: input.requestId, planId: input.planId, safeCode: result.code, unavailableExecutorCount }); return result;
+        workflowLog('run.admission.refused', { requestId: input.requestId, planId: input.planId, taskAdmissionId: input.taskAdmissionId, safeCode: result.code, unavailableExecutorCount }); return result;
       }
-      const admitted = this.transaction(input.requestId, requestDigest, () => this.createControlRun(input.planId, text(storedPlan, 'plan_digest'), graph));
+      const admitted = this.transaction(input.requestId, requestDigest, () => this.createControlRun(input.planId, text(storedPlan, 'plan_digest'), graph, taskAdmission, taskAdmissionDigest));
       if (admitted.kind !== 'completed' || !admitted.run || admitted.run.state !== 'admitted') return admitted;
-      workflowLog('run.admitted', { requestId: input.requestId, planId: input.planId, runId: admitted.run.runId, nodeCount: graph.nodes.length });
+      workflowLog('run.admitted', { requestId: input.requestId, planId: input.planId, taskAdmissionId: input.taskAdmissionId, runId: admitted.run.runId, nodeCount: graph.nodes.length });
       const completed = this.executeControlRun(admitted.run.runId, input.planId, graph); this.db().prepare('UPDATE idempotency SET result_json=? WHERE request_id=?').run(JSON.stringify(completed), input.requestId); this.publishOwnerEvents(); return completed;
     } catch (error) {
       // observability-exempt: run.admission.refused is the sanitized terminal event and excludes graph, configuration, and executor details.
-      const code = codeOf(error); workflowLog('run.admission.refused', { requestId: safeId(input.requestId), planId: safeId(input.planId), safeCode: code, unavailableExecutorCount }); return { kind: 'refused', code };
+      const code = codeOf(error); workflowLog('run.admission.refused', { requestId: safeId(input.requestId), planId: safeId(input.planId), taskAdmissionId: safeId(input.taskAdmissionId), safeCode: code, unavailableExecutorCount }); return { kind: 'refused', code };
     }
   }
 
@@ -201,11 +211,12 @@ export class WorkflowRegistry implements KoggWorkflowService, BackendApplication
     try { const prior = db.prepare('SELECT request_digest,result_json FROM idempotency WHERE request_id=?').get(requestId) as Row | undefined; if (prior) { if (text(prior, 'request_digest') !== requestDigest) throw new WorkflowValidationError('WORKFLOW_VERSION_CONFLICT'); db.exec('ROLLBACK'); return JSON.parse(text(prior, 'result_json')) as WorkflowMutationResult; } const result = action(); db.prepare('INSERT INTO idempotency(request_id,request_digest,result_json) VALUES(?,?,?)').run(requestId, requestDigest, JSON.stringify(result)); db.exec('COMMIT'); return result; }
     catch (error) { try { db.exec('ROLLBACK'); } catch { /* observability-exempt: the original sanitized operation refusal remains authoritative. */ } throw error; }
   }
-  private createControlRun(planId: string, planDigest: string, graph: EditableWorkflowGraphV1): WorkflowMutationResult {
-    const runId = randomUUID(); const now = new Date().toISOString();
-    this.db().prepare("INSERT INTO workflow_runs(run_id,plan_id,plan_digest,state,revision,owner_epoch_id,safe_code,created_at,updated_at) VALUES(?,?,?,'admitted',1,?,'WORKFLOW_OK',?,?)").run(runId, planId, planDigest, this.schedulerEpochId, now, now);
+  private createControlRun(planId: string, planDigest: string, graph: EditableWorkflowGraphV1, taskAdmission: TaskAdmissionSnapshot, taskAdmissionDigest: string): WorkflowMutationResult {
+    const runId = taskAdmission.runId; const now = new Date().toISOString();
+    if (this.db().prepare('SELECT 1 FROM workflow_runs WHERE run_id=?').get(runId)) throw new WorkflowValidationError('WORKFLOW_VERSION_CONFLICT');
+    this.db().prepare("INSERT INTO workflow_runs(run_id,plan_id,plan_digest,task_admission_id,task_admission_digest,task_id,repository_id,state,revision,owner_epoch_id,safe_code,created_at,updated_at) VALUES(?,?,?,?,?,?,?,'admitted',1,?,'WORKFLOW_OK',?,?)").run(runId, planId, planDigest, taskAdmission.taskAdmissionId, taskAdmissionDigest, taskAdmission.taskId, taskAdmission.repositoryId, this.schedulerEpochId, now, now);
     const insert = this.db().prepare("INSERT INTO workflow_node_attempts(run_id,node_id,attempt,state,fencing_token,safe_code,updated_at) VALUES(?,?,1,'pending',?,'WORKFLOW_OK',?)"); for (const node of graph.nodes) insert.run(runId, node.nodeId, this.schedulerFencingToken, now);
-    this.schedulerEvent(runId, 'run.admitted', 'WORKFLOW_OK', now); return { kind: 'completed', code: 'WORKFLOW_OK', run: { runId, planId, state: 'admitted', safeCode: 'WORKFLOW_OK', completedNodeCount: 0, skippedNodeCount: 0, failedNodeCount: 0 } };
+    this.schedulerEvent(runId, 'run.admitted', 'WORKFLOW_OK', now); return { kind: 'completed', code: 'WORKFLOW_OK', run: { runId, planId, taskAdmissionId: taskAdmission.taskAdmissionId, state: 'admitted', safeCode: 'WORKFLOW_OK', completedNodeCount: 0, skippedNodeCount: 0, failedNodeCount: 0 } };
   }
   private executeControlRun(runId: string, planId: string, graph: EditableWorkflowGraphV1): WorkflowMutationResult {
     const outputs = new Map<string, SchedulerOutcome>(); const pending = new Map(graph.nodes.map(node => [node.nodeId, node])); let completedNodeCount = 0; let skippedNodeCount = 0;
@@ -226,7 +237,7 @@ export class WorkflowRegistry implements KoggWorkflowService, BackendApplication
   }
   private finishControlRun(runId: string, planId: string, state: 'completed' | 'failed', safeCode: WorkflowSafeCode, completedNodeCount: number, skippedNodeCount: number, failedNodeCount: number): WorkflowMutationResult {
     const now = new Date().toISOString(); this.schedulerTransaction(() => { if (state === 'failed') this.db().prepare("UPDATE workflow_node_attempts SET state='cancelled',safe_code=?,updated_at=? WHERE run_id=? AND state='pending'").run(safeCode, now, runId); this.db().prepare('UPDATE workflow_runs SET state=?,revision=revision+1,safe_code=?,updated_at=? WHERE run_id=?').run(state, safeCode, now, runId); this.schedulerEvent(runId, state === 'completed' ? 'run.completed' : 'run.failed', safeCode, now); });
-    const run: WorkflowRunProjection = { runId, planId, state, safeCode, completedNodeCount, skippedNodeCount, failedNodeCount };
+    const taskAdmissionId = text(this.db().prepare('SELECT task_admission_id FROM workflow_runs WHERE run_id=?').get(runId) as Row, 'task_admission_id'); const run: WorkflowRunProjection = { runId, planId, taskAdmissionId, state, safeCode, completedNodeCount, skippedNodeCount, failedNodeCount };
     if (state === 'completed') { workflowLog('run.completed', { planId, runId, completedNodeCount, skippedNodeCount, safeCode: 'WORKFLOW_OK', processCount: 0, residualProcessCount: 0 }); return { kind: 'completed', code: 'WORKFLOW_OK', run }; }
     workflowLog('run.failed', { planId, runId, completedNodeCount, skippedNodeCount, failedNodeCount, safeCode, processCount: 0, residualProcessCount: 0 }); return { kind: 'failed', code: safeCode, run };
   }
@@ -239,7 +250,7 @@ export class WorkflowRegistry implements KoggWorkflowService, BackendApplication
     CREATE TRIGGER IF NOT EXISTS workflow_immutable_plans_update BEFORE UPDATE ON compiled_plans BEGIN SELECT RAISE(ABORT,'immutable'); END;
     CREATE TRIGGER IF NOT EXISTS workflow_immutable_plans_delete BEFORE DELETE ON compiled_plans BEGIN SELECT RAISE(ABORT,'immutable'); END;
     CREATE TABLE IF NOT EXISTS scheduler_lease(singleton INTEGER PRIMARY KEY CHECK(singleton=1),owner_epoch_id TEXT NOT NULL,fencing_token TEXT NOT NULL,phase TEXT NOT NULL CHECK(phase IN ('active','released')),admission TEXT NOT NULL CHECK(admission IN ('enabled','blocked','recovering')),updated_at TEXT NOT NULL);
-    CREATE TABLE IF NOT EXISTS workflow_runs(run_id TEXT PRIMARY KEY,plan_id TEXT NOT NULL REFERENCES compiled_plans(plan_id),plan_digest TEXT NOT NULL,state TEXT NOT NULL CHECK(state IN ('admitted','running','stopping','completed','failed','cancelled','quarantined')),revision INTEGER NOT NULL CHECK(revision>=1),owner_epoch_id TEXT NOT NULL,safe_code TEXT NOT NULL,created_at TEXT NOT NULL,updated_at TEXT NOT NULL);
+    CREATE TABLE IF NOT EXISTS workflow_runs(run_id TEXT PRIMARY KEY,plan_id TEXT NOT NULL REFERENCES compiled_plans(plan_id),plan_digest TEXT NOT NULL,task_admission_id TEXT NOT NULL DEFAULT '',task_admission_digest TEXT NOT NULL DEFAULT '',task_id TEXT NOT NULL DEFAULT '',repository_id TEXT NOT NULL DEFAULT '',state TEXT NOT NULL CHECK(state IN ('admitted','running','stopping','completed','failed','cancelled','quarantined')),revision INTEGER NOT NULL CHECK(revision>=1),owner_epoch_id TEXT NOT NULL,safe_code TEXT NOT NULL,created_at TEXT NOT NULL,updated_at TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS workflow_node_attempts(run_id TEXT NOT NULL REFERENCES workflow_runs(run_id),node_id TEXT NOT NULL,attempt INTEGER NOT NULL CHECK(attempt>=1),state TEXT NOT NULL CHECK(state IN ('pending','ready','dispatched','running','succeeded','failed','cancelled','quarantined')),routing_state TEXT NOT NULL DEFAULT 'selected' CHECK(routing_state IN ('selected','skipped')),fencing_token TEXT NOT NULL,safe_code TEXT NOT NULL,updated_at TEXT NOT NULL,PRIMARY KEY(run_id,node_id,attempt));
     CREATE TABLE IF NOT EXISTS workflow_outbox(outbox_id TEXT PRIMARY KEY,run_id TEXT NOT NULL REFERENCES workflow_runs(run_id),node_id TEXT NOT NULL,operation_kind TEXT NOT NULL,request_digest TEXT NOT NULL,fencing_token TEXT NOT NULL,phase TEXT NOT NULL CHECK(phase IN ('requested','claimed','completed','quarantined')),safe_code TEXT NOT NULL,created_at TEXT NOT NULL,updated_at TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS workflow_scheduler_events(sequence INTEGER PRIMARY KEY AUTOINCREMENT,event_id TEXT NOT NULL UNIQUE,run_id TEXT NOT NULL REFERENCES workflow_runs(run_id),event_name TEXT NOT NULL,safe_code TEXT NOT NULL,previous_event_digest TEXT NOT NULL,event_digest TEXT NOT NULL,created_at TEXT NOT NULL);
@@ -250,8 +261,8 @@ export class WorkflowRegistry implements KoggWorkflowService, BackendApplication
     CREATE TRIGGER IF NOT EXISTS workflow_immutable_owner_meta_delete BEFORE DELETE ON workflow_owner_meta BEGIN SELECT RAISE(ABORT,'immutable'); END;`);
     if (!this.db().prepare('SELECT 1 FROM workflow_owner_meta WHERE singleton=1').get()) { const ownerId = randomUUID(); const ownerEpochId = randomUUID(); this.db().prepare('INSERT INTO workflow_owner_meta(singleton,owner_id,owner_epoch_id,identity_digest) VALUES(1,?,?,?)').run(ownerId, ownerEpochId, workflowDigest('owner-identity', { ownerId, ownerEpochId })); }
     this.db().prepare("INSERT OR IGNORE INTO scheduler_lease(singleton,owner_epoch_id,fencing_token,phase,admission,updated_at) VALUES(1,?,?,'released','recovering',?)").run(this.schedulerEpochId, this.schedulerFencingToken, new Date().toISOString());
-    this.ensureColumn('template_versions', 'catalog_digest', LEGACY_UNATTESTED_CATALOG); this.ensureColumn('compiled_plans', 'catalog_digest', LEGACY_UNATTESTED_CATALOG); this.ensureColumn('workflow_node_attempts', 'routing_state', 'selected'); }
-  private ensureColumn(table: 'template_versions' | 'compiled_plans' | 'workflow_node_attempts', column: 'catalog_digest' | 'routing_state', value: string): void { const present = (this.db().prepare(`PRAGMA table_info(${table})`).all() as Row[]).some(row => text(row, 'name') === column); if (!present) this.db().exec(`ALTER TABLE ${table} ADD COLUMN ${column} TEXT NOT NULL DEFAULT '${value}'`); }
+    this.ensureColumn('template_versions', 'catalog_digest', LEGACY_UNATTESTED_CATALOG); this.ensureColumn('compiled_plans', 'catalog_digest', LEGACY_UNATTESTED_CATALOG); this.ensureColumn('workflow_node_attempts', 'routing_state', 'selected'); this.ensureColumn('workflow_runs', 'task_admission_id', ''); this.ensureColumn('workflow_runs', 'task_admission_digest', ''); this.ensureColumn('workflow_runs', 'task_id', ''); this.ensureColumn('workflow_runs', 'repository_id', ''); }
+  private ensureColumn(table: 'template_versions' | 'compiled_plans' | 'workflow_node_attempts' | 'workflow_runs', column: 'catalog_digest' | 'routing_state' | 'task_admission_id' | 'task_admission_digest' | 'task_id' | 'repository_id', value: string): void { const present = (this.db().prepare(`PRAGMA table_info(${table})`).all() as Row[]).some(row => text(row, 'name') === column); if (!present) this.db().exec(`ALTER TABLE ${table} ADD COLUMN ${column} TEXT NOT NULL DEFAULT '${value}'`); }
   private assertIntegrity(): void { const db = this.db(); if (text(db.prepare('PRAGMA quick_check').get() as Row, 'quick_check') !== 'ok' || db.prepare('PRAGMA foreign_key_check').all().length || !this.schedulerEventsValid() || !this.ownerIdentityValid()) throw new WorkflowValidationError('WORKFLOW_STORE_INTEGRITY'); }
   private schedulerRecoveryCounts(): { activeRunCount: number; pendingOutboxCount: number } { return { activeRunCount: number(this.db().prepare("SELECT count(*) AS count FROM workflow_runs WHERE state IN ('admitted','running','stopping')").get() as Row, 'count'), pendingOutboxCount: number(this.db().prepare("SELECT count(*) AS count FROM workflow_outbox WHERE phase IN ('requested','claimed')").get() as Row, 'count') }; }
   private recoverScheduler(pending: { activeRunCount: number; pendingOutboxCount: number }): { activeRunCount: number; pendingOutboxCount: number; quarantinedRunCount: number } {
@@ -278,7 +289,7 @@ export class WorkflowRegistry implements KoggWorkflowService, BackendApplication
   }
   private schedulerRecordsValid(): boolean {
     const mismatchedRuns = number(this.db().prepare('SELECT count(*) AS count FROM workflow_runs JOIN compiled_plans ON compiled_plans.plan_id=workflow_runs.plan_id WHERE workflow_runs.plan_digest<>compiled_plans.plan_digest').get() as Row, 'count');
-    const malformedOutbox = number(this.db().prepare("SELECT count(*) AS count FROM workflow_outbox WHERE length(request_digest)<>64 OR request_digest GLOB '*[^0-9a-f]*'").get() as Row, 'count'); const malformedRouting = number(this.db().prepare("SELECT count(*) AS count FROM workflow_node_attempts WHERE routing_state NOT IN ('selected','skipped') OR (routing_state='skipped' AND (state<>'cancelled' OR safe_code<>'WORKFLOW_OK'))").get() as Row, 'count'); return mismatchedRuns === 0 && malformedOutbox === 0 && malformedRouting === 0;
+    const malformedOutbox = number(this.db().prepare("SELECT count(*) AS count FROM workflow_outbox WHERE length(request_digest)<>64 OR request_digest GLOB '*[^0-9a-f]*'").get() as Row, 'count'); const malformedRouting = number(this.db().prepare("SELECT count(*) AS count FROM workflow_node_attempts WHERE routing_state NOT IN ('selected','skipped') OR (routing_state='skipped' AND (state<>'cancelled' OR safe_code<>'WORKFLOW_OK'))").get() as Row, 'count'); const malformedAdmissions = number(this.db().prepare("SELECT count(*) AS count FROM workflow_runs WHERE NOT ((task_admission_id='' AND task_admission_digest='' AND task_id='' AND repository_id='') OR (length(task_admission_id)=36 AND length(task_admission_digest)=64 AND length(task_id)=36 AND length(repository_id)=36))").get() as Row, 'count'); return mismatchedRuns === 0 && malformedOutbox === 0 && malformedRouting === 0 && malformedAdmissions === 0;
   }
   private ownerIdentityValid(): boolean { const row = this.db().prepare('SELECT * FROM workflow_owner_meta WHERE singleton=1').get() as Row | undefined; if (!row) return false; const ownerId = text(row, 'owner_id'); const ownerEpochId = text(row, 'owner_epoch_id'); return UUID.test(ownerId) && UUID.test(ownerEpochId) && text(row, 'identity_digest') === workflowDigest('owner-identity', { ownerId, ownerEpochId }); }
   private currentVersion(templateId: string): number { const row = this.db().prepare('SELECT coalesce(max(version_number),0) AS count FROM template_versions WHERE template_id=?').get(templateId) as Row; return number(row, 'count'); }
@@ -294,6 +305,13 @@ function text(row: Row, key: string): string { const value = row[key]; if (typeo
 function number(row: Row, key: string): number { const value = row[key]; if (typeof value !== 'number' || !Number.isSafeInteger(value)) throw new WorkflowValidationError('WORKFLOW_STORE_INTEGRITY'); return value; }
 function uuid(value: string): void { if (!UUID.test(value)) throw new WorkflowValidationError('WORKFLOW_SCHEMA_INVALID'); }
 function safeId(value: string): string { return UUID.test(value) ? value : 'invalid'; }
+function validTaskAdmission(admission: TaskAdmissionSnapshot, expectedId: string): boolean {
+  const authorizedAt = Date.parse(admission.authorizedAt); const expiresAt = Date.parse(admission.expiresAt);
+  return admission.taskAdmissionId === expectedId
+    && [admission.taskAdmissionId, admission.taskId, admission.specificationId, admission.approvalId, admission.projectId, admission.repositoryId, admission.runId].every(value => UUID.test(value))
+    && [admission.bindingRevision, admission.registryRevision, admission.taskRevision].every(value => /^(?:0|[1-9][0-9]*)$/u.test(value))
+    && Number.isFinite(authorizedAt) && Number.isFinite(expiresAt) && authorizedAt <= expiresAt && expiresAt > Date.now();
+}
 function agentBinding(configuration: WorkflowNodeConfigurationV1 | undefined): AgentBindingAuthorizationRequestV1 | undefined {
   if (!configuration?.roleRevisionId || !configuration.providerId || !configuration.modelId || !configuration.adapterKey || !configuration.adapterVersion || !configuration.deadlinePolicyId) return undefined;
   return { roleRevisionId: configuration.roleRevisionId, providerId: configuration.providerId, modelId: configuration.modelId, adapterKey: configuration.adapterKey, adapterVersion: configuration.adapterVersion, deadlinePolicyId: configuration.deadlinePolicyId };
@@ -309,6 +327,6 @@ function schedulerEventDigest(row: Row): string { return workflowDigest('schedul
 function mapOwnerEvent(row: Row, ownerInstanceId: string, epochId: string, projectId: string, previousEventDigest: string): OwnerEventV1 {
   const eventName = text(row, 'event_name'); const eventKind = eventName === 'run.admitted' ? 'run.started' : eventName === 'run.completed' ? 'run.completed' : 'run.failed';
   const lifecycle = eventKind === 'run.started' ? 'active' : eventKind === 'run.completed' ? 'completed' : 'failed'; const safePayload: SafeOwnerPayloadV1 = { lifecycle, ...(eventKind === 'run.started' ? {} : { terminalClass: lifecycle }), safeCode: text(row, 'safe_code'), freshness: 'current' };
-  const unsigned: Omit<OwnerEventV1, 'eventDigest'> = { ownerKind: 'workflow', ownerInstanceId, ownerSchemaVersion: 1, epochId, sequence: String(number(row, 'sequence')), eventId: text(row, 'event_id'), eventKind, factId: text(row, 'run_id'), factDigest: text(row, 'event_digest'), previousEventDigest, causalParents: [], correlations: { projectId, runId: text(row, 'run_id') }, observedAt: text(row, 'created_at'), safePayload };
+  const taskId = text(row, 'task_id'); const unsigned: Omit<OwnerEventV1, 'eventDigest'> = { ownerKind: 'workflow', ownerInstanceId, ownerSchemaVersion: 1, epochId, sequence: String(number(row, 'sequence')), eventId: text(row, 'event_id'), eventKind, factId: text(row, 'run_id'), factDigest: text(row, 'event_digest'), previousEventDigest, causalParents: [], correlations: { projectId, ...(taskId ? { taskId } : {}), runId: text(row, 'run_id') }, observedAt: text(row, 'created_at'), safePayload };
   return { ...unsigned, eventDigest: OperationsReadModel.digest(unsigned) };
 }
