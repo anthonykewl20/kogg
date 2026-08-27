@@ -12,6 +12,8 @@ import type {
 } from '../common/execution-protocol';
 import { CANDIDATE_MUTATION_POLICY_DIGEST } from './candidate-sealer';
 import { ExecutionTargetRegistry } from './execution-target-registry';
+import type { OperationsOwnerSink, OwnerEventV1, SafeOwnerPayloadV1 } from '@kogg/operations/lib/common/operations-read-model-protocol';
+import { OperationsReadModel } from '@kogg/operations/lib/node/operations-read-model';
 
 // Allocation identity and idempotency commit before external effects; ambiguous startup state is quarantined without pathname deletion or side-effect replay.
 // diagnostic-coverage: execution.worktree-registry, execution.capacity, execution.recovery, execution.retention
@@ -52,11 +54,35 @@ export class ExecutionAllocationRegistry implements BackendApplicationContributi
   private startup: Promise<void> | undefined;
   private readonly ownerInstanceId = randomUUID();
   private readonly databasePath = path.join(stateRoot(), 'execution', 'registry.sqlite3');
+  private ownerSink: OperationsOwnerSink | undefined;
 
   constructor(@inject(ExecutionTargetRegistry) private readonly targets: Pick<ExecutionTargetRegistry, 'authorize' | 'authorizePhysicalAllocation'>) {}
 
   onStart(): Promise<void> { return this.ensureStarted(); }
-  onStop(): void { this.database?.close(); this.database = undefined; this.startup = undefined; }
+  onStop(): void { this.ownerSink = undefined; this.database?.close(); this.database = undefined; this.startup = undefined; }
+
+  setOwnerSink(sink?: OperationsOwnerSink): void {
+    this.ownerSink = sink;
+    if (sink && this.database) this.publishOwnerEvents();
+  }
+
+  publishOwnerEvents(): void {
+    if (!this.ownerSink || !this.database) return;
+    const meta = this.database.prepare('SELECT owner_id,owner_epoch_id FROM execution_meta WHERE singleton=1').get() as SqlRow;
+    let previous = '0'.repeat(64);
+    for (const row of this.database.prepare(`SELECT e.*,a.run_id,a.attempt_id,a.project_id FROM allocation_events e JOIN allocations a ON a.worktree_id=e.worktree_id ORDER BY e.sequence`).all() as SqlRow[]) {
+      if (sourceEventDigest(row) !== String(row.event_digest) || String(row.previous_event_digest) !== previousSourceDigest(this.database, Number(row.sequence))) {
+        log('owner.publish.failed', { safeCode: 'ALLOCATION_INTEGRITY_FAILED', errorType: 'OwnerEventIntegrityError' });
+        break;
+      }
+      const mapped = mapOwnerEvent(row, String(meta.owner_id), String(meta.owner_epoch_id), previous);
+      previous = mapped.eventDigest;
+      try { this.ownerSink.ingest(mapped); }
+      catch (error) { // observability-exempt: owner.publish.failed records the closed failure before replay stops at the first unaccepted fact.
+        log('owner.publish.failed', { safeCode: 'ALLOCATION_INTEGRITY_FAILED', errorType: errorType(error) }); break;
+      }
+    }
+  }
 
   async getRun(request: GetExecutionRunV1): Promise<ExecutionRunProjectionV1 | undefined> {
     validateProjectionRequest(request, 'requestId,runId');
@@ -368,7 +394,7 @@ export class ExecutionAllocationRegistry implements BackendApplicationContributi
     const database = this.databaseOrThrow();
     const count = (sql: string): number => Number((database.prepare(sql).get() as SqlRow).count);
     return {
-      integrity: String((database.prepare('PRAGMA integrity_check').get() as SqlRow).integrity_check) === 'ok',
+      integrity: String((database.prepare('PRAGMA integrity_check').get() as SqlRow).integrity_check) === 'ok' && ownerEventsValid(database),
       foreignKeys: database.prepare('PRAGMA foreign_key_check').all().length === 0,
       permissions: process.platform === 'win32' || (statSync(this.databasePath).mode & 0o077) === 0,
       admission: this.admission(),
@@ -394,7 +420,7 @@ export class ExecutionAllocationRegistry implements BackendApplicationContributi
       mkdirSync(path.dirname(this.databasePath), { recursive: true, mode: 0o700 });
       this.database = new DatabaseSync(this.databasePath, { enableForeignKeyConstraints: true, allowExtension: false });
       this.database.exec('PRAGMA journal_mode=DELETE; PRAGMA synchronous=FULL; PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000;');
-      this.migrate(); if (process.platform !== 'win32') chmodSync(this.databasePath, 0o600); this.assertIntegrity(); this.recover();
+      this.migrate(); if (process.platform !== 'win32') chmodSync(this.databasePath, 0o600); this.assertIntegrity(); this.recover(); this.publishOwnerEvents();
       log('registry.start.completed', { admission: this.admission() });
     } catch (error) {
       log('registry.start.failed', { safeCode: 'ALLOCATION_INTEGRITY_FAILED', errorType: errorType(error) });
@@ -404,7 +430,7 @@ export class ExecutionAllocationRegistry implements BackendApplicationContributi
 
   private migrate(): void {
     this.databaseOrThrow().exec(`
-      CREATE TABLE IF NOT EXISTS execution_meta(singleton INTEGER PRIMARY KEY CHECK(singleton=1),schema_version INTEGER NOT NULL CHECK(schema_version=1),revision INTEGER NOT NULL CHECK(revision>=1),owner_instance_id TEXT NOT NULL,admission TEXT NOT NULL CHECK(admission IN ('enabled','recovering','blocked')));
+      CREATE TABLE IF NOT EXISTS execution_meta(singleton INTEGER PRIMARY KEY CHECK(singleton=1),schema_version INTEGER NOT NULL CHECK(schema_version=1),revision INTEGER NOT NULL CHECK(revision>=1),owner_instance_id TEXT NOT NULL,owner_id TEXT,owner_epoch_id TEXT,admission TEXT NOT NULL CHECK(admission IN ('enabled','recovering','blocked')));
       CREATE TABLE IF NOT EXISTS allocations(
         worktree_id TEXT PRIMARY KEY,run_id TEXT NOT NULL UNIQUE,attempt_id TEXT NOT NULL,project_id TEXT NOT NULL,repository_id TEXT NOT NULL,
         binding_json TEXT NOT NULL,binding_digest TEXT NOT NULL,allocation_name TEXT NOT NULL UNIQUE,allocation_nonce TEXT NOT NULL,
@@ -413,7 +439,7 @@ export class ExecutionAllocationRegistry implements BackendApplicationContributi
         cleanup_state TEXT NOT NULL CHECK(cleanup_state IN ('required','cleaning','cleaned','failed')),safe_code TEXT NOT NULL,revision INTEGER NOT NULL CHECK(revision>=1),created_at TEXT NOT NULL,updated_at TEXT NOT NULL
       );
       CREATE TABLE IF NOT EXISTS allocation_intents(intent_id TEXT PRIMARY KEY,worktree_id TEXT NOT NULL REFERENCES allocations(worktree_id),intent_type TEXT NOT NULL,phase TEXT NOT NULL,fencing_token TEXT NOT NULL,expected_identity_digest TEXT,observed_identity_digest TEXT,safe_code TEXT NOT NULL,created_at TEXT NOT NULL,updated_at TEXT NOT NULL);
-      CREATE TABLE IF NOT EXISTS allocation_events(sequence INTEGER PRIMARY KEY AUTOINCREMENT,worktree_id TEXT NOT NULL REFERENCES allocations(worktree_id),event_name TEXT NOT NULL,safe_code TEXT NOT NULL,created_at TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS allocation_events(sequence INTEGER PRIMARY KEY AUTOINCREMENT,worktree_id TEXT NOT NULL REFERENCES allocations(worktree_id),event_id TEXT,event_name TEXT NOT NULL,execution_state TEXT,event_digest TEXT,previous_event_digest TEXT,safe_code TEXT NOT NULL,created_at TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS request_results(request_id TEXT PRIMARY KEY,request_digest TEXT NOT NULL,worktree_id TEXT NOT NULL REFERENCES allocations(worktree_id),created_at TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS physical_allocation_results(request_id TEXT PRIMARY KEY,request_digest TEXT NOT NULL,worktree_id TEXT NOT NULL REFERENCES allocations(worktree_id),filesystem_identity_digest TEXT NOT NULL,created_at TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS lifecycle_request_results(request_id TEXT PRIMARY KEY,request_digest TEXT NOT NULL,response_kind TEXT NOT NULL CHECK(response_kind IN ('state','seal','import-intent','import-complete')),resource_id TEXT NOT NULL,created_at TEXT NOT NULL);
@@ -424,6 +450,7 @@ export class ExecutionAllocationRegistry implements BackendApplicationContributi
       CREATE UNIQUE INDEX IF NOT EXISTS repository_mutation_lease_owner ON repository_mutation_leases(repository_id) WHERE phase IN ('active','quarantined');
       INSERT OR IGNORE INTO execution_meta(singleton,schema_version,revision,owner_instance_id,admission) VALUES(1,1,1,'bootstrap','recovering');
     `);
+    ensureOwnerSchema(this.databaseOrThrow());
     const version = Number((this.databaseOrThrow().prepare('SELECT schema_version FROM execution_meta WHERE singleton=1').get() as SqlRow).schema_version);
     if (version !== 1) throw new Error('Unsupported execution registry schema');
   }
@@ -432,6 +459,7 @@ export class ExecutionAllocationRegistry implements BackendApplicationContributi
     const database = this.databaseOrThrow();
     if (String((database.prepare('PRAGMA integrity_check').get() as SqlRow).integrity_check) !== 'ok'
       || database.prepare('PRAGMA foreign_key_check').all().length) throw new Error('Execution registry integrity failed');
+    if (!ownerEventsValid(database)) throw new Error('Execution owner event integrity failed');
   }
 
   private recover(): void {
@@ -475,9 +503,17 @@ export class ExecutionAllocationRegistry implements BackendApplicationContributi
   private importIntent(intentId: string): CandidateImportIntentV1 { const row = this.databaseOrThrow().prepare('SELECT * FROM candidate_import_intents WHERE intent_id=?').get(intentId) as SqlRow | undefined; if (!row || String(row.phase) !== 'requested') throw new AllocationRegistryError('ALLOCATION_INTEGRITY_FAILED'); return { schemaVersion: 1, intentId, worktreeId: String(row.worktree_id), candidateId: String(row.candidate_id), fencingToken: String(row.fencing_token), phase: 'requested', replay: false, safeCode: 'IMPORT_OK' }; }
   private importedCandidate(candidateId: string): ImportedCandidateV1 { const candidate = this.candidate(candidateId); const row = this.databaseOrThrow().prepare('SELECT quarantine_ref_digest FROM candidates WHERE candidate_id=?').get(candidateId) as SqlRow | undefined; if (!row || !DIGEST.test(String(row.quarantine_ref_digest))) throw new AllocationRegistryError('ALLOCATION_INTEGRITY_FAILED'); const { safeCode: _sealCode, ...binding } = candidate; return { ...binding, quarantineRefDigest: String(row.quarantine_ref_digest), safeCode: 'IMPORT_OK' }; }
   private admission(): ExecutionAllocationDiagnostics['admission'] { return String((this.databaseOrThrow().prepare('SELECT admission FROM execution_meta WHERE singleton=1').get() as SqlRow).admission) as ExecutionAllocationDiagnostics['admission']; }
-  private event(database: DatabaseSync, worktreeId: string, eventName: string, safeCode: string): void { database.prepare('INSERT INTO allocation_events(worktree_id,event_name,safe_code,created_at) VALUES(?,?,?,?)').run(worktreeId, eventName, safeCode, new Date().toISOString()); }
+  private event(database: DatabaseSync, worktreeId: string, eventName: string, safeCode: string): void {
+    const allocation = database.prepare('SELECT state FROM allocations WHERE worktree_id=?').get(worktreeId) as SqlRow;
+    const eventId = randomUUID(); const executionState = String(allocation.state); const createdAt = new Date().toISOString();
+    const prior = database.prepare('SELECT event_digest FROM allocation_events ORDER BY sequence DESC LIMIT 1').get() as SqlRow | undefined;
+    const previousEventDigest = prior ? String(prior.event_digest) : '0'.repeat(64);
+    const eventDigest = ownerHash({ eventId, worktreeId, eventName, executionState, safeCode, createdAt, previousEventDigest });
+    database.prepare('INSERT INTO allocation_events(worktree_id,event_id,event_name,execution_state,event_digest,previous_event_digest,safe_code,created_at) VALUES(?,?,?,?,?,?,?,?)')
+      .run(worktreeId, eventId, eventName, executionState, eventDigest, previousEventDigest, safeCode, createdAt);
+  }
   private bump(database: DatabaseSync): void { database.prepare('UPDATE execution_meta SET revision=revision+1 WHERE singleton=1').run(); }
-  private transaction(run: (database: DatabaseSync) => void): void { const database = this.databaseOrThrow(); database.exec('BEGIN IMMEDIATE'); try { run(database); database.exec('COMMIT'); } catch (error) { database.exec('ROLLBACK'); throw error; } }
+  private transaction(run: (database: DatabaseSync) => void): void { const database = this.databaseOrThrow(); database.exec('BEGIN IMMEDIATE'); try { run(database); database.exec('COMMIT'); } catch (error) { database.exec('ROLLBACK'); throw error; } this.publishOwnerEvents(); }
   private databaseOrThrow(): DatabaseSync { if (!this.database) throw new AllocationRegistryError('ALLOCATION_INTEGRITY_FAILED'); return this.database; }
 }
 
@@ -584,6 +620,94 @@ function runProjection(row: SqlRow): ExecutionRunProjectionV1 {
     cleanupState: String(row.cleanup_state) as ExecutionRunProjectionV1['cleanupState'], safeCode: String(row.safe_code) as ExecutionRunProjectionV1['safeCode']
   };
 }
+
+function ensureOwnerSchema(database: DatabaseSync): void {
+  const meta = new Set((database.prepare('PRAGMA table_info(execution_meta)').all() as SqlRow[]).map(row => String(row.name)));
+  if (!meta.has('owner_id')) database.exec('ALTER TABLE execution_meta ADD COLUMN owner_id TEXT');
+  if (!meta.has('owner_epoch_id')) database.exec('ALTER TABLE execution_meta ADD COLUMN owner_epoch_id TEXT');
+  database.prepare('UPDATE execution_meta SET owner_id=COALESCE(owner_id,?),owner_epoch_id=COALESCE(owner_epoch_id,?) WHERE singleton=1').run(randomUUID(), randomUUID());
+  const columns = new Set((database.prepare('PRAGMA table_info(allocation_events)').all() as SqlRow[]).map(row => String(row.name)));
+  if (!columns.has('event_id')) database.exec('ALTER TABLE allocation_events ADD COLUMN event_id TEXT');
+  if (!columns.has('execution_state')) database.exec('ALTER TABLE allocation_events ADD COLUMN execution_state TEXT');
+  if (!columns.has('event_digest')) database.exec('ALTER TABLE allocation_events ADD COLUMN event_digest TEXT');
+  if (!columns.has('previous_event_digest')) database.exec('ALTER TABLE allocation_events ADD COLUMN previous_event_digest TEXT');
+  let previous = '0'.repeat(64);
+  for (const row of database.prepare('SELECT e.*,a.state AS current_state FROM allocation_events e JOIN allocations a ON a.worktree_id=e.worktree_id ORDER BY e.sequence').all() as SqlRow[]) {
+    if (typeof row.event_id === 'string' && typeof row.execution_state === 'string' && typeof row.event_digest === 'string' && typeof row.previous_event_digest === 'string') {
+      previous = String(row.event_digest); continue;
+    }
+    const eventId = randomUUID(); const executionState = legacyExecutionState(String(row.event_name), String(row.current_state));
+    const normalized = { ...row, event_id: eventId, execution_state: executionState, previous_event_digest: previous } as SqlRow;
+    const eventDigest = sourceEventDigest(normalized);
+    database.prepare('UPDATE allocation_events SET event_id=?,execution_state=?,previous_event_digest=?,event_digest=? WHERE sequence=?').run(eventId, executionState, previous, eventDigest, Number(row.sequence));
+    previous = eventDigest;
+  }
+  database.exec(`CREATE TRIGGER IF NOT EXISTS execution_owner_events_update BEFORE UPDATE ON allocation_events BEGIN SELECT RAISE(ABORT,'immutable'); END;
+    CREATE TRIGGER IF NOT EXISTS execution_owner_events_delete BEFORE DELETE ON allocation_events BEGIN SELECT RAISE(ABORT,'immutable'); END;`);
+}
+
+function legacyExecutionState(eventName: string, currentState: string): string {
+  const fixed: Record<string, string> = {
+    'allocation.requested': 'admitted', 'allocation.proof.recorded': 'allocated', 'seal.completed': 'sealed',
+    'import.requested': 'sealed', 'import.completed': 'candidate-imported', 'import.quarantined': 'quarantined',
+    'retention.committed': 'retained', 'recovery.started': 'recovery-required',
+    'recovery.resource.classified': 'reconciling', 'resource.quarantined': 'quarantined'
+  };
+  return fixed[eventName] ?? currentState;
+}
+
+function previousSourceDigest(database: DatabaseSync, sequence: number): string {
+  const row = database.prepare('SELECT event_digest FROM allocation_events WHERE sequence<? ORDER BY sequence DESC LIMIT 1').get(sequence) as SqlRow | undefined;
+  return row ? String(row.event_digest) : '0'.repeat(64);
+}
+
+function sourceEventDigest(row: SqlRow): string {
+  return ownerHash({ eventId: String(row.event_id), worktreeId: String(row.worktree_id), eventName: String(row.event_name),
+    executionState: String(row.execution_state), safeCode: String(row.safe_code), createdAt: String(row.created_at), previousEventDigest: String(row.previous_event_digest) });
+}
+
+function ownerEventsValid(database: DatabaseSync): boolean {
+  const triggerCount = Number((database.prepare("SELECT count(*) AS count FROM sqlite_master WHERE type='trigger' AND name IN ('execution_owner_events_update','execution_owner_events_delete')").get() as SqlRow).count);
+  if (triggerCount !== 2) return false;
+  let previous = '0'.repeat(64);
+  for (const row of database.prepare('SELECT * FROM allocation_events ORDER BY sequence').all() as SqlRow[]) {
+    if (String(row.previous_event_digest) !== previous || sourceEventDigest(row) !== String(row.event_digest)) return false;
+    previous = String(row.event_digest);
+  }
+  return true;
+}
+
+function ownerHash(value: unknown): string { return createHash('sha256').update(JSON.stringify(value)).digest('hex'); }
+
+function mapOwnerEvent(row: SqlRow, ownerInstanceId: string, epochId: string, previousEventDigest: string): OwnerEventV1 {
+  const state = String(row.execution_state) as ExecutionState; const eventKind = ownerEventKind(state);
+  const terminalClass: SafeOwnerPayloadV1['terminalClass'] | undefined = eventKind === 'execution.completed' ? 'completed'
+    : eventKind === 'execution.failed' ? 'failed' : eventKind === 'execution.quarantined' ? 'quarantined' : undefined;
+  const safePayload: SafeOwnerPayloadV1 = { lifecycle: ownerLifecycle(eventKind), safeCode: String(row.safe_code), freshness: 'current', ...(terminalClass ? { terminalClass } : {}) };
+  const unsigned: Omit<OwnerEventV1, 'eventDigest'> = {
+    ownerKind: 'execution', ownerInstanceId, ownerSchemaVersion: 1, epochId, sequence: String(row.sequence),
+    eventId: String(row.event_id), eventKind, factId: String(row.worktree_id), factDigest: String(row.event_digest), previousEventDigest,
+    causalParents: [], correlations: { projectId: String(row.project_id), runId: String(row.run_id), attemptId: String(row.attempt_id) },
+    observedAt: String(row.created_at), safePayload
+  };
+  return { ...unsigned, eventDigest: OperationsReadModel.digest(unsigned) };
+}
+
+function ownerEventKind(state: ExecutionState): 'execution.admitted' | 'execution.started' | 'execution.failed' | 'execution.completed' | 'execution.quarantined' {
+  if (state === 'quarantined') return 'execution.quarantined';
+  if (['failed', 'timed-out', 'cancelled', 'cleanup-failed'].includes(state)) return 'execution.failed';
+  if (['candidate-imported', 'retained', 'cleaned'].includes(state)) return 'execution.completed';
+  if (state === 'admitted' || state === 'requested' || state === 'refused') return 'execution.admitted';
+  return 'execution.started';
+}
+
+function ownerLifecycle(eventKind: ReturnType<typeof ownerEventKind>): SafeOwnerPayloadV1['lifecycle'] {
+  if (eventKind === 'execution.admitted') return 'admitted';
+  if (eventKind === 'execution.started') return 'started';
+  if (eventKind === 'execution.completed') return 'completed';
+  if (eventKind === 'execution.quarantined') return 'quarantined';
+  return 'failed';
+}
 function boundedDecimal(value: string, maximum: bigint): boolean {
   if (!DECIMAL.test(value) || value === '0') return false;
   try { return BigInt(value) <= maximum; }
@@ -616,7 +740,8 @@ const LOG_FIELDS = {
   'projection.request.refused': ['safeCode'], 'projection.get.requested': ['requestId', 'runId'],
   'projection.get.completed': ['requestId', 'runId', 'resultCount'], 'projection.get.failed': ['requestId', 'runId', 'safeCode', 'errorType'],
   'projection.list.requested': ['requestId', 'projectId'], 'projection.list.completed': ['requestId', 'projectId', 'resultCount', 'truncated'],
-  'projection.list.failed': ['requestId', 'projectId', 'safeCode', 'errorType']
+  'projection.list.failed': ['requestId', 'projectId', 'safeCode', 'errorType'],
+  'owner.publish.failed': ['safeCode', 'errorType']
 } as const;
 type AllocationLogEvent = keyof typeof LOG_FIELDS;
 let allocationLoggingViolations = 0;
