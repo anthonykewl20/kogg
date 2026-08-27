@@ -11,12 +11,12 @@ export interface GovernedSealRequest {
   readonly requestId: string; readonly expectedRevision: string; readonly bindingDigest: string; readonly seal: SealCandidateV1;
 }
 export interface GovernedImportRequest {
-  readonly intentRequestId: string; readonly completionRequestId: string; readonly expectedRevision: string;
+  readonly intentRequestId: string; readonly completionRequestId: string; readonly failureRequestId: string; readonly expectedRevision: string;
   readonly bindingDigest: string; readonly expectedSourceIdentityDigest: string; readonly candidateImport: ImportCandidateV1;
 }
 
 export class CandidateLifecycleController {
-  constructor(private readonly registry: Pick<ExecutionAllocationRegistry, 'recordSeal' | 'prepareCandidateImport' | 'completeCandidateImport'>,
+  constructor(private readonly registry: Pick<ExecutionAllocationRegistry, 'recordSeal' | 'prepareCandidateImport' | 'completeCandidateImport' | 'failCandidateImport'>,
     private readonly sealer: Pick<CandidateSealer, 'seal'>, private readonly importer: Pick<CandidateImporter, 'import'>) {}
 
   async seal(request: GovernedSealRequest): Promise<CandidateBindingV1> {
@@ -32,18 +32,25 @@ export class CandidateLifecycleController {
   async import(request: GovernedImportRequest): Promise<ImportedCandidateV1> {
     validateImport(request); const candidate = request.candidateImport.candidate;
     executionLog('service.import.requested', { eventVersion: 1, requestId: request.intentRequestId, worktreeId: candidate.worktreeId });
+    let intent: Awaited<ReturnType<ExecutionAllocationRegistry['prepareCandidateImport']>> | undefined;
     try {
-      const intent = await this.registry.prepareCandidateImport({ requestId: request.intentRequestId, worktreeId: candidate.worktreeId, expectedRevision: request.expectedRevision, bindingDigest: request.bindingDigest, candidateId: candidate.candidateId, expectedSourceIdentityDigest: request.expectedSourceIdentityDigest });
+      intent = await this.registry.prepareCandidateImport({ requestId: request.intentRequestId, worktreeId: candidate.worktreeId, expectedRevision: request.expectedRevision, bindingDigest: request.bindingDigest, candidateId: candidate.candidateId, expectedSourceIdentityDigest: request.expectedSourceIdentityDigest });
       if (intent.replay) throw new ImportError('IMPORT_FAILED');
       const imported = await this.importer.import(request.candidateImport);
       const result = await this.registry.completeCandidateImport({ requestId: request.completionRequestId, intentId: intent.intentId, worktreeId: candidate.worktreeId, expectedRevision: request.expectedRevision, bindingDigest: request.bindingDigest, candidateId: candidate.candidateId, fencingToken: intent.fencingToken, candidateCommit: imported.candidateCommit, candidateTree: imported.candidateTree, quarantineRefDigest: imported.quarantineRefDigest });
       executionLog('service.import.completed', { eventVersion: 1, requestId: request.intentRequestId, worktreeId: candidate.worktreeId }); return result;
     } catch (error) {
-      executionLog('service.import.failed', { eventVersion: 1, requestId: request.intentRequestId, worktreeId: candidate.worktreeId, safeCode: safeCode(error, 'IMPORT_FAILED'), errorType: error instanceof Error ? error.name : 'UnknownError' }); throw error;
+      let refusal = error;
+      if (intent) try { await this.registry.failCandidateImport({ requestId: request.failureRequestId, intentId: intent.intentId, worktreeId: candidate.worktreeId, expectedRevision: request.expectedRevision, bindingDigest: request.bindingDigest, candidateId: candidate.candidateId, fencingToken: intent.fencingToken, safeCode: importCode(error) }); }
+      catch { // observability-exempt: The pending durable intent remains recovery-owned and the closed service refusal is logged below.
+        refusal = new ImportError('IMPORT_FAILED');
+      }
+      executionLog('service.import.failed', { eventVersion: 1, requestId: request.intentRequestId, worktreeId: candidate.worktreeId, safeCode: safeCode(refusal, 'IMPORT_FAILED'), errorType: refusal instanceof Error ? refusal.name : 'UnknownError' }); throw refusal;
     }
   }
 }
 
 function validateSeal(value: GovernedSealRequest): void { if (!value || Object.keys(value).sort().join(',') !== 'bindingDigest,expectedRevision,requestId,seal') throw new Error('Candidate lifecycle seal request is invalid'); }
-function validateImport(value: GovernedImportRequest): void { if (!value || Object.keys(value).sort().join(',') !== 'bindingDigest,candidateImport,completionRequestId,expectedRevision,expectedSourceIdentityDigest,intentRequestId') throw new Error('Candidate lifecycle import request is invalid'); }
+function validateImport(value: GovernedImportRequest): void { if (!value || Object.keys(value).sort().join(',') !== 'bindingDigest,candidateImport,completionRequestId,expectedRevision,expectedSourceIdentityDigest,failureRequestId,intentRequestId') throw new Error('Candidate lifecycle import request is invalid'); }
 function safeCode(error: unknown, fallback: string): string { const value = (error as { readonly code?: unknown })?.code; return typeof value === 'string' && /^[A-Z][A-Z0-9_]{1,63}$/u.test(value) ? value : fallback; }
+function importCode(error: unknown): Exclude<import('../common/execution-protocol').ExecutionImportCode, 'IMPORT_OK'> { const code = safeCode(error, 'IMPORT_FAILED'); return code.startsWith('IMPORT_') && code !== 'IMPORT_OK' ? code as Exclude<import('../common/execution-protocol').ExecutionImportCode, 'IMPORT_OK'> : 'IMPORT_FAILED'; }

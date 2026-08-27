@@ -6,7 +6,7 @@ import { BackendApplicationContribution } from '@theia/core/lib/node';
 import { injectable } from '@theia/core/shared/inversify';
 import type {
   AdvanceExecutionStateV1, CandidateBindingV1, CandidateImportIntentV1, CompleteCandidateImportV1, ExecutionAllocationCode,
-  ExecutionAllocationSummaryV1, ExecutionBindingV1, ExecutionState, ImportedCandidateV1, PrepareCandidateImportV1,
+  ExecutionAllocationSummaryV1, ExecutionBindingV1, ExecutionState, FailCandidateImportV1, ImportedCandidateV1, PrepareCandidateImportV1,
   RecordSealedCandidateV1, ReserveExecutionAllocationV1
 } from '../common/execution-protocol';
 import { CANDIDATE_MUTATION_POLICY_DIGEST } from './candidate-sealer';
@@ -32,6 +32,7 @@ const LEGAL_TRANSITIONS: Readonly<Record<ExecutionState, readonly ExecutionState
   cleaned: [], failed: ['cleaning'], 'timed-out': ['cleaning'], cancelled: ['cleaning'], quarantined: []
 };
 const TRANSITION_CODES = new Set(['ALLOCATION_OK', 'ALLOCATION_ADMISSION_BLOCKED', 'ALLOCATION_PROTOCOL_INVALID', 'ALLOCATION_REQUEST_REPLAY_MISMATCH', 'ALLOCATION_RUN_EXISTS', 'ALLOCATION_INTEGRITY_FAILED', 'ALLOCATION_REVISION_CONFLICT', 'ALLOCATION_BINDING_MISMATCH', 'ALLOCATION_STATE_INVALID', 'RECOVERY_OWNER_UNAVAILABLE', 'GIT_SEED_FAILED', 'GIT_SEED_TIMEOUT', 'GIT_SEED_OUTPUT_LIMIT', 'GIT_BASE_CHANGED', 'GIT_INDEPENDENCE_FAILED', 'GIT_SOURCE_INTEGRITY_FAILED', 'SEAL_OK', 'SEAL_FAILED', 'SEAL_BASE_MISMATCH', 'SEAL_NO_CHANGE', 'SEAL_DIRTY', 'SEAL_HEAD_INVALID', 'SEAL_ANCESTRY_INVALID', 'SEAL_MERGE_COMMIT', 'SEAL_MUTATION_POLICY', 'SEAL_OBJECT_INVALID', 'IMPORT_OK', 'IMPORT_FAILED', 'IMPORT_PROTOCOL_INVALID', 'IMPORT_SOURCE_CHANGED', 'IMPORT_CANDIDATE_INVALID', 'IMPORT_REF_EXISTS', 'IMPORT_SOURCE_INTEGRITY_FAILED', 'EXECUTION_OK', 'QUALIFICATION_PLATFORM_UNSUPPORTED', 'QUALIFICATION_PROFILE_UNAVAILABLE', 'QUALIFICATION_PROTOCOL_INVALID', 'QUALIFICATION_EXPIRED', 'QUALIFICATION_FAILED', 'EXECUTION_INTERNAL_FAILED', 'PROCESS_EXIT_NONZERO', 'CLEANUP_FAILED']);
+const IMPORT_FAILURE_CODES = new Set(['IMPORT_FAILED', 'IMPORT_PROTOCOL_INVALID', 'IMPORT_SOURCE_CHANGED', 'IMPORT_CANDIDATE_INVALID', 'IMPORT_REF_EXISTS', 'IMPORT_SOURCE_INTEGRITY_FAILED']);
 
 export interface ExecutionAllocationDiagnostics {
   readonly integrity: boolean; readonly foreignKeys: boolean; readonly permissions: boolean;
@@ -207,6 +208,35 @@ export class ExecutionAllocationRegistry implements BackendApplicationContributi
     return this.importedCandidate(request.candidateId);
   }
 
+  async failCandidateImport(request: FailCandidateImportV1): Promise<ExecutionAllocationSummaryV1> {
+    await this.ensureStarted(); validateImportFailure(request); const requestDigest = digest('kogg-execution-import-failure-v1', canonicalImportFailure(request));
+    const replay = this.databaseOrThrow().prepare(`SELECT request_digest,resource_id FROM lifecycle_request_results WHERE request_id=? AND response_kind='state'`).get(request.requestId) as SqlRow | undefined;
+    if (replay) {
+      if (String(replay.request_digest) !== requestDigest) throw new AllocationRegistryError('ALLOCATION_REQUEST_REPLAY_MISMATCH');
+      return this.summary(String(replay.resource_id));
+    }
+    const allocation = this.databaseOrThrow().prepare('SELECT state,revision,binding_digest FROM allocations WHERE worktree_id=?').get(request.worktreeId) as SqlRow | undefined;
+    const intent = this.databaseOrThrow().prepare('SELECT worktree_id,candidate_id,fencing_token,phase FROM candidate_import_intents WHERE intent_id=?').get(request.intentId) as SqlRow | undefined;
+    if (!allocation || !intent) throw new AllocationRegistryError('ALLOCATION_INTEGRITY_FAILED');
+    if (String(allocation.binding_digest) !== request.bindingDigest || String(intent.worktree_id) !== request.worktreeId || String(intent.candidate_id) !== request.candidateId
+      || String(intent.fencing_token) !== request.fencingToken) throw new AllocationRegistryError('ALLOCATION_BINDING_MISMATCH');
+    if (String(allocation.revision) !== request.expectedRevision) throw new AllocationRegistryError('ALLOCATION_REVISION_CONFLICT');
+    if (String(allocation.state) !== 'sealed' || String(intent.phase) !== 'requested') throw new AllocationRegistryError('ALLOCATION_STATE_INVALID');
+    const now = new Date().toISOString();
+    this.transaction(database => {
+      const intentResult = database.prepare(`UPDATE candidate_import_intents SET phase='quarantined',safe_code=?,updated_at=? WHERE intent_id=? AND phase='requested' AND fencing_token=?`)
+        .run(request.safeCode, now, request.intentId, request.fencingToken);
+      const allocationResult = database.prepare(`UPDATE allocations SET state='quarantined',safe_code=?,revision=revision+1,updated_at=? WHERE worktree_id=? AND revision=? AND state='sealed' AND binding_digest=?`)
+        .run(request.safeCode, now, request.worktreeId, Number(request.expectedRevision), request.bindingDigest);
+      if (intentResult.changes !== 1 || allocationResult.changes !== 1) throw new AllocationRegistryError('ALLOCATION_REVISION_CONFLICT');
+      database.prepare(`INSERT INTO lifecycle_request_results(request_id,request_digest,response_kind,resource_id,created_at) VALUES(?,?,'state',?,?)`).run(request.requestId, requestDigest, request.worktreeId, now);
+      database.prepare(`UPDATE execution_meta SET admission='blocked',revision=revision+1 WHERE singleton=1`).run();
+      this.event(database, request.worktreeId, 'import.quarantined', request.safeCode);
+    });
+    log('import.quarantined', { requestId: request.requestId, worktreeId: request.worktreeId, candidateId: request.candidateId, intentId: request.intentId, safeCode: request.safeCode });
+    return this.summary(request.worktreeId);
+  }
+
   diagnostics(): ExecutionAllocationDiagnostics {
     const database = this.databaseOrThrow();
     const count = (sql: string): number => Number((database.prepare(sql).get() as SqlRow).count);
@@ -298,7 +328,7 @@ export class ExecutionAllocationRegistry implements BackendApplicationContributi
       schemaVersion: 1, worktreeId, runId: String(row.run_id), attemptId: String(row.attempt_id),
       allocationName: String(row.allocation_name), allocationNonceDigest: String(row.allocation_nonce_digest),
       bindingDigest: String(row.binding_digest), state: String(row.state) as ExecutionState, revision: String(row.revision),
-      cleanupState: String(row.cleanup_state) as ExecutionAllocationSummaryV1['cleanupState'], safeCode: String(row.safe_code) as ExecutionAllocationCode
+      cleanupState: String(row.cleanup_state) as ExecutionAllocationSummaryV1['cleanupState'], safeCode: String(row.safe_code) as ExecutionAllocationSummaryV1['safeCode']
     };
   }
   private candidate(candidateId: string): CandidateBindingV1 { const row = this.databaseOrThrow().prepare('SELECT candidate_json FROM candidates WHERE candidate_id=?').get(candidateId) as SqlRow | undefined; if (!row) throw new AllocationRegistryError('ALLOCATION_INTEGRITY_FAILED'); return JSON.parse(String(row.candidate_json)) as CandidateBindingV1; }
@@ -345,6 +375,12 @@ function validateImportCompletion(request: CompleteCandidateImportV1): void {
     || !/^[0-9a-f]{64}$/u.test(request.fencingToken) || !DECIMAL.test(request.expectedRevision) || request.expectedRevision === '0'
     || ![request.candidateCommit, request.candidateTree].every(value => SHA1.test(value) || SHA256.test(value))) throw new AllocationRegistryError('ALLOCATION_PROTOCOL_INVALID');
 }
+function validateImportFailure(request: FailCandidateImportV1): void {
+  if (!request || Object.keys(request).sort().join(',') !== 'bindingDigest,candidateId,expectedRevision,fencingToken,intentId,requestId,safeCode,worktreeId'
+    || ![request.requestId, request.intentId, request.worktreeId, request.candidateId].every(value => UUID.test(value)) || !DIGEST.test(request.bindingDigest)
+    || !/^[0-9a-f]{64}$/u.test(request.fencingToken) || !DECIMAL.test(request.expectedRevision) || request.expectedRevision === '0'
+    || !IMPORT_FAILURE_CODES.has(request.safeCode)) throw new AllocationRegistryError('ALLOCATION_PROTOCOL_INVALID');
+}
 function validateBinding(value: ExecutionBindingV1): void {
   const object = value?.gitObjectFormat === 'sha1' ? SHA1 : SHA256;
   if (!value || Object.keys(value).sort().join(',') !== [...BINDING_FIELDS].sort().join(',') || value.schemaVersion !== 1
@@ -359,6 +395,7 @@ function canonicalAdvance(value: AdvanceExecutionStateV1): string { return `{"bi
 function canonicalSealed(value: RecordSealedCandidateV1): string { return `{"bindingDigest":${JSON.stringify(value.bindingDigest)},"candidate":${canonicalCandidate(value.candidate)},"expectedRevision":${JSON.stringify(value.expectedRevision)},"requestId":${JSON.stringify(value.requestId)},"worktreeId":${JSON.stringify(value.worktreeId)}}`; }
 function canonicalImportIntent(value: PrepareCandidateImportV1): string { return JSON.stringify({ bindingDigest: value.bindingDigest, candidateId: value.candidateId, expectedRevision: value.expectedRevision, expectedSourceIdentityDigest: value.expectedSourceIdentityDigest, requestId: value.requestId, worktreeId: value.worktreeId }); }
 function canonicalImportCompletion(value: CompleteCandidateImportV1): string { return JSON.stringify({ bindingDigest: value.bindingDigest, candidateCommit: value.candidateCommit, candidateId: value.candidateId, candidateTree: value.candidateTree, expectedRevision: value.expectedRevision, fencingToken: value.fencingToken, intentId: value.intentId, quarantineRefDigest: value.quarantineRefDigest, requestId: value.requestId, worktreeId: value.worktreeId }); }
+function canonicalImportFailure(value: FailCandidateImportV1): string { return JSON.stringify({ bindingDigest: value.bindingDigest, candidateId: value.candidateId, expectedRevision: value.expectedRevision, fencingToken: value.fencingToken, intentId: value.intentId, requestId: value.requestId, safeCode: value.safeCode, worktreeId: value.worktreeId }); }
 function canonicalCandidate(value: CandidateBindingV1): string { const record = value as unknown as Record<string, unknown>; return `{${Object.keys(record).sort().map(key => `${JSON.stringify(key)}:${JSON.stringify(record[key])}`).join(',')}}`; }
 function validTime(value: string): boolean { const parsed = Date.parse(value); return Number.isFinite(parsed) && new Date(parsed).toISOString() === value; }
 function refuseState(request: AdvanceExecutionStateV1, code: ExecutionAllocationCode): never { log('state.refused', { requestId: request.requestId, worktreeId: request.worktreeId, state: request.nextState, safeCode: code }); throw new AllocationRegistryError(code); }
@@ -384,6 +421,7 @@ const LOG_FIELDS = {
   'candidate.recorded': ['requestId', 'worktreeId', 'candidateId'],
   'import.intent.recorded': ['requestId', 'worktreeId', 'candidateId', 'intentId'],
   'import.completed': ['requestId', 'worktreeId', 'candidateId', 'intentId'],
+  'import.quarantined': ['requestId', 'worktreeId', 'candidateId', 'intentId', 'safeCode'],
   'recovery.resource.classified': ['runId', 'worktreeId', 'state', 'safeCode'],
   'recovery.completed': ['resourceCount', 'quarantinedCount', 'admission']
 } as const;

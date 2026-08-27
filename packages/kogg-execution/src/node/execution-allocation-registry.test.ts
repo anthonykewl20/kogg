@@ -81,6 +81,20 @@ test('records one sealed candidate only after the legal stopping state and repla
   } finally { registry.onStop(); await rm(root, { recursive: true, force: true }); }
 });
 
+test('atomically quarantines a failed import intent and blocks admission without deleting evidence', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'kogg-allocation-import-failure-')); process.env.KOGG_STATE_DIR = root; const registry = new ExecutionAllocationRegistry(); await registry.onStart();
+  try {
+    const allocation = await advanceToStopping(registry); const base = allocationRequest().binding;
+    const candidate = { schemaVersion: 1 as const, candidateId: '30000000-0000-4000-8000-000000000021', worktreeId: allocation.worktreeId, runId: base.runId, attemptId: base.attemptId, baseCommit: base.baseCommit, baseTree: base.baseTree, candidateCommit: 'd'.repeat(40), candidateTree: 'e'.repeat(40), objectClosureDigest: `sha256:${'f'.repeat(64)}`, mutationPolicyDigest: CANDIDATE_MUTATION_POLICY_DIGEST, sealedAt: new Date().toISOString(), retentionClass: 'pending-evidence' as const, retentionUntil: '9999-12-31T23:59:59.999Z', safeCode: 'SEAL_OK' as const };
+    await registry.recordSeal({ requestId: '30000000-0000-4000-8000-000000000022', worktreeId: allocation.worktreeId, expectedRevision: allocation.revision, bindingDigest: allocation.bindingDigest, candidate });
+    const expectedRevision = String(Number(allocation.revision) + 1); const intent = await registry.prepareCandidateImport({ requestId: '30000000-0000-4000-8000-000000000023', worktreeId: allocation.worktreeId, expectedRevision, bindingDigest: allocation.bindingDigest, candidateId: candidate.candidateId, expectedSourceIdentityDigest: `sha256:${'1'.repeat(64)}` });
+    const failure = { requestId: '30000000-0000-4000-8000-000000000024', intentId: intent.intentId, worktreeId: allocation.worktreeId, expectedRevision, bindingDigest: allocation.bindingDigest, candidateId: candidate.candidateId, fencingToken: intent.fencingToken, safeCode: 'IMPORT_SOURCE_INTEGRITY_FAILED' as const };
+    const quarantined = await registry.failCandidateImport(failure); assert.equal(quarantined.state, 'quarantined'); assert.equal(quarantined.safeCode, 'IMPORT_SOURCE_INTEGRITY_FAILED'); assert.deepEqual(await registry.failCandidateImport(failure), quarantined);
+    const diagnostics = registry.diagnostics(); assert.equal(diagnostics.admission, 'blocked'); assert.equal(diagnostics.quarantinedCount, 1); assert.equal(diagnostics.pendingImportIntentCount, 0); assert.equal(diagnostics.candidateCount, 1);
+    await assert.rejects(() => registry.failCandidateImport({ ...failure, safeCode: 'IMPORT_FAILED' }), (error: unknown) => error instanceof AllocationRegistryError && error.code === 'ALLOCATION_REQUEST_REPLAY_MISMATCH');
+  } finally { registry.onStop(); await rm(root, { recursive: true, force: true }); }
+});
+
 test('startup retains an ambiguous import intent and quarantines its allocation without replay', async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), 'kogg-allocation-import-recovery-')); process.env.KOGG_STATE_DIR = root; const first = new ExecutionAllocationRegistry(); await first.onStart();
   const allocation = await advanceToStopping(first); const base = allocationRequest().binding;
