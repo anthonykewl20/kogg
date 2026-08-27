@@ -653,7 +653,7 @@ export class ExecutionAllocationRegistry implements BackendApplicationContributi
         cleanup_state TEXT NOT NULL CHECK(cleanup_state IN ('required','cleaning','cleaned','failed')),safe_code TEXT NOT NULL,revision INTEGER NOT NULL CHECK(revision>=1),created_at TEXT NOT NULL,updated_at TEXT NOT NULL
       );
       CREATE TABLE IF NOT EXISTS allocation_intents(intent_id TEXT PRIMARY KEY,worktree_id TEXT NOT NULL REFERENCES allocations(worktree_id),intent_type TEXT NOT NULL,phase TEXT NOT NULL,fencing_token TEXT NOT NULL,expected_revision TEXT,expected_identity_digest TEXT,observed_identity_digest TEXT,helper_digest TEXT,mount_quota_digest TEXT,safe_code TEXT NOT NULL,created_at TEXT NOT NULL,updated_at TEXT NOT NULL);
-      CREATE TABLE IF NOT EXISTS allocation_events(sequence INTEGER PRIMARY KEY AUTOINCREMENT,worktree_id TEXT NOT NULL REFERENCES allocations(worktree_id),event_id TEXT,event_name TEXT NOT NULL,execution_state TEXT,event_digest TEXT,previous_event_digest TEXT,safe_code TEXT NOT NULL,created_at TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS allocation_events(sequence INTEGER PRIMARY KEY AUTOINCREMENT,worktree_id TEXT NOT NULL REFERENCES allocations(worktree_id),event_id TEXT,event_name TEXT NOT NULL,execution_state TEXT,event_digest TEXT,previous_event_digest TEXT,event_schema_version INTEGER NOT NULL CHECK(event_schema_version=2),authority_mode TEXT NOT NULL CHECK(authority_mode IN ('build','kogg','unknown')),authority_sequence TEXT NOT NULL,safe_code TEXT NOT NULL,created_at TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS request_results(request_id TEXT PRIMARY KEY,request_digest TEXT NOT NULL,worktree_id TEXT NOT NULL REFERENCES allocations(worktree_id),created_at TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS physical_allocation_results(request_id TEXT PRIMARY KEY,request_digest TEXT NOT NULL,worktree_id TEXT NOT NULL REFERENCES allocations(worktree_id),filesystem_identity_digest TEXT NOT NULL,created_at TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS physical_allocation_prepare_results(request_id TEXT PRIMARY KEY,request_digest TEXT NOT NULL,intent_id TEXT NOT NULL UNIQUE REFERENCES allocation_intents(intent_id),worktree_id TEXT NOT NULL REFERENCES allocations(worktree_id),created_at TEXT NOT NULL);
@@ -671,8 +671,8 @@ export class ExecutionAllocationRegistry implements BackendApplicationContributi
     ensurePhysicalIdentitySchema(this.databaseOrThrow());
     ensureAllocationIntentSchema(this.databaseOrThrow());
     ensureQuotaProjectLeaseSchema(this.databaseOrThrow());
-    ensureExecutionModeSchema(this.databaseOrThrow());
     ensureOwnerSchema(this.databaseOrThrow());
+    ensureExecutionModeSchema(this.databaseOrThrow());
     const version = Number((this.databaseOrThrow().prepare('SELECT schema_version FROM execution_meta WHERE singleton=1').get() as SqlRow).schema_version);
     if (version !== 1) throw new Error('Unsupported execution registry schema');
   }
@@ -740,13 +740,14 @@ export class ExecutionAllocationRegistry implements BackendApplicationContributi
   private importedCandidate(candidateId: string): ImportedCandidateV1 { const candidate = this.candidate(candidateId); const row = this.databaseOrThrow().prepare('SELECT quarantine_ref_digest FROM candidates WHERE candidate_id=?').get(candidateId) as SqlRow | undefined; if (!row || !DIGEST.test(String(row.quarantine_ref_digest))) throw new AllocationRegistryError('ALLOCATION_INTEGRITY_FAILED'); const { safeCode: _sealCode, ...binding } = candidate; return { ...binding, quarantineRefDigest: String(row.quarantine_ref_digest), safeCode: 'IMPORT_OK' }; }
   private admission(): ExecutionAllocationDiagnostics['admission'] { return String((this.databaseOrThrow().prepare('SELECT admission FROM execution_meta WHERE singleton=1').get() as SqlRow).admission) as ExecutionAllocationDiagnostics['admission']; }
   private event(database: DatabaseSync, worktreeId: string, eventName: string, safeCode: string): void {
-    const allocation = database.prepare('SELECT state FROM allocations WHERE worktree_id=?').get(worktreeId) as SqlRow;
+    const allocation = database.prepare('SELECT state,authority_mode,authority_sequence FROM allocations WHERE worktree_id=?').get(worktreeId) as SqlRow;
     const eventId = randomUUID(); const executionState = String(allocation.state); const createdAt = new Date().toISOString();
+    const eventSchemaVersion = 2; const authorityMode = String(allocation.authority_mode); const authoritySequence = String(allocation.authority_sequence);
     const prior = database.prepare('SELECT event_digest FROM allocation_events ORDER BY sequence DESC LIMIT 1').get() as SqlRow | undefined;
     const previousEventDigest = prior ? String(prior.event_digest) : '0'.repeat(64);
-    const eventDigest = ownerHash({ eventId, worktreeId, eventName, executionState, safeCode, createdAt, previousEventDigest });
-    database.prepare('INSERT INTO allocation_events(worktree_id,event_id,event_name,execution_state,event_digest,previous_event_digest,safe_code,created_at) VALUES(?,?,?,?,?,?,?,?)')
-      .run(worktreeId, eventId, eventName, executionState, eventDigest, previousEventDigest, safeCode, createdAt);
+    const eventDigest = ownerHash({ eventId, worktreeId, eventName, executionState, safeCode, createdAt, previousEventDigest, eventSchemaVersion, authorityMode, authoritySequence });
+    database.prepare('INSERT INTO allocation_events(worktree_id,event_id,event_name,execution_state,event_digest,previous_event_digest,event_schema_version,authority_mode,authority_sequence,safe_code,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)')
+      .run(worktreeId, eventId, eventName, executionState, eventDigest, previousEventDigest, eventSchemaVersion, authorityMode, authoritySequence, safeCode, createdAt);
   }
   private bump(database: DatabaseSync): void { database.prepare('UPDATE execution_meta SET revision=revision+1 WHERE singleton=1').run(); }
   private transaction(run: (database: DatabaseSync) => void): void { const database = this.databaseOrThrow(); database.exec('BEGIN IMMEDIATE'); try { run(database); database.exec('COMMIT'); } catch (error) { database.exec('ROLLBACK'); throw error; } this.publishOwnerEvents(); }
@@ -890,7 +891,7 @@ function refuseCleanup(request: { readonly requestId: string; readonly worktreeI
 function canonicalBinding(value: ExecutionBindingV1): string { return `{${[...BINDING_FIELDS].sort().map(key => `${JSON.stringify(key)}:${JSON.stringify(value[key as keyof ExecutionBindingV1])}`).join(',')}}`; }
 function modeBindingMatches(result: Awaited<ReturnType<ModeOperationAuthorizer['authorizeOperation']>>, binding: ExecutionBindingV1): boolean {
   const projection = result.projection;
-  return Boolean(result.allowed && projection && (projection.selectedMode === 'build' || projection.selectedMode === 'kogg') && DECIMAL.test(projection.sequence)
+  return Boolean(result.allowed && projection && (projection.selectedMode === 'build' || projection.selectedMode === 'kogg') && validAuthoritySequence(projection.sequence)
     && projection.taskId === binding.taskId && projection.projectId === binding.projectId && projection.repositoryId === binding.repositoryId);
 }
 function digest(domain: string, value: string): string { return `sha256:${createHash('sha256').update(`${domain}\0${value}`).digest('hex')}`; }
@@ -931,11 +932,24 @@ function ensureExecutionModeSchema(database: DatabaseSync): void {
   if (!columns.has('authority_mode')) database.exec('ALTER TABLE allocations ADD COLUMN authority_mode TEXT');
   if (!columns.has('authority_sequence')) database.exec('ALTER TABLE allocations ADD COLUMN authority_sequence TEXT');
   database.prepare("UPDATE allocations SET authority_mode=COALESCE(authority_mode,'unknown'),authority_sequence=COALESCE(authority_sequence,'0')").run();
+  database.prepare(`UPDATE allocations SET authority_mode='unknown',authority_sequence='0'
+    WHERE authority_mode<>'unknown' AND EXISTS (
+      SELECT 1 FROM allocation_events WHERE allocation_events.worktree_id=allocations.worktree_id
+        AND (event_schema_version IS NULL OR event_schema_version<>2)
+    )`).run();
 }
 
 function executionModeBindingsValid(database: DatabaseSync): boolean {
-  return Number((database.prepare("SELECT count(*) AS count FROM allocations WHERE authority_mode IS NULL OR authority_mode NOT IN ('build','kogg','unknown') OR authority_sequence IS NULL").get() as SqlRow).count) === 0
-    && (database.prepare('SELECT authority_mode,authority_sequence FROM allocations').all() as SqlRow[]).every(row => DECIMAL.test(String(row.authority_sequence)) && (String(row.authority_mode) !== 'unknown' || String(row.authority_sequence) === '0'));
+  const rows = database.prepare(`SELECT a.authority_mode,a.authority_sequence,e.event_name,e.event_schema_version,
+      e.authority_mode AS event_authority_mode,e.authority_sequence AS event_authority_sequence
+    FROM allocations a LEFT JOIN allocation_events e ON e.sequence=(SELECT min(first.sequence) FROM allocation_events first WHERE first.worktree_id=a.worktree_id)`).all() as SqlRow[];
+  return rows.every(row => {
+    const mode = String(row.authority_mode); const sequence = String(row.authority_sequence);
+    if (!['build', 'kogg', 'unknown'].includes(mode) || !validAuthoritySequence(sequence)) return false;
+    if (mode === 'unknown') return sequence === '0';
+    return String(row.event_name) === 'allocation.requested' && Number(row.event_schema_version) === 2
+      && String(row.event_authority_mode) === mode && String(row.event_authority_sequence) === sequence;
+  });
 }
 
 function quotaProjectLeasesValid(database: DatabaseSync): boolean {
@@ -963,6 +977,9 @@ function ensureOwnerSchema(database: DatabaseSync): void {
   if (!columns.has('execution_state')) database.exec('ALTER TABLE allocation_events ADD COLUMN execution_state TEXT');
   if (!columns.has('event_digest')) database.exec('ALTER TABLE allocation_events ADD COLUMN event_digest TEXT');
   if (!columns.has('previous_event_digest')) database.exec('ALTER TABLE allocation_events ADD COLUMN previous_event_digest TEXT');
+  if (!columns.has('event_schema_version')) database.exec('ALTER TABLE allocation_events ADD COLUMN event_schema_version INTEGER');
+  if (!columns.has('authority_mode')) database.exec('ALTER TABLE allocation_events ADD COLUMN authority_mode TEXT');
+  if (!columns.has('authority_sequence')) database.exec('ALTER TABLE allocation_events ADD COLUMN authority_sequence TEXT');
   let previous = '0'.repeat(64);
   for (const row of database.prepare('SELECT e.*,a.state AS current_state FROM allocation_events e JOIN allocations a ON a.worktree_id=e.worktree_id ORDER BY e.sequence').all() as SqlRow[]) {
     if (typeof row.event_id === 'string' && typeof row.execution_state === 'string' && typeof row.event_digest === 'string' && typeof row.previous_event_digest === 'string') {
@@ -994,8 +1011,10 @@ function previousSourceDigest(database: DatabaseSync, sequence: number): string 
 }
 
 function sourceEventDigest(row: SqlRow): string {
-  return ownerHash({ eventId: String(row.event_id), worktreeId: String(row.worktree_id), eventName: String(row.event_name),
-    executionState: String(row.execution_state), safeCode: String(row.safe_code), createdAt: String(row.created_at), previousEventDigest: String(row.previous_event_digest) });
+  const source = { eventId: String(row.event_id), worktreeId: String(row.worktree_id), eventName: String(row.event_name),
+    executionState: String(row.execution_state), safeCode: String(row.safe_code), createdAt: String(row.created_at), previousEventDigest: String(row.previous_event_digest) };
+  if (Number(row.event_schema_version) !== 2) return ownerHash(source);
+  return ownerHash({ ...source, eventSchemaVersion: 2, authorityMode: String(row.authority_mode), authoritySequence: String(row.authority_sequence) });
 }
 
 function ownerEventsValid(database: DatabaseSync): boolean {
@@ -1003,6 +1022,9 @@ function ownerEventsValid(database: DatabaseSync): boolean {
   if (triggerCount !== 2) return false;
   let previous = '0'.repeat(64);
   for (const row of database.prepare('SELECT * FROM allocation_events ORDER BY sequence').all() as SqlRow[]) {
+    const version = row.event_schema_version === null ? 1 : Number(row.event_schema_version);
+    if (version !== 1 && version !== 2) return false;
+    if (version === 2 && (!['build', 'kogg', 'unknown'].includes(String(row.authority_mode)) || !validAuthoritySequence(String(row.authority_sequence)))) return false;
     if (String(row.previous_event_digest) !== previous || sourceEventDigest(row) !== String(row.event_digest)) return false;
     previous = String(row.event_digest);
   }
@@ -1046,6 +1068,10 @@ function boundedDecimal(value: string, maximum: bigint): boolean {
   catch { // observability-exempt: Invalid untrusted decimal input is intentionally reduced to a closed protocol refusal.
     return false;
   }
+}
+
+function validAuthoritySequence(value: string): boolean {
+  return DECIMAL.test(value) && Number.isSafeInteger(Number(value));
 }
 
 const LOG_FIELDS = {

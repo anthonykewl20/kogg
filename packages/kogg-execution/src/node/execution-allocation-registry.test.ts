@@ -157,6 +157,39 @@ test('refuses startup when an immutable execution authority sequence is corrupte
   finally { reopened.onStop(); await rm(root, { recursive: true, force: true }); }
 });
 
+test('refuses startup when a valid-looking execution authority sequence no longer matches its immutable admission fact', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'kogg-allocation-mode-fact-integrity-')); process.env.KOGG_STATE_DIR = root;
+  const first = allocationRegistry(); await first.onStart(); const allocation = await first.reserve(allocationRequest()); first.onStop();
+  const databasePath = path.join(root, 'execution', 'registry.sqlite3'); const database = new DatabaseSync(databasePath);
+  const admission = database.prepare("SELECT event_schema_version,authority_mode,authority_sequence FROM allocation_events WHERE worktree_id=? AND event_name='allocation.requested'").get(allocation.worktreeId) as Record<string, unknown>;
+  assert.deepEqual({ ...admission }, { event_schema_version: 2, authority_mode: 'build', authority_sequence: '1' });
+  database.prepare('UPDATE allocations SET authority_sequence=? WHERE worktree_id=?').run('2', allocation.worktreeId); database.close();
+  const reopened = allocationRegistry();
+  try { await assert.rejects(() => reopened.onStart(), /Execution mode binding integrity failed/u); }
+  finally { reopened.onStop(); await rm(root, { recursive: true, force: true }); }
+});
+
+test('downgrades pre-authority admission facts to explicit unknown authority during migration', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'kogg-allocation-mode-fact-migration-')); process.env.KOGG_STATE_DIR = root;
+  const first = allocationRegistry(); await first.onStart(); const allocation = await first.reserve(allocationRequest()); first.onStop();
+  const databasePath = path.join(root, 'execution', 'registry.sqlite3'); const database = new DatabaseSync(databasePath);
+  const current = database.prepare("SELECT * FROM allocation_events WHERE worktree_id=? AND event_name='allocation.requested'").get(allocation.worktreeId) as Record<string, unknown>;
+  const legacyDigest = createHash('sha256').update(JSON.stringify({
+    eventId: String(current.event_id), worktreeId: String(current.worktree_id), eventName: String(current.event_name),
+    executionState: String(current.execution_state), safeCode: String(current.safe_code), createdAt: String(current.created_at),
+    previousEventDigest: String(current.previous_event_digest)
+  })).digest('hex');
+  database.exec('DROP TRIGGER execution_owner_events_update; DROP TRIGGER execution_owner_events_delete; DROP TABLE allocation_events; CREATE TABLE allocation_events(sequence INTEGER PRIMARY KEY AUTOINCREMENT,worktree_id TEXT NOT NULL REFERENCES allocations(worktree_id),event_id TEXT,event_name TEXT NOT NULL,execution_state TEXT,event_digest TEXT,previous_event_digest TEXT,safe_code TEXT NOT NULL,created_at TEXT NOT NULL)');
+  database.prepare('INSERT INTO allocation_events(sequence,worktree_id,event_id,event_name,execution_state,event_digest,previous_event_digest,safe_code,created_at) VALUES(?,?,?,?,?,?,?,?,?)')
+    .run(current.sequence as number, String(current.worktree_id), String(current.event_id), String(current.event_name), String(current.execution_state), legacyDigest, String(current.previous_event_digest), String(current.safe_code), String(current.created_at));
+  database.close();
+  const reopened = allocationRegistry();
+  try {
+    await reopened.onStart(); const run = await reopened.getRun({ requestId: randomUUID(), runId: allocation.runId });
+    assert.equal(run?.authorityMode, 'unknown'); assert.equal(run?.authoritySequence, '0');
+  } finally { reopened.onStop(); await rm(root, { recursive: true, force: true }); }
+});
+
 test('projects execution runs through the closed path-free RPC contract and refuses extra fields', async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), 'kogg-allocation-projection-')); process.env.KOGG_STATE_DIR = root;
   const registry = allocationRegistry(); await registry.onStart();
