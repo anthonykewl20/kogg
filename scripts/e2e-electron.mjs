@@ -349,6 +349,7 @@ async function exerciseElectronAgents(page, electronApplication, admissionId) {
         await agents.waitFor({ state: 'attached', timeout: 30_000 });
     }
     await agents.locator('[data-adapter-row="codex-app-server@1.0.0"]').filter({ hasText: /disabled · codex\.app-server-v2 1\.0\.0/iu }).waitFor();
+    await agents.locator('[data-adapter-row="claude-agent-sdk@1.0.0"]').filter({ hasText: /disabled · claude\.agent-sdk 1\.0\.0/iu }).waitFor();
     await agents.getByRole('button', { name: 'Save immutable revision' }).click();
     await agents.locator('section').filter({ hasText: 'Role Revisions' }).locator('li').filter({ hasText: /implementer · [0-9a-f-]{36}/u }).waitFor();
     await agents.getByLabel('Task admission ID').fill(admissionId);
@@ -370,6 +371,21 @@ async function exerciseElectronAgents(page, electronApplication, admissionId) {
     await agents.getByRole('button', { name: 'Confirm and start exact attempt' }).click();
     await agents.getByText(/cleaned · ADAPTER_DISABLED.*codex-app-server@1\.0\.0.*openai\/gpt-5.*resources 0/iu).waitFor({ timeout: 10_000 });
     await agents.getByText('The exact adapter is registered but disabled; no process or provider request was started.').waitFor();
+
+    await agents.getByLabel('Role key', { exact: true }).fill('claude-refusal');
+    await agents.getByLabel('Display name').fill('Claude refusal probe');
+    await agents.getByLabel('Provider IDs').fill('anthropic');
+    await agents.getByLabel('Model IDs').fill('claude-sonnet-4-5');
+    await agents.getByRole('button', { name: 'Save immutable revision' }).click();
+    const claudeRole = agents.getByLabel('Role revision').locator('option').filter({ hasText: /^claude-refusal ·/u });
+    await claudeRole.waitFor({ state: 'attached' });
+    await agents.getByLabel('Role revision').selectOption(await claudeRole.getAttribute('value'));
+    await agents.getByLabel('Task admission ID').fill(admissionId);
+    await agents.getByLabel('Exact adapter and version').fill('claude-agent-sdk@1.0.0');
+    await agents.getByLabel('Provider', { exact: true }).fill('anthropic');
+    await agents.getByLabel('Model', { exact: true }).fill('claude-sonnet-4-5');
+    await agents.getByRole('button', { name: 'Confirm and start exact attempt' }).click();
+    await agents.getByText(/cleaned · ADAPTER_DISABLED.*claude-agent-sdk@1\.0\.0.*anthropic\/claude-sonnet-4-5.*resources 0/iu).waitFor({ timeout: 10_000 });
 }
 
 async function exerciseElectronOperations(page, electronApplication) {

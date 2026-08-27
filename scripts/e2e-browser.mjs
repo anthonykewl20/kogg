@@ -654,6 +654,14 @@ async function exerciseTasks(page) {
     for (const id of ['tasks.registry', 'tasks.revisions', 'tasks.bindings', 'tasks.approvals', 'agents.adapters', 'agents.attempts', 'agents.processes', 'agents.recovery', 'agents.logging', 'agents.source-maps']) {
         assert.equal(supportReport.checks.find(check => check.id === id)?.status, 'pass');
     }
+    for (const id of ['claude.artifact', 'claude.legal', 'claude.settings', 'claude.protocol', 'claude.credentials']) {
+        const check = supportReport.checks.find(candidate => candidate.id === id);
+        assert.equal(check?.status, 'fail');
+        assert.equal(check?.details?.safeCode, 'CLAUDE_LEGAL_APPROVAL_REQUIRED');
+    }
+    for (const id of ['claude.processes', 'claude.cleanup', 'claude.recovery', 'claude.source-maps']) {
+        assert.equal(supportReport.checks.find(check => check.id === id)?.status, 'pass');
+    }
     await page.keyboard.press('Escape');
     assert.equal(logs.join('\n').includes(canary), false);
 }
@@ -661,6 +669,7 @@ async function exerciseTasks(page) {
 async function exerciseAgents(page, admissionId) {
     const agents = await ensureAgentsWidget(page);
     await agents.locator('[data-adapter-row="codex-app-server@1.0.0"]').filter({ hasText: /disabled · codex\.app-server-v2 1\.0\.0/iu }).waitFor();
+    await agents.locator('[data-adapter-row="claude-agent-sdk@1.0.0"]').filter({ hasText: /disabled · claude\.agent-sdk 1\.0\.0/iu }).waitFor();
     await agents.getByRole('button', { name: 'Save immutable revision' }).click();
     await agents.locator('section').filter({ hasText: 'Role Revisions' }).locator('li').filter({ hasText: /implementer · [0-9a-f-]{36}/u }).waitFor();
     const implementerRoleId = await roleOptionValue(agents, 'implementer');
@@ -687,6 +696,21 @@ async function exerciseAgents(page, admissionId) {
     await agents.getByRole('button', { name: 'Confirm and start exact attempt' }).click();
     await agents.getByText(/cleaned · ADAPTER_DISABLED.*codex-app-server@1\.0\.0.*openai\/gpt-5.*resources 0/iu).waitFor({ timeout: 10_000 });
     await agents.getByText('The exact adapter is registered but disabled; no process or provider request was started.').waitFor();
+
+    await agents.getByLabel('Role key', { exact: true }).fill('claude-refusal');
+    await agents.getByLabel('Display name').fill('Claude refusal probe');
+    await agents.getByLabel('Provider IDs').fill('anthropic');
+    await agents.getByLabel('Model IDs').fill('claude-sonnet-4-5');
+    await agents.getByRole('button', { name: 'Save immutable revision' }).click();
+    await agents.locator('section').filter({ hasText: 'Role Revisions' }).locator('li').filter({ hasText: /claude-refusal · [0-9a-f-]{36}/u }).waitFor();
+    const claudeRoleId = await roleOptionValue(agents, 'claude-refusal');
+    await agents.getByLabel('Task admission ID').fill(admissionId);
+    await agents.getByLabel('Role revision').selectOption(claudeRoleId);
+    await agents.getByLabel('Exact adapter and version').fill('claude-agent-sdk@1.0.0');
+    await agents.getByLabel('Provider', { exact: true }).fill('anthropic');
+    await agents.getByLabel('Model', { exact: true }).fill('claude-sonnet-4-5');
+    await agents.getByRole('button', { name: 'Confirm and start exact attempt' }).click();
+    await agents.getByText(/cleaned · ADAPTER_DISABLED.*claude-agent-sdk@1\.0\.0.*anthropic\/claude-sonnet-4-5.*resources 0/iu).waitFor({ timeout: 10_000 });
 
     await agents.getByLabel('Role key', { exact: true }).fill('coordinator');
     await agents.getByLabel('Display name').fill('Coordinator');
