@@ -83,6 +83,20 @@ test('run admission validates the immutable plan and refuses unavailable executo
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 
+test('run admission rechecks the complete trust-spine plan digest and refuses live store tampering', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'kogg-workflow-admission-integrity-')); const database = path.join(root, 'workflow.sqlite3'); const compiler = workflowCompiler();
+  try {
+    const registry = new WorkflowRegistry(compiler, database); await registry.onStart();
+    const saved = await registry.saveVersion({ requestId: '20000000-0000-4000-8000-000000000050', templateId: TEMPLATE, expectedVersionNumber: 0, graph: validGraph() });
+    if (saved.kind !== 'completed' || !saved.version) throw new Error('Expected immutable workflow version');
+    const compiled = await registry.compile({ requestId: '20000000-0000-4000-8000-000000000051', versionId: saved.version.versionId });
+    if (compiled.kind !== 'completed' || !compiled.plan) throw new Error('Expected compiled workflow plan');
+    const corrupt = new DatabaseSync(database); corrupt.exec('DROP TRIGGER workflow_immutable_plans_update'); corrupt.prepare('UPDATE compiled_plans SET plan_digest=? WHERE plan_id=?').run('f'.repeat(64), compiled.plan.planId); corrupt.close();
+    const refused = await registry.admitRun({ requestId: '20000000-0000-4000-8000-000000000052', planId: compiled.plan.planId });
+    assert.deepEqual(refused, { kind: 'refused', code: 'WORKFLOW_STORE_INTEGRITY' }); assert.equal((await registry.diagnostics()).planMismatchCount, 1); await registry.onStop();
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
 function validGraph(): EditableWorkflowGraphV1 & { nodes: EditableWorkflowNodeV1[]; edges: ReturnType<typeof edge>[] } { const research = node('30000000-0000-4000-8000-000000000001', 'research.agent', ['read-repository','invoke-provider']); const implementation = node('30000000-0000-4000-8000-000000000002', 'implementation.agent', ['read-repository','mutate-private-repository','invoke-provider','run-tool']); return { schemaVersion: '1', projectId: PROJECT, nodes: [research, implementation], edges: [edge('40000000-0000-4000-8000-000000000001', research.nodeId, implementation.nodeId)] }; }
 function node(nodeId: string, kind: EditableWorkflowNodeV1['kind'], requestedEffects: EditableWorkflowNodeV1['requestedEffects']): EditableWorkflowNodeV1 & { requestedEffects: EditableWorkflowNodeV1['requestedEffects']; retry: EditableWorkflowNodeV1['retry']; configurationDigest: string } { return { nodeId, kind, kindVersion: '1', configurationDigest: 'a'.repeat(64), requestedEffects, retry: { maxAttempts: 1, backoffMs: 0, sideEffectPolicy: 'none' } }; }
 function edge(edgeId: string, sourceNodeId: string, targetNodeId: string) { return { edgeId, sourceNodeId, sourcePort: 'success' as const, targetNodeId, targetPort: 'in' as const }; }

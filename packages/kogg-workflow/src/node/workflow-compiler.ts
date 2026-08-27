@@ -27,8 +27,19 @@ export class WorkflowCompiler {
     const graphDigest = workflowDigest('template', graph);
     const trustSpineDigest = workflowDigest('trust-spine', { schemaVersion: '1', anchors: ANCHORS });
     const catalogDigest = this.catalog.digest;
-    const planBody = { schemaVersion: '1', versionId, graphDigest, catalogDigest, trustSpineDigest, editableNodeIds: graph.nodes.map(node => node.nodeId), anchors: ANCHORS };
+    const planBody = this.planBody(versionId, graphDigest, catalogDigest, trustSpineDigest, graph);
     return { planId: randomUUID(), versionId, planDigest: workflowDigest('compiled-plan', planBody), graphDigest, catalogDigest, trustSpineDigest, editableNodeCount: graph.nodes.length, injectedAnchorCount: ANCHORS.length };
+  }
+
+  assertPlanIntegrity(plan: WorkflowCompiledPlanProjection, graph: EditableWorkflowGraphV1): void {
+    const graphDigest = workflowDigest('template', graph); const catalogDigest = this.catalog.digest;
+    const trustSpineDigest = workflowDigest('trust-spine', { schemaVersion: '1', anchors: ANCHORS });
+    const planDigest = workflowDigest('compiled-plan', this.planBody(plan.versionId, graphDigest, catalogDigest, trustSpineDigest, graph));
+    if (plan.graphDigest !== graphDigest || plan.catalogDigest !== catalogDigest || plan.trustSpineDigest !== trustSpineDigest || plan.planDigest !== planDigest || plan.editableNodeCount !== graph.nodes.length || plan.injectedAnchorCount !== ANCHORS.length) throw new WorkflowValidationError('WORKFLOW_STORE_INTEGRITY');
+  }
+
+  private planBody(versionId: string, graphDigest: string, catalogDigest: string, trustSpineDigest: string, graph: EditableWorkflowGraphV1) {
+    return { schemaVersion: '1', versionId, graphDigest, catalogDigest, trustSpineDigest, editableNodeIds: graph.nodes.map(node => node.nodeId), anchors: ANCHORS };
   }
 
   private check(graph: EditableWorkflowGraphV1): { nodeCount: number; edgeCount: number; rootCount: number } {
