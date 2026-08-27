@@ -13,17 +13,20 @@ import { WorkflowNodeCatalog } from './workflow-node-catalog';
 import { OperationsReadModel } from '@kogg/operations/lib/node/operations-read-model';
 import type { ModeOperationAuthorizer } from '@kogg/interaction-modes/lib/common/interaction-modes-protocol';
 import type { AgentBindingAuthorizer } from '@kogg/agents/lib/common/agents-protocol';
+import type { TaskAdmissionAuthority, TaskAdmissionSnapshot } from '@kogg/tasks/lib/common/tasks-protocol';
 import { WorkflowExecutorRegistry } from './workflow-executor-registry';
 
 // diagnostic-coverage: workflow.schema, workflow.catalog, workflow.graph, workflow.anchors, workflow.authority, workflow.scheduler, workflow.processes, workflow.cleanup, workflow.recovery, workflow.accessibility, workflow.source-maps
 
 const PROJECT = '10000000-0000-4000-8000-000000000001'; const TEMPLATE = '10000000-0000-4000-8000-000000000002'; const TASK = '10000000-0000-4000-8000-000000000003';
+const REPOSITORY = '10000000-0000-4000-8000-000000000004';
 const MODE_AUTHORITY: ModeOperationAuthorizer = {
   async authorizeOperation(request) {
-    return { schemaVersion: 1, allowed: true, safeCode: 'MODE_OK', projection: { schemaVersion: 1, taskId: request.taskId, projectId: PROJECT, repositoryId: '10000000-0000-4000-8000-000000000004', taskRevision: '1', selectedMode: 'kogg', effectiveCapabilities: ['workflow.run-governed'], sequence: '1', state: 'ready', activeStage: 'implementation', safeCode: 'MODE_OK' } };
+    return { schemaVersion: 1, allowed: true, safeCode: 'MODE_OK', projection: { schemaVersion: 1, taskId: request.taskId, projectId: PROJECT, repositoryId: REPOSITORY, taskRevision: '1', selectedMode: 'kogg', effectiveCapabilities: ['workflow.run-governed'], sequence: '1', state: 'ready', activeStage: 'implementation', safeCode: 'MODE_OK' } };
   }
 };
 const AGENT_BINDING_AUTHORITY: AgentBindingAuthorizer = { async authorizeBinding() { return { allowed: true, code: 'AGENT_OK', registryRevision: '1' }; } };
+const TASK_ADMISSION_AUTHORITY: TaskAdmissionAuthority = { async resolveAdmission(taskAdmissionId) { return taskAdmission(taskAdmissionId); } };
 
 test('versions a validated graph immutably and compiles the policy-owned trust spine across restart', async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), 'kogg-workflow-registry-')); const database = path.join(root, 'workflow.sqlite3'); const compiler = workflowCompiler();
@@ -91,12 +94,12 @@ test('refuses startup when an immutable template catalog binding is changed', as
 test('run admission validates the immutable plan and refuses unavailable executors before any run state exists', async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), 'kogg-workflow-admission-')); const database = path.join(root, 'workflow.sqlite3'); const compiler = workflowCompiler();
   try {
-    const registry = new WorkflowRegistry(compiler, MODE_AUTHORITY, AGENT_BINDING_AUTHORITY, database); await registry.onStart();
+    const registry = new WorkflowRegistry(compiler, MODE_AUTHORITY, AGENT_BINDING_AUTHORITY, database); registry.setTaskAdmissionAuthority(TASK_ADMISSION_AUTHORITY); await registry.onStart();
     const saved = await registry.saveVersion({ requestId: '20000000-0000-4000-8000-000000000040', templateId: TEMPLATE, expectedVersionNumber: 0, graph: validGraph() });
     assert.equal(saved.kind, 'completed'); if (saved.kind !== 'completed' || !saved.version) throw new Error('Expected immutable workflow version');
     const compiled = await registry.compile({ requestId: '20000000-0000-4000-8000-000000000041', versionId: saved.version!.versionId });
     assert.equal(compiled.kind, 'completed'); if (compiled.kind !== 'completed' || !compiled.plan) throw new Error('Expected compiled workflow plan');
-    const request = { requestId: '20000000-0000-4000-8000-000000000042', planId: compiled.plan!.planId, taskId: TASK };
+    const request = { requestId: '20000000-0000-4000-8000-000000000042', planId: compiled.plan!.planId, taskAdmissionId: '29000000-0000-4000-8000-000000000001' };
     const refused = await registry.admitRun(request); assert.deepEqual(refused, { kind: 'refused', code: 'WORKFLOW_EXECUTOR_INCOMPATIBLE' });
     assert.deepEqual(await registry.admitRun(request), refused);
     const mismatch = await registry.admitRun({ ...request, planId: '20000000-0000-4000-8000-000000000099' }); assert.equal(mismatch.code, 'WORKFLOW_SCHEMA_INVALID');
@@ -105,29 +108,46 @@ test('run admission validates the immutable plan and refuses unavailable executo
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 
+test('run admission fails closed on missing, stale, or mutated task admission authority without run state', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'kogg-workflow-task-admission-')); const database = path.join(root, 'workflow.sqlite3'); const compiler = workflowCompiler(); let modeCalls = 0; let admission: TaskAdmissionSnapshot | undefined;
+  const modeAuthority: ModeOperationAuthorizer = { async authorizeOperation(request) { modeCalls++; return MODE_AUTHORITY.authorizeOperation(request); } };
+  const taskAuthority: TaskAdmissionAuthority = { async resolveAdmission() { return admission; } };
+  try {
+    const registry = new WorkflowRegistry(compiler, modeAuthority, AGENT_BINDING_AUTHORITY, database); registry.setTaskAdmissionAuthority(taskAuthority); await registry.onStart();
+    const saved = await registry.saveVersion({ requestId: '28000000-0000-4000-8000-000000000001', templateId: '18000000-0000-4000-8000-000000000003', expectedVersionNumber: 0, graph: controlGraph('always') }); if (saved.kind !== 'completed' || !saved.version) throw new Error('Expected immutable control workflow');
+    const compiled = await registry.compile({ requestId: '28000000-0000-4000-8000-000000000002', versionId: saved.version.versionId }); if (compiled.kind !== 'completed' || !compiled.plan) throw new Error('Expected compiled control plan');
+    const missing = await registry.admitRun({ requestId: '28000000-0000-4000-8000-000000000003', planId: compiled.plan.planId, taskAdmissionId: '29000000-0000-4000-8000-000000000010' }); assert.deepEqual(missing, { kind: 'refused', code: 'WORKFLOW_AUTHORITY_EXPANSION' });
+    const staleAdmissionId = '29000000-0000-4000-8000-000000000011'; admission = { ...taskAdmission(staleAdmissionId), expiresAt: '2026-08-27T00:00:00.000Z' };
+    const stale = await registry.admitRun({ requestId: '28000000-0000-4000-8000-000000000004', planId: compiled.plan.planId, taskAdmissionId: staleAdmissionId }); assert.deepEqual(stale, { kind: 'refused', code: 'WORKFLOW_AUTHORITY_EXPANSION' });
+    const mismatchedAdmissionId = '29000000-0000-4000-8000-000000000012'; admission = { ...taskAdmission(mismatchedAdmissionId), projectId: '10000000-0000-4000-8000-000000000099' };
+    const mismatched = await registry.admitRun({ requestId: '28000000-0000-4000-8000-000000000005', planId: compiled.plan.planId, taskAdmissionId: mismatchedAdmissionId }); assert.deepEqual(mismatched, { kind: 'refused', code: 'WORKFLOW_AUTHORITY_EXPANSION' });
+    const store = new DatabaseSync(database); assert.equal((store.prepare('SELECT count(*) AS count FROM workflow_runs').get() as { count: number }).count, 0); assert.equal((store.prepare('SELECT count(*) AS count FROM workflow_outbox').get() as { count: number }).count, 0); store.close(); assert.equal(modeCalls, 0); await registry.onStop();
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
 test('durably dispatches and idempotently completes an exact-attested control-only run with zero processes', async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), 'kogg-workflow-control-run-')); const database = path.join(root, 'workflow.sqlite3'); const compiler = workflowCompiler(); const projection = new OperationsReadModel(path.join(root, 'operations.sqlite3')); projection.start(); projection.registerOwner('workflow');
   try {
-    const registry = new WorkflowRegistry(compiler, MODE_AUTHORITY, AGENT_BINDING_AUTHORITY, database); registry.setOwnerSink(projection); await registry.onStart(); const graph = controlGraph('always');
+    const registry = new WorkflowRegistry(compiler, MODE_AUTHORITY, AGENT_BINDING_AUTHORITY, database); registry.setTaskAdmissionAuthority(TASK_ADMISSION_AUTHORITY); registry.setOwnerSink(projection); await registry.onStart(); const graph = controlGraph('always');
     const saved = await registry.saveVersion({ requestId: '24000000-0000-4000-8000-000000000001', templateId: '14000000-0000-4000-8000-000000000001', expectedVersionNumber: 0, graph }); if (saved.kind !== 'completed' || !saved.version) throw new Error('Expected immutable control workflow');
     const compiled = await registry.compile({ requestId: '24000000-0000-4000-8000-000000000002', versionId: saved.version.versionId }); if (compiled.kind !== 'completed' || !compiled.plan) throw new Error('Expected compiled control plan');
-    const request = { requestId: '24000000-0000-4000-8000-000000000003', planId: compiled.plan.planId, taskId: TASK }; const completed = await registry.admitRun(request);
-    assert.equal(completed.kind, 'completed'); assert.equal(completed.run?.state, 'completed'); assert.equal(completed.run?.completedNodeCount, 2); assert.equal(completed.run?.failedNodeCount, 0); assert.equal(projection.snapshot().runs.find(run => run.runId === completed.run?.runId)?.lifecycle, 'completed'); assert.deepEqual(await registry.admitRun(request), completed);
-    const store = new DatabaseSync(database); assert.equal((store.prepare('SELECT state FROM workflow_runs').get() as { state: string }).state, 'completed'); assert.equal((store.prepare('SELECT safe_code FROM workflow_runs').get() as { safe_code: string }).safe_code, 'WORKFLOW_OK'); assert.equal((store.prepare("SELECT count(*) AS count FROM workflow_node_attempts WHERE state='succeeded'").get() as { count: number }).count, 2); assert.equal((store.prepare("SELECT count(*) AS count FROM workflow_outbox WHERE phase='completed'").get() as { count: number }).count, 2); assert.deepEqual((store.prepare('SELECT event_name FROM workflow_scheduler_events ORDER BY sequence').all() as { event_name: string }[]).map(row => row.event_name), ['run.admitted','run.completed']); store.close(); await registry.onStop();
-    const restarted = new WorkflowRegistry(compiler, MODE_AUTHORITY, AGENT_BINDING_AUTHORITY, database); restarted.setOwnerSink(projection); await restarted.onStart(); assert.deepEqual(await restarted.admitRun(request), completed); const restartedStore = new DatabaseSync(database); assert.equal((restartedStore.prepare('SELECT count(*) AS count FROM workflow_outbox').get() as { count: number }).count, 2); restartedStore.close();
+    const taskAdmissionId = '29000000-0000-4000-8000-000000000002'; const request = { requestId: '24000000-0000-4000-8000-000000000003', planId: compiled.plan.planId, taskAdmissionId }; const completed = await registry.admitRun(request);
+    assert.equal(completed.kind, 'completed'); assert.equal(completed.run?.runId, taskAdmissionId); assert.equal(completed.run?.taskAdmissionId, taskAdmissionId); assert.equal(completed.run?.state, 'completed'); assert.equal(completed.run?.completedNodeCount, 2); assert.equal(completed.run?.failedNodeCount, 0); assert.equal(projection.snapshot().runs.find(run => run.runId === completed.run?.runId)?.lifecycle, 'completed'); assert.deepEqual(await registry.admitRun(request), completed);
+    const store = new DatabaseSync(database); const attestation = store.prepare('SELECT task_admission_id,task_admission_digest,task_id,repository_id,state,safe_code FROM workflow_runs').get() as { task_admission_id: string; task_admission_digest: string; task_id: string; repository_id: string; state: string; safe_code: string }; assert.deepEqual({ taskAdmissionId: attestation.task_admission_id, taskId: attestation.task_id, repositoryId: attestation.repository_id, state: attestation.state, safeCode: attestation.safe_code }, { taskAdmissionId, taskId: TASK, repositoryId: REPOSITORY, state: 'completed', safeCode: 'WORKFLOW_OK' }); assert.match(attestation.task_admission_digest, /^[0-9a-f]{64}$/u); assert.equal((store.prepare("SELECT count(*) AS count FROM workflow_node_attempts WHERE state='succeeded'").get() as { count: number }).count, 2); assert.equal((store.prepare("SELECT count(*) AS count FROM workflow_outbox WHERE phase='completed'").get() as { count: number }).count, 2); assert.deepEqual((store.prepare('SELECT event_name FROM workflow_scheduler_events ORDER BY sequence').all() as { event_name: string }[]).map(row => row.event_name), ['run.admitted','run.completed']); store.close(); await registry.onStop();
+    const restarted = new WorkflowRegistry(compiler, MODE_AUTHORITY, AGENT_BINDING_AUTHORITY, database); restarted.setTaskAdmissionAuthority(TASK_ADMISSION_AUTHORITY); restarted.setOwnerSink(projection); await restarted.onStart(); assert.deepEqual(await restarted.admitRun(request), completed); const restartedStore = new DatabaseSync(database); assert.equal((restartedStore.prepare('SELECT count(*) AS count FROM workflow_outbox').get() as { count: number }).count, 2); restartedStore.close();
     const failingGraph = controlGraph('prior-success', true); const failedSaved = await restarted.saveVersion({ requestId: '24000000-0000-4000-8000-000000000004', templateId: '14000000-0000-4000-8000-000000000002', expectedVersionNumber: 0, graph: failingGraph }); if (failedSaved.kind !== 'completed' || !failedSaved.version) throw new Error('Expected immutable failing workflow');
     const failedCompiled = await restarted.compile({ requestId: '24000000-0000-4000-8000-000000000005', versionId: failedSaved.version.versionId }); if (failedCompiled.kind !== 'completed' || !failedCompiled.plan) throw new Error('Expected compiled failing plan');
-    const failed = await restarted.admitRun({ requestId: '24000000-0000-4000-8000-000000000006', planId: failedCompiled.plan.planId, taskId: TASK }); assert.equal(failed.kind, 'failed'); assert.equal(failed.code, 'WORKFLOW_CONDITION_INVALID'); assert.equal(failed.run?.state, 'failed'); assert.equal(projection.snapshot().runs.find(run => run.runId === failed.run?.runId)?.lifecycle, 'failed'); assert.equal((await restarted.diagnostics()).recoveryBacklogCount, 0); await restarted.onStop();
+    const failed = await restarted.admitRun({ requestId: '24000000-0000-4000-8000-000000000006', planId: failedCompiled.plan.planId, taskAdmissionId: '29000000-0000-4000-8000-000000000003' }); assert.equal(failed.kind, 'failed'); assert.equal(failed.code, 'WORKFLOW_CONDITION_INVALID'); assert.equal(failed.run?.state, 'failed'); assert.equal(projection.snapshot().runs.find(run => run.runId === failed.run?.runId)?.lifecycle, 'failed'); assert.equal((await restarted.diagnostics()).recoveryBacklogCount, 0); await restarted.onStop();
   } finally { projection.stop(); await rm(root, { recursive: true, force: true }); }
 });
 
 test('durably skips the unselected condition branch and resolves its join without dispatch', async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), 'kogg-workflow-branch-run-')); const database = path.join(root, 'workflow.sqlite3'); const compiler = workflowCompiler();
   try {
-    const registry = new WorkflowRegistry(compiler, MODE_AUTHORITY, AGENT_BINDING_AUTHORITY, database); await registry.onStart(); const graph = branchingControlGraph();
+    const registry = new WorkflowRegistry(compiler, MODE_AUTHORITY, AGENT_BINDING_AUTHORITY, database); registry.setTaskAdmissionAuthority(TASK_ADMISSION_AUTHORITY); await registry.onStart(); const graph = branchingControlGraph();
     const saved = await registry.saveVersion({ requestId: '26000000-0000-4000-8000-000000000001', templateId: '16000000-0000-4000-8000-000000000001', expectedVersionNumber: 0, graph }); if (saved.kind !== 'completed' || !saved.version) throw new Error('Expected immutable branching workflow');
     const compiled = await registry.compile({ requestId: '26000000-0000-4000-8000-000000000002', versionId: saved.version.versionId }); if (compiled.kind !== 'completed' || !compiled.plan) throw new Error('Expected compiled branching plan');
-    const completed = await registry.admitRun({ requestId: '26000000-0000-4000-8000-000000000003', planId: compiled.plan.planId, taskId: TASK }); assert.equal(completed.kind, 'completed'); assert.equal(completed.run?.completedNodeCount, 5); assert.equal(completed.run?.skippedNodeCount, 1); assert.equal(completed.run?.failedNodeCount, 0);
+    const completed = await registry.admitRun({ requestId: '26000000-0000-4000-8000-000000000003', planId: compiled.plan.planId, taskAdmissionId: '29000000-0000-4000-8000-000000000004' }); assert.equal(completed.kind, 'completed'); assert.equal(completed.run?.completedNodeCount, 5); assert.equal(completed.run?.skippedNodeCount, 1); assert.equal(completed.run?.failedNodeCount, 0);
     const store = new DatabaseSync(database); assert.equal((store.prepare("SELECT count(*) AS count FROM workflow_node_attempts WHERE state='succeeded' AND routing_state='selected'").get() as { count: number }).count, 5); assert.equal((store.prepare("SELECT count(*) AS count FROM workflow_node_attempts WHERE state='cancelled' AND routing_state='skipped' AND safe_code='WORKFLOW_OK'").get() as { count: number }).count, 1); assert.equal((store.prepare('SELECT count(*) AS count FROM workflow_outbox').get() as { count: number }).count, 5); store.close(); assert.equal((await registry.diagnostics()).schedulerIntegrity, true); await registry.onStop();
   } finally { await rm(root, { recursive: true, force: true }); }
 });
@@ -137,12 +157,12 @@ test('run admission refuses before executor selection when task mode authority o
   const refusedAuthority: ModeOperationAuthorizer = { async authorizeOperation(request) { calls++; assert.equal(request.operation, 'governed-entry'); assert.equal(request.taskId, TASK); if (request.requestId.endsWith('46')) throw new Error('prohibited-authority-detail'); return { schemaVersion: 1, allowed: true, safeCode: 'MODE_OK', projection: { ...(await MODE_AUTHORITY.authorizeOperation(request)).projection, projectId: '10000000-0000-4000-8000-000000000099' } }; } };
   const bindingAuthority: AgentBindingAuthorizer = { async authorizeBinding() { bindingCalls++; return { allowed: true, code: 'AGENT_OK', registryRevision: '1' }; } };
   try {
-    const registry = new WorkflowRegistry(compiler, refusedAuthority, bindingAuthority, database); await registry.onStart();
+    const registry = new WorkflowRegistry(compiler, refusedAuthority, bindingAuthority, database); registry.setTaskAdmissionAuthority(TASK_ADMISSION_AUTHORITY); await registry.onStart();
     const saved = await registry.saveVersion({ requestId: '20000000-0000-4000-8000-000000000043', templateId: TEMPLATE, expectedVersionNumber: 0, graph: validGraph() }); if (saved.kind !== 'completed' || !saved.version) throw new Error('Expected immutable workflow version');
     const compiled = await registry.compile({ requestId: '20000000-0000-4000-8000-000000000044', versionId: saved.version.versionId }); if (compiled.kind !== 'completed' || !compiled.plan) throw new Error('Expected compiled workflow plan');
-    const result = await registry.admitRun({ requestId: '20000000-0000-4000-8000-000000000045', planId: compiled.plan.planId, taskId: TASK });
+    const result = await registry.admitRun({ requestId: '20000000-0000-4000-8000-000000000045', planId: compiled.plan.planId, taskAdmissionId: '29000000-0000-4000-8000-000000000005' });
     assert.deepEqual(result, { kind: 'refused', code: 'WORKFLOW_AUTHORITY_EXPANSION' });
-    const unavailable = await registry.admitRun({ requestId: '20000000-0000-4000-8000-000000000046', planId: compiled.plan.planId, taskId: TASK });
+    const unavailable = await registry.admitRun({ requestId: '20000000-0000-4000-8000-000000000046', planId: compiled.plan.planId, taskAdmissionId: '29000000-0000-4000-8000-000000000006' });
     assert.deepEqual(unavailable, { kind: 'refused', code: 'WORKFLOW_AUTHORITY_EXPANSION' }); assert.equal(calls, 2); assert.equal(bindingCalls, 0); assert.equal((await registry.diagnostics()).recoveryBacklogCount, 0); await registry.onStop();
   } finally { await rm(root, { recursive: true, force: true }); }
 });
@@ -151,12 +171,12 @@ test('run admission resolves every exact agent binding and fails closed before e
   const root = await mkdtemp(path.join(os.tmpdir(), 'kogg-workflow-agent-authority-')); const database = path.join(root, 'workflow.sqlite3'); const compiler = workflowCompiler(); const bindings: Parameters<AgentBindingAuthorizer['authorizeBinding']>[0][] = [];
   const bindingAuthority: AgentBindingAuthorizer = { async authorizeBinding(binding) { bindings.push(binding); if (bindings.length === 2) return { allowed: false, code: 'MODEL_MISMATCH', registryRevision: '7' }; if (bindings.length === 3) throw new Error('prohibited-provider-detail'); return { allowed: true, code: 'AGENT_OK', registryRevision: '7' }; } };
   try {
-    const registry = new WorkflowRegistry(compiler, MODE_AUTHORITY, bindingAuthority, database); await registry.onStart();
+    const registry = new WorkflowRegistry(compiler, MODE_AUTHORITY, bindingAuthority, database); registry.setTaskAdmissionAuthority(TASK_ADMISSION_AUTHORITY); await registry.onStart();
     const saved = await registry.saveVersion({ requestId: '20000000-0000-4000-8000-000000000047', templateId: TEMPLATE, expectedVersionNumber: 0, graph: validGraph() }); if (saved.kind !== 'completed' || !saved.version) throw new Error('Expected immutable workflow version');
     const compiled = await registry.compile({ requestId: '20000000-0000-4000-8000-000000000048', versionId: saved.version.versionId }); if (compiled.kind !== 'completed' || !compiled.plan) throw new Error('Expected compiled workflow plan');
-    const refused = await registry.admitRun({ requestId: '20000000-0000-4000-8000-000000000049', planId: compiled.plan.planId, taskId: TASK }); assert.deepEqual(refused, { kind: 'refused', code: 'WORKFLOW_AUTHORITY_EXPANSION' });
+    const refused = await registry.admitRun({ requestId: '20000000-0000-4000-8000-000000000049', planId: compiled.plan.planId, taskAdmissionId: '29000000-0000-4000-8000-000000000007' }); assert.deepEqual(refused, { kind: 'refused', code: 'WORKFLOW_AUTHORITY_EXPANSION' });
     assert.deepEqual(bindings.slice(0, 2), validGraph().nodes.map(item => { const configuration = item.configuration!; return { roleRevisionId: configuration.roleRevisionId, providerId: configuration.providerId, modelId: configuration.modelId, adapterKey: configuration.adapterKey, adapterVersion: configuration.adapterVersion, deadlinePolicyId: configuration.deadlinePolicyId }; }));
-    const unavailable = await registry.admitRun({ requestId: '20000000-0000-4000-8000-000000000053', planId: compiled.plan.planId, taskId: TASK }); assert.deepEqual(unavailable, { kind: 'refused', code: 'WORKFLOW_AUTHORITY_EXPANSION' }); assert.equal(bindings.length, 3);
+    const unavailable = await registry.admitRun({ requestId: '20000000-0000-4000-8000-000000000053', planId: compiled.plan.planId, taskAdmissionId: '29000000-0000-4000-8000-000000000008' }); assert.deepEqual(unavailable, { kind: 'refused', code: 'WORKFLOW_AUTHORITY_EXPANSION' }); assert.equal(bindings.length, 3);
     const diagnostics = await registry.diagnostics(); assert.equal(diagnostics.activeProcessCount, 0); assert.equal(diagnostics.recoveryBacklogCount, 0); await registry.onStop();
   } finally { await rm(root, { recursive: true, force: true }); }
 });
@@ -164,13 +184,13 @@ test('run admission resolves every exact agent binding and fails closed before e
 test('run admission rechecks the complete trust-spine plan digest and refuses live store tampering', async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), 'kogg-workflow-admission-integrity-')); const database = path.join(root, 'workflow.sqlite3'); const compiler = workflowCompiler();
   try {
-    const registry = new WorkflowRegistry(compiler, MODE_AUTHORITY, AGENT_BINDING_AUTHORITY, database); await registry.onStart();
+    const registry = new WorkflowRegistry(compiler, MODE_AUTHORITY, AGENT_BINDING_AUTHORITY, database); registry.setTaskAdmissionAuthority(TASK_ADMISSION_AUTHORITY); await registry.onStart();
     const saved = await registry.saveVersion({ requestId: '20000000-0000-4000-8000-000000000050', templateId: TEMPLATE, expectedVersionNumber: 0, graph: validGraph() });
     if (saved.kind !== 'completed' || !saved.version) throw new Error('Expected immutable workflow version');
     const compiled = await registry.compile({ requestId: '20000000-0000-4000-8000-000000000051', versionId: saved.version.versionId });
     if (compiled.kind !== 'completed' || !compiled.plan) throw new Error('Expected compiled workflow plan');
     const corrupt = new DatabaseSync(database); corrupt.exec('DROP TRIGGER workflow_immutable_plans_update'); corrupt.prepare('UPDATE compiled_plans SET plan_digest=? WHERE plan_id=?').run('f'.repeat(64), compiled.plan.planId); corrupt.close();
-    const refused = await registry.admitRun({ requestId: '20000000-0000-4000-8000-000000000052', planId: compiled.plan.planId, taskId: TASK });
+    const refused = await registry.admitRun({ requestId: '20000000-0000-4000-8000-000000000052', planId: compiled.plan.planId, taskAdmissionId: '29000000-0000-4000-8000-000000000009' });
     assert.deepEqual(refused, { kind: 'refused', code: 'WORKFLOW_STORE_INTEGRITY' }); assert.equal((await registry.diagnostics()).planMismatchCount, 1); await registry.onStop();
   } finally { await rm(root, { recursive: true, force: true }); }
 });
@@ -236,3 +256,4 @@ function branchingControlGraph(): EditableWorkflowGraphV1 { const configuration 
 function node(nodeId: string, kind: EditableWorkflowNodeV1['kind'], requestedEffects: EditableWorkflowNodeV1['requestedEffects']): EditableWorkflowNodeV1 & { requestedEffects: EditableWorkflowNodeV1['requestedEffects']; retry: EditableWorkflowNodeV1['retry']; configurationDigest: string } { const configuration = kind === 'research.agent' ? { schemaVersion: '1' as const, roleRevisionId: '60000000-0000-4000-8000-000000000001', providerId: 'kogg.fixture', modelId: 'fixture.research', adapterKey: 'kogg.fixture', adapterVersion: '1.0.0', deadlinePolicyId: 'research-v1', absoluteDeadlineMs: 60_000, target: 'project-read-only' as const, condition: 'always' as const } : kind === 'implementation.agent' ? { schemaVersion: '1' as const, roleRevisionId: '60000000-0000-4000-8000-000000000002', providerId: 'kogg.fixture', modelId: 'fixture.echo', adapterKey: 'kogg.fixture', adapterVersion: '1.0.0', deadlinePolicyId: 'interactive-v1', absoluteDeadlineMs: 60_000, target: 'private-worktree' as const, condition: 'always' as const } : undefined; return { nodeId, kind, kindVersion: '1', configurationDigest: configuration ? workflowDigest('node-configuration', configuration) : 'a'.repeat(64), ...(configuration ? { configuration } : {}), requestedEffects, retry: { maxAttempts: 1, backoffMs: 0, sideEffectPolicy: 'none' } }; }
 function edge(edgeId: string, sourceNodeId: string, targetNodeId: string, sourcePort: 'success' | 'failure' | 'finally' | 'true' | 'false' = 'success') { return { edgeId, sourceNodeId, sourcePort, targetNodeId, targetPort: 'in' as const }; }
 function workflowCompiler(): WorkflowCompiler { return new WorkflowCompiler(new WorkflowNodeCatalog(new WorkflowExecutorRegistry())); }
+function taskAdmission(taskAdmissionId: string) { return { taskAdmissionId, taskId: TASK, specificationId: '18000000-0000-4000-8000-000000000001', approvalId: '18000000-0000-4000-8000-000000000002', projectId: PROJECT, repositoryId: REPOSITORY, bindingRevision: '1', registryRevision: '1', taskRevision: '1', runId: taskAdmissionId, authorizedAt: '2026-08-27T00:00:00.000Z', expiresAt: '2099-08-27T00:00:00.000Z' } as const; }
