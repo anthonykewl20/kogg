@@ -8,6 +8,7 @@ import { AgentDiagnosticContributor } from './agent-diagnostic-contributor';
 import { AgentRegistry } from './agent-registry';
 import { FixtureAdapter } from './fixture-adapter';
 import { LocalCredentialLeaseAuthority } from './credential-lease-authority';
+import { AgentOperationsOwnerWiring } from './agent-operations-owner-wiring';
 
 // diagnostic-coverage: agents.adapters, agents.attempts, agents.processes, agents.recovery, agents.logging
 
@@ -18,6 +19,8 @@ export default new ContainerModule(bind => {
   bind(CredentialLeaseAuthority).toService(LocalCredentialLeaseAuthority);
   bind(AgentRegistry).toSelf().inSingletonScope();
   bind(BackendApplicationContribution).toService(AgentRegistry);
+  bind(AgentOperationsOwnerWiring).toSelf().inSingletonScope();
+  bind(BackendApplicationContribution).toService(AgentOperationsOwnerWiring);
   bind(FixtureAdapter).toSelf().inSingletonScope();
   bind(BackendApplicationContribution).toService(FixtureAdapter);
   bind(AgentDiagnosticContributor).toSelf().inSingletonScope();
