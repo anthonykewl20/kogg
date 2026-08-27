@@ -11,14 +11,15 @@ import { MergeAuthorizationRegistry } from './merge-authorization-registry';
 import { VerdictMergeService } from './verdict-merge-service';
 import { VerdictMergeDiagnosticContributor } from './verdict-merge-diagnostic-contributor';
 import { VerdictProjectionAuthority, type UnsealedVerdictExplanationV1 } from './verdict-projection-authority';
+import { OperationsReadModel } from '@kogg/operations/lib/node/operations-read-model';
 
 // diagnostic-coverage: merge.authorization, merge.recovery
 test('creates one short-lived human challenge and records one allow-once authorization', async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), 'kogg-merge-authorization-')); const now = new Date('2026-08-27T00:00:10.000Z');
   const verdicts = new VerdictMergeService(new PassingAuthority(), path.join(root, 'verdict.sqlite3'));
-  const authority = new MergeAuthorizationAuthority(); const registry = new MergeAuthorizationRegistry(verdicts, authority, path.join(root, 'authorization.sqlite3'), () => now);
+  const authority = new MergeAuthorizationAuthority(); const database = path.join(root, 'authorization.sqlite3'); const registry = new MergeAuthorizationRegistry(verdicts, authority, database, () => now); const projection = new OperationsReadModel(path.join(root, 'operations.sqlite3'));
   try {
-    await verdicts.onStart(); await registry.onStart(); const explained = await verdicts.explain(query()); assert.equal(explained.kind, 'completed'); if (explained.kind !== 'completed') throw new Error('expected explanation');
+    projection.start(); projection.registerOwner('merge'); registry.setOwnerSink(projection); await verdicts.onStart(); await registry.onStart(); const explained = await verdicts.explain(query()); assert.equal(explained.kind, 'completed'); if (explained.kind !== 'completed') throw new Error('expected explanation');
     const challengeRequest = { requestId: '30000000-0000-4000-8000-000000000001', explanationId: explained.explanation.explanationId };
     const challenge = await registry.createChallenge(challengeRequest, authority.mint(actor(), mergeAuthorizationScopeDigest('challenge', challengeRequest)));
     assert.equal(challenge.kind, 'created'); if (challenge.kind !== 'created') throw new Error('expected challenge'); assert.equal(challenge.challenge.expiresAt, '2026-08-27T00:01:00.000Z'); assert.equal(challenge.replay, false);
@@ -36,7 +37,9 @@ test('creates one short-lived human challenge and records one allow-once authori
     assert.equal(registry.recoveryCandidates()[0]?.state, 'preflight-pending'); registry.transitionMerge(accepted.intent.mergeId, 'preflighting', 'preflight-pending'); registry.transitionMerge(accepted.intent.mergeId, 'cas-ready', 'preflighting', '9'.repeat(40)); assert.equal(registry.recoveryCandidates()[0]?.expectedMergeOid, '9'.repeat(40));
     const diagnostics = registry.diagnostics(); assert.equal(diagnostics.integrity, true); assert.equal(diagnostics.challengeCount, 1); assert.equal(diagnostics.authorizationCount, 1); assert.equal(diagnostics.authorizationReady, true); assert.equal(diagnostics.sourceMapsPresent, true);
     const runtimeChecks = await new VerdictMergeDiagnosticContributor(verdicts, registry).diagnose(); assert.equal(runtimeChecks.find(check => check.id === 'merge.authorization')?.status, 'pass'); assert.equal(runtimeChecks.find(check => check.id === 'merge.recovery')?.status, 'pass'); assert.equal(runtimeChecks.find(check => check.id === 'merge.source-maps')?.status, 'pass');
-  } finally { registry.onStop(); verdicts.onStop(); await rm(root, { recursive: true, force: true }); }
+    assert.equal(projection.diagnostics().acceptedEventCount, 3); const source = new DatabaseSync(database); const identity = source.prepare('SELECT owner_id,owner_epoch_id FROM merge_owner_meta').get(); assert.equal(JSON.stringify(source.prepare('SELECT event_kind,safe_code,task_id,project_id,merge_id FROM merge_owner_events').all()).includes(query().destinationRef), false); source.close(); registry.onStop();
+    const restarted = new MergeAuthorizationRegistry(verdicts, authority, database, () => now); restarted.setOwnerSink(projection); await restarted.onStart(); assert.equal(projection.diagnostics().acceptedEventCount, 3); const reopened = new DatabaseSync(database); assert.deepEqual(reopened.prepare('SELECT owner_id,owner_epoch_id FROM merge_owner_meta').get(), identity); reopened.exec('DROP TRIGGER merge_owner_events_update'); reopened.prepare("UPDATE merge_owner_events SET safe_code='MERGE_COMPLETED' WHERE sequence=1").run(); reopened.close(); restarted.onStop(); await assert.rejects(new MergeAuthorizationRegistry(verdicts, authority, database, () => now).onStart(), /STORE_INTEGRITY_FAILED/u); projection.stop();
+  } finally { registry.onStop(); verdicts.onStop(); projection.stop(); await rm(root, { recursive: true, force: true }); }
 });
 
 test('refuses wrong digest, changed session, missing gesture, expiry, and corrupted challenge storage', async () => {
