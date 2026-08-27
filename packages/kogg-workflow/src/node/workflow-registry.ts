@@ -134,6 +134,20 @@ export class WorkflowRegistry implements KoggWorkflowService, BackendApplication
 
   async listVersions(templateId: string): Promise<readonly WorkflowTemplateVersionProjection[]> { uuid(templateId); return (this.db().prepare('SELECT * FROM template_versions WHERE template_id=? ORDER BY version_number').all(templateId) as Row[]).map(versionProjection); }
 
+  async listProjectVersions(projectId: string): Promise<readonly WorkflowTemplateVersionProjection[]> {
+    workflowLog('template.list.requested', { projectId: safeId(projectId) });
+    try {
+      uuid(projectId); const versions: WorkflowTemplateVersionProjection[] = [];
+      for (const row of this.db().prepare('SELECT * FROM template_versions ORDER BY created_at,version_number').all() as Row[]) {
+        const graph = this.compiler.decodeAndValidate(JSON.parse(text(row, 'graph_json')) as unknown);
+        if (graph.projectId === projectId) versions.push(versionProjection(row));
+      }
+      workflowLog('template.list.completed', { projectId, versionCount: versions.length }); return versions;
+    } catch (error) {
+      const code = codeOf(error); workflowLog('template.list.refused', { projectId: safeId(projectId), safeCode: code }); throw error;
+    }
+  }
+
   async diagnostics(): Promise<{ integrity: boolean; foreignKeys: boolean; immutableTriggers: boolean; canonicalMismatchCount: number; catalogMismatchCount: number; catalogEntryCount: number; unavailableExecutorCount: number; planMismatchCount: number; versionCount: number; planCount: number; schedulerIntegrity: boolean; ownerIntegrity: boolean; ownerEventCount: number; schedulerLeaseActive: boolean; schedulerAdmission: 'enabled' | 'blocked' | 'recovering'; pendingOutboxCount: number; quarantinedRunCount: number; activeProcessCount: number; residualProcessCount: number; recoveryBacklogCount: number; sourceMapsPresent: boolean }> {
     const db = this.db(); const integrity = text(db.prepare('PRAGMA quick_check').get() as Row, 'quick_check') === 'ok'; const foreignKeys = db.prepare('PRAGMA foreign_key_check').all().length === 0;
     const immutableTriggers = number(db.prepare("SELECT count(*) AS count FROM sqlite_master WHERE type='trigger' AND name LIKE 'workflow_immutable_%'").get() as Row, 'count') === 8;
@@ -141,7 +155,7 @@ export class WorkflowRegistry implements KoggWorkflowService, BackendApplication
     const catalog = this.compiler.catalogStatus();
     const catalogMismatchCount = number(db.prepare('SELECT count(*) AS count FROM template_versions WHERE catalog_digest<>?').get(catalog.digest) as Row, 'count') + number(db.prepare('SELECT count(*) AS count FROM compiled_plans WHERE catalog_digest<>?').get(catalog.digest) as Row, 'count') + (catalog.valid ? 0 : 1);
     let planMismatchCount = 0; for (const row of db.prepare('SELECT * FROM compiled_plans').all() as Row[]) { try { const version = this.version(text(row, 'version_id')); const graph = this.compiler.decodeAndValidate(JSON.parse(text(version, 'graph_json')) as unknown); if (text(row, 'graph_digest') !== text(version, 'graph_digest') || text(row, 'catalog_digest') !== text(version, 'catalog_digest')) throw new WorkflowValidationError('WORKFLOW_STORE_INTEGRITY'); this.compiler.assertPlanIntegrity(plan(row), graph); } catch { /* observability-exempt: aggregate plan mismatch count is the diagnostic signal; plan contents are never logged. */ planMismatchCount++; } }
-    const packageRuntime = path.basename(__filename) === 'workflow-registry.js'; const sourceMapsPresent = existsSync(`${__filename}.map`) && (!packageRuntime || (existsSync(path.join(__dirname, 'workflow-compiler.js.map')) && existsSync(path.join(__dirname, 'workflow-node-catalog.js.map'))));
+    const packageRuntime = path.basename(__filename) === 'workflow-registry.js'; const sourceMapsPresent = existsSync(`${__filename}.map`) && (!packageRuntime || (existsSync(path.join(__dirname, 'workflow-compiler.js.map')) && existsSync(path.join(__dirname, 'workflow-node-catalog.js.map')) && existsSync(path.join(__dirname, '..', 'browser', 'workflow-editor-widget.js.map'))));
     const lease = db.prepare('SELECT phase,admission FROM scheduler_lease WHERE singleton=1').get() as Row | undefined;
     const pendingOutboxCount = number(db.prepare("SELECT count(*) AS count FROM workflow_outbox WHERE phase IN ('requested','claimed')").get() as Row, 'count');
     const quarantinedRunCount = number(db.prepare("SELECT count(*) AS count FROM workflow_runs WHERE state='quarantined'").get() as Row, 'count');

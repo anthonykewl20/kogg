@@ -2,6 +2,7 @@
 // diagnostic-exempt: Pure declarations are covered by the workflow runtime contributors.
 
 export const KoggWorkflowServicePath = '/services/kogg-workflow';
+export const KoggWorkflowService = Symbol('KoggWorkflowService');
 
 export type WorkflowSafeCode = 'WORKFLOW_OK' | 'WORKFLOW_SCHEMA_INVALID' | 'WORKFLOW_VERSION_CONFLICT'
   | 'WORKFLOW_CATALOG_MISMATCH' | 'WORKFLOW_GRAPH_INVALID' | 'WORKFLOW_CYCLE' | 'WORKFLOW_PORT_INVALID'
@@ -16,6 +17,7 @@ export type WorkflowSafeCode = 'WORKFLOW_OK' | 'WORKFLOW_SCHEMA_INVALID' | 'WORK
 export type EditableNodeKind = 'research.agent' | 'pseudocode.agent' | 'probe.agent' | 'implementation.agent'
   | 'tool.git' | 'tool.build' | 'check.deterministic' | 'approval.specification' | 'approval.continue'
   | 'control.condition' | 'control.parallel' | 'control.join' | 'control.group' | 'control.finally';
+export const EDITABLE_NODE_KINDS: readonly EditableNodeKind[] = ['research.agent','pseudocode.agent','probe.agent','implementation.agent','tool.git','tool.build','check.deterministic','approval.specification','approval.continue','control.condition','control.parallel','control.join','control.group','control.finally'];
 export type WorkflowAuthorityEffect = 'read-repository' | 'mutate-private-repository' | 'run-tool'
   | 'invoke-provider' | 'record-approval' | 'record-check';
 export type EdgeOutcome = 'success' | 'failure' | 'finally' | 'true' | 'false';
@@ -82,4 +84,5 @@ export interface KoggWorkflowService {
   compile(input: { readonly requestId: string; readonly versionId: string }): Promise<WorkflowMutationResult>;
   admitRun(input: { readonly requestId: string; readonly planId: string }): Promise<WorkflowMutationResult>;
   listVersions(templateId: string): Promise<readonly WorkflowTemplateVersionProjection[]>;
+  listProjectVersions(projectId: string): Promise<readonly WorkflowTemplateVersionProjection[]>;
 }

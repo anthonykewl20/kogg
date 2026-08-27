@@ -87,6 +87,10 @@ try {
     if (process.env.KOGG_E2E_OPERATIONS_ONLY === '1') {
         await exerciseElectronOperations(page, application);
         process.stdout.write('Kogg Electron operations-stream E2E passed.\n');
+    } else if (process.env.KOGG_E2E_WORKFLOW_ONLY === '1') {
+        await exerciseElectronProjects(page, application);
+        await exerciseElectronWorkflowEditor(page, application);
+        process.stdout.write('Kogg Electron workflow-editor E2E passed.\n');
     } else {
     // Exercise a real editor save before Git actions. This activates filesystem
     // and repository watchers through the same path a person uses on a clean
@@ -347,6 +351,31 @@ async function exerciseElectronTasks(page, electronApplication) {
     await openCommand(page, 'View: Toggle Kogg Tasks', electronApplication);
     await tasks.getByRole('button', { name: /Revoke approval/u }).click();
     assert.equal(logs.join('\n').includes(canary), false);
+}
+
+async function exerciseElectronWorkflowEditor(page, electronApplication) {
+    let widget = page.locator('.kogg-workflow-editor-widget:visible').first();
+    if (!await widget.count()) {
+        await openCommand(page, 'View: Toggle Kogg Workflow Editor', electronApplication);
+        widget = page.locator('.kogg-workflow-editor-widget:visible').first();
+    }
+    await widget.getByText('Structured workflow outline ready.').waitFor({ timeout: 15_000 });
+    assert.equal(await widget.locator('[data-workflow-node]').count(), 2);
+    await widget.getByLabel('Node kind').selectOption('check.deterministic');
+    await widget.getByRole('button', { name: 'Add node' }).click();
+    await widget.getByRole('button', { name: 'Move check.deterministic up' }).click();
+    await widget.getByRole('button', { name: 'Validate workflow' }).click();
+    await widget.getByText(/Workflow valid: 3 nodes and 2 edges/u).waitFor({ timeout: 10_000 });
+    await widget.getByRole('button', { name: 'Save immutable version' }).click();
+    await widget.getByText('Workflow version 1 saved immutably.').waitFor({ timeout: 10_000 });
+    await widget.getByRole('button', { name: 'Compile current version' }).click();
+    await widget.getByText(/Compiled plan [0-9a-f]{8} with 9 mandatory anchors/u).waitFor({ timeout: 10_000 });
+    await page.reload({ waitUntil: 'domcontentloaded' });
+    await page.locator('body.kogg-application').waitFor({ timeout: 20_000 });
+    widget = page.locator('.kogg-workflow-editor-widget:visible').filter({ hasText: 'Workflow version 1 is current.' }).first();
+    await widget.waitFor({ state: 'visible', timeout: 15_000 });
+    assert.match(logs.join('\n'), /\[kogg:workflow:editor\] ui\.operation\.completed/u);
+    assert.doesNotMatch(await widget.innerText(), /configurationDigest|requestedEffects|graphDigest|catalogDigest/u);
 }
 
 async function exerciseElectronInteractionModes(page) {
