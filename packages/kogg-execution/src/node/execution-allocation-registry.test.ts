@@ -390,7 +390,7 @@ function binding(): ExecutionBindingV1 {
   const digest = `sha256:${'a'.repeat(64)}`;
   return {
     schemaVersion: 1, projectId: '10000000-0000-4000-8000-000000000001', projectRevision: '1',
-    repositoryId: '10000000-0000-4000-8000-000000000002', repositoryBindingRevision: '1',
+    repositoryId: '10000000-0000-4000-8000-000000000002', repositoryBindingRevision: '1', repositoryIdentityDigest: digest,
     taskId: '10000000-0000-4000-8000-000000000003', taskRevisionId: '10000000-0000-4000-8000-000000000004',
     taskRevisionDigest: digest, approvalDigest: digest, runId: '10000000-0000-4000-8000-000000000005',
     attemptId: '10000000-0000-4000-8000-000000000006', workflowPlanDigest: digest, baseCommit: 'b'.repeat(40),

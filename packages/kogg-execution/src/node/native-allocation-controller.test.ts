@@ -91,7 +91,7 @@ async function fakeHelper(mode: 'success' | 'refusal' | 'cleanup-refusal'): Prom
 function allocationRequest(): ReserveExecutionAllocationV1 {
   const digest = `sha256:${'a'.repeat(64)}`;
   return { requestId: '60000000-0000-4000-8000-000000000001', quotaBytes: '1073741824', quotaInodes: '100000', binding: {
-    schemaVersion: 1, projectId: '60000000-0000-4000-8000-000000000002', projectRevision: '1', repositoryId: '60000000-0000-4000-8000-000000000003', repositoryBindingRevision: '1',
+    schemaVersion: 1, projectId: '60000000-0000-4000-8000-000000000002', projectRevision: '1', repositoryId: '60000000-0000-4000-8000-000000000003', repositoryBindingRevision: '1', repositoryIdentityDigest: digest,
     taskId: '60000000-0000-4000-8000-000000000004', taskRevisionId: '60000000-0000-4000-8000-000000000005', taskRevisionDigest: digest, approvalDigest: digest,
     runId: '60000000-0000-4000-8000-000000000006', attemptId: '60000000-0000-4000-8000-000000000007', workflowPlanDigest: digest,
     baseCommit: 'b'.repeat(40), baseTree: 'c'.repeat(40), gitObjectFormat: 'sha1', targetId: 'local-qualified-linux', qualificationId: '60000000-0000-4000-8000-000000000008',

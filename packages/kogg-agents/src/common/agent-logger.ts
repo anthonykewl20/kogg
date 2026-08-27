@@ -19,6 +19,8 @@ export interface AgentLogFields {
   'workspace.authorization.requested': { attemptId: string; roleRevisionId: string; taskId: string; projectId: string };
   'workspace.authorization.approved': { attemptId: string; worktreeId: string; roleRevisionId: string; taskId: string; projectId: string; safeCode: AgentSafeCode };
   'workspace.authorization.refused': { attemptId: string; roleRevisionId: string; taskId: string; projectId: string; safeCode: AgentSafeCode };
+  'workspace.activation.completed': { attemptId: string; worktreeId: string; safeCode: AgentSafeCode };
+  'workspace.finalization.completed': { attemptId: string; worktreeId: string; outcome: 'completed' | 'failed' | 'cancelled' | 'timed-out'; safeCode: AgentSafeCode };
   'attempt.admitted': { requestId: string; attemptId: string; roleRevisionId: string; projectId: string; taskId: string; runId?: string; worktreeId?: string; safeCode: AgentSafeCode };
   'attempt.refused': { requestId?: string; attemptId: string; roleRevisionId: string; projectId: string; taskId: string; safeCode: AgentSafeCode };
   'adapter.resolved': { attemptId: string; adapterKey: string; adapterVersion: string; protocolId: string; protocolVersion: string; providerId: string; modelId: string };
@@ -71,6 +73,8 @@ const SCHEMAS: Record<AgentLogEvent, Schema> = {
   'workspace.authorization.requested': schema('registry', 'debug', ['attemptId', 'roleRevisionId', 'taskId', 'projectId']),
   'workspace.authorization.approved': schema('registry', 'info', ['attemptId', 'worktreeId', 'roleRevisionId', 'taskId', 'projectId', 'safeCode']),
   'workspace.authorization.refused': schema('registry', 'warn', ['attemptId', 'roleRevisionId', 'taskId', 'projectId', 'safeCode']),
+  'workspace.activation.completed': schema('registry', 'info', ['attemptId', 'worktreeId', 'safeCode']),
+  'workspace.finalization.completed': schema('registry', 'info', ['attemptId', 'worktreeId', 'outcome', 'safeCode']),
   'attempt.admitted': schema('registry', 'info', ['requestId', 'attemptId', 'roleRevisionId', 'projectId', 'taskId', 'safeCode'], ['runId', 'worktreeId']),
   'attempt.refused': schema('registry', 'warn', ['attemptId', 'roleRevisionId', 'projectId', 'taskId', 'safeCode'], ['requestId']),
   'adapter.resolved': schema('adapter', 'info', ['attemptId', 'adapterKey', 'adapterVersion', 'protocolId', 'protocolVersion', 'providerId', 'modelId']),

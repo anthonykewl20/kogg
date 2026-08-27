@@ -16,6 +16,13 @@ type Fields = {
   'workspace.allocated': { eventVersion: 1; requestId: string; projectId: string; runId: string; attemptId: string; worktreeId: string };
   'workspace.seeded': { eventVersion: 1; requestId: string; projectId: string; runId: string; attemptId: string; worktreeId: string };
   'workspace.ready': { eventVersion: 1; requestId: string; projectId: string; runId: string; attemptId: string; worktreeId: string };
+  'workspace.leased': { eventVersion: 1; requestId: string; projectId: string; runId: string; attemptId: string; worktreeId: string };
+  'workspace.activation.requested': { eventVersion: 1; requestId: string; attemptId: string; worktreeId: string };
+  'workspace.activation.completed': { eventVersion: 1; requestId: string; attemptId: string; worktreeId: string };
+  'workspace.activation.refused': { eventVersion: 1; requestId: string; attemptId: string; worktreeId: string; safeCode: string; errorType: string };
+  'workspace.finalization.requested': { eventVersion: 1; requestId: string; attemptId: string; worktreeId: string; outcome: string };
+  'workspace.finalization.completed': { eventVersion: 1; requestId: string; attemptId: string; worktreeId: string; outcome: string };
+  'workspace.finalization.failed': { eventVersion: 1; requestId: string; attemptId: string; worktreeId: string; outcome: string; safeCode: string; errorType: string };
   'workspace.prepare.refused': { eventVersion: 1; requestId: string; projectId: string; runId: string; attemptId: string; safeCode: string; errorType: string };
   'workspace.cleanup.started': { eventVersion: 1; requestId: string; worktreeId: string };
   'workspace.cleanup.completed': { eventVersion: 1; requestId: string; worktreeId: string };
@@ -51,6 +58,13 @@ const ALLOWED: { [K in keyof Fields]: readonly (keyof Fields[K])[] } = {
   'workspace.allocated': ['eventVersion', 'requestId', 'projectId', 'runId', 'attemptId', 'worktreeId'],
   'workspace.seeded': ['eventVersion', 'requestId', 'projectId', 'runId', 'attemptId', 'worktreeId'],
   'workspace.ready': ['eventVersion', 'requestId', 'projectId', 'runId', 'attemptId', 'worktreeId'],
+  'workspace.leased': ['eventVersion', 'requestId', 'projectId', 'runId', 'attemptId', 'worktreeId'],
+  'workspace.activation.requested': ['eventVersion', 'requestId', 'attemptId', 'worktreeId'],
+  'workspace.activation.completed': ['eventVersion', 'requestId', 'attemptId', 'worktreeId'],
+  'workspace.activation.refused': ['eventVersion', 'requestId', 'attemptId', 'worktreeId', 'safeCode', 'errorType'],
+  'workspace.finalization.requested': ['eventVersion', 'requestId', 'attemptId', 'worktreeId', 'outcome'],
+  'workspace.finalization.completed': ['eventVersion', 'requestId', 'attemptId', 'worktreeId', 'outcome'],
+  'workspace.finalization.failed': ['eventVersion', 'requestId', 'attemptId', 'worktreeId', 'outcome', 'safeCode', 'errorType'],
   'workspace.prepare.refused': ['eventVersion', 'requestId', 'projectId', 'runId', 'attemptId', 'safeCode', 'errorType'],
   'workspace.cleanup.started': ['eventVersion', 'requestId', 'worktreeId'],
   'workspace.cleanup.completed': ['eventVersion', 'requestId', 'worktreeId'],
