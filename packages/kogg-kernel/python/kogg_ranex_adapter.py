@@ -10,7 +10,7 @@ import re
 import struct
 import sys
 import unicodedata
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -20,7 +20,7 @@ from ranex.governed_execution.adapters.persistence.sqlite.journal import Journal
 
 PROTOCOL = "kogg.ranex/v2"
 PROTOCOL_VERSION = 2
-SCHEMA_SET_DIGEST = "sha256:9a45373309b74bfdd6cd2390fd3a553433123ab63da321788a2554b8f9655307"
+SCHEMA_SET_DIGEST = "sha256:76be6566aef1a98cb5a18c0133c63043ddd42d804c995809d4cbb6145dc77622"
 MAX_FRAME_BYTES = 1024 * 1024
 MAX_DEPTH = 32
 MAX_MEMBERS = 4096
@@ -28,7 +28,7 @@ MAX_PENDING_REQUESTS = 64
 MAX_PENDING_RESPONSE_BYTES = 4 * 1024 * 1024
 DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
 UUID = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$")
-IMPLEMENTED_OPERATIONS = {"kernel.handshake": 2, "kernel.health": 1, "execution.qualify": 1, "task.bind": 1, "producer.dispatch": 1, "suite.freeze": 1, "suite.execute": 1}
+IMPLEMENTED_OPERATIONS = {"kernel.handshake": 2, "kernel.health": 1, "execution.qualify": 1, "task.bind": 1, "producer.dispatch": 1, "suite.freeze": 1, "suite.execute": 1, "evidence.admit": 1}
 SYMBOLIC = re.compile(r"^[a-z0-9][a-z0-9._:-]{0,127}$")
 CHECK_KINDS = {"build", "unit", "integration", "visible-e2e", "observability", "diagnostics", "source-maps", "process-cleanup", "ranex-evidence"}
 
@@ -517,6 +517,102 @@ def _execute_suite(request: dict[str, Any], body: dict[str, Any]) -> tuple[dict[
     return projection, {"sequence": str(len(committed)), "rootDigest": root}
 
 
+def _evidence_manifest(value: Any) -> dict[str, Any]:
+    evidence = _closed(value, {
+        "evidenceId", "claimType", "subjectStateDigest", "taskBindingDigest", "producerBindingDigest",
+        "suiteDigest", "checkDefinitionDigest", "checkExecutionDigest", "resultArtifactDigest",
+        "authorityDigest", "ranexProvenanceDigest", "createdAt",
+    })
+    _uuid(evidence["evidenceId"])
+    if not isinstance(evidence["claimType"], str) or not SYMBOLIC.fullmatch(evidence["claimType"]):
+        raise ProtocolRefusal("KERNEL_EVIDENCE_INVALID")
+    for field in (
+        "subjectStateDigest", "taskBindingDigest", "producerBindingDigest", "suiteDigest", "checkDefinitionDigest",
+        "checkExecutionDigest", "resultArtifactDigest", "authorityDigest", "ranexProvenanceDigest",
+    ):
+        _sha256(evidence[field])
+    _timestamp(evidence["createdAt"])
+    return evidence
+
+
+def _admit_evidence(request: dict[str, Any], body: dict[str, Any]) -> tuple[dict[str, Any], dict[str, str]]:
+    try:
+        closed = _closed(body, {"currentSubject", "evidence", "evidenceDigest"})
+    except ProtocolRefusal as error:
+        raise ProtocolRefusal("KERNEL_EVIDENCE_INVALID") from error
+    evidence = _evidence_manifest(closed["evidence"])
+    current_subject = _repository_state(closed["currentSubject"])
+    evidence_digest = _domain_digest("evidence", evidence)
+    if closed["evidenceDigest"] != evidence_digest or evidence["subjectStateDigest"] != _domain_digest("repository-state", current_subject):
+        raise ProtocolRefusal("KERNEL_SUBJECT_STALE")
+    provenance = _provenance()
+    expected_provenance = _domain_digest("ranex-provenance", {
+        "commit": provenance["commit"], "schemaSetDigest": SCHEMA_SET_DIGEST, "tree": provenance["tree"],
+    })
+    if evidence["ranexProvenanceDigest"] != expected_provenance:
+        raise ProtocolRefusal("KERNEL_PROVENANCE_MISMATCH")
+    journal = Journal(_journal_path())
+    try:
+        if not _journal_path().is_file() or not journal.verify():
+            raise ProtocolRefusal("KERNEL_JOURNAL_INTEGRITY")
+        records = journal.entries()
+    except ProtocolRefusal:
+        raise
+    except Exception as error:
+        raise ProtocolRefusal("KERNEL_JOURNAL_INTEGRITY") from error
+    if any(not isinstance(record, dict) for record in records):
+        raise ProtocolRefusal("KERNEL_JOURNAL_INTEGRITY")
+    tasks = [record for record in records if record.get("kind") == "kogg.task-binding.v1" and record.get("bindingDigest") == evidence["taskBindingDigest"]]
+    producers = [record for record in records if record.get("kind") == "kogg.producer-binding.v1" and record.get("bindingDigest") == evidence["producerBindingDigest"]]
+    suites = [record for record in records if record.get("kind") == "kogg.frozen-suite.v1" and record.get("suiteDigest") == evidence["suiteDigest"]]
+    executions = [record for record in records if record.get("kind") == "kogg.check-execution.v1" and record.get("executionDigest") == evidence["checkExecutionDigest"]]
+    if any(len(matches) > 1 for matches in (tasks, producers, suites, executions)):
+        raise ProtocolRefusal("KERNEL_JOURNAL_AMBIGUOUS")
+    if any(len(matches) != 1 for matches in (tasks, producers, suites, executions)):
+        raise ProtocolRefusal("KERNEL_EVIDENCE_MISSING")
+    task = tasks[0].get("binding"); producer = producers[0].get("binding")
+    suite = suites[0].get("suite"); execution = executions[0].get("execution")
+    if not all(isinstance(value, dict) for value in (task, producer, suite, execution)):
+        raise ProtocolRefusal("KERNEL_JOURNAL_INTEGRITY")
+    if producer["taskBindingDigest"] != evidence["taskBindingDigest"] or suite["taskBindingDigest"] != evidence["taskBindingDigest"]:
+        raise ProtocolRefusal("KERNEL_EVIDENCE_CONFLICT")
+    if execution["suiteDigest"] != evidence["suiteDigest"] or execution["checkDefinitionDigest"] != evidence["checkDefinitionDigest"]:
+        raise ProtocolRefusal("KERNEL_EVIDENCE_CONFLICT")
+    if execution["resultArtifactDigest"] != evidence["resultArtifactDigest"] or _domain_digest("repository-state", execution["subjectState"]) != evidence["subjectStateDigest"]:
+        raise ProtocolRefusal("KERNEL_EVIDENCE_STALE")
+    if suite["verifierAuthorityDigest"] != evidence["authorityDigest"] or execution["outcome"] not in {"pass", "fail"}:
+        raise ProtocolRefusal("KERNEL_EVIDENCE_INVALID")
+    created_at = datetime.strptime(evidence["createdAt"], "%Y-%m-%dT%H:%M:%S.%fZ")
+    if created_at < datetime.strptime(execution["finishedAt"], "%Y-%m-%dT%H:%M:%S.%fZ") or created_at > datetime.utcnow() + timedelta(seconds=5):
+        raise ProtocolRefusal("KERNEL_EVIDENCE_STALE")
+    same_id = [record for record in records if record.get("kind") == "kogg.evidence.v1" and isinstance(record.get("evidence"), dict) and record["evidence"].get("evidenceId") == evidence["evidenceId"]]
+    if same_id and any(record.get("evidenceDigest") != evidence_digest for record in same_id):
+        raise ProtocolRefusal("KERNEL_EVIDENCE_CONFLICT")
+    prior = [record for record in records if record.get("kind") == "kogg.evidence.v1" and record.get("idempotencyKey") == request["idempotencyKey"]]
+    if len(prior) > 1 or len(same_id) > 1:
+        raise ProtocolRefusal("KERNEL_JOURNAL_AMBIGUOUS")
+    projection = {"claimType": evidence["claimType"], "evidenceDigest": evidence_digest, "evidenceId": evidence["evidenceId"]}
+    if prior:
+        if prior[0].get("bodyDigest") != request["bodyDigest"] or prior[0].get("evidenceDigest") != evidence_digest:
+            raise ProtocolRefusal("KERNEL_IDEMPOTENCY_CONFLICT")
+        return projection, _journal_position(records, records.index(prior[0]) + 1)
+    if same_id:
+        raise ProtocolRefusal("KERNEL_EVIDENCE_DUPLICATE")
+    fact = {
+        "kind": "kogg.evidence.v1", "idempotencyKey": request["idempotencyKey"], "bodyDigest": request["bodyDigest"],
+        "evidenceDigest": evidence_digest, "evidence": evidence,
+    }
+    try:
+        root = journal.append(_KernelFact(fact)); committed = journal.entries()
+        if not journal.verify() or not committed or committed[-1] != fact:
+            raise ProtocolRefusal("KERNEL_JOURNAL_INTEGRITY")
+    except ProtocolRefusal:
+        raise
+    except Exception as error:
+        raise ProtocolRefusal("KERNEL_JOURNAL_INTEGRITY") from error
+    return projection, {"sequence": str(len(committed)), "rootDigest": root}
+
+
 def _capabilities() -> dict[str, Any]:
     provenance = _provenance()
     qualified = platform.system() == "Linux"
@@ -625,6 +721,8 @@ def _dispatch(request: dict[str, Any]) -> tuple[dict[str, Any], dict[str, str] |
         return _freeze_suite(request, body)
     if operation == "suite.execute":
         return _execute_suite(request, body)
+    if operation == "evidence.admit":
+        return _admit_evidence(request, body)
     raise ProtocolRefusal("KERNEL_CAPABILITY_UNAVAILABLE")
 
 

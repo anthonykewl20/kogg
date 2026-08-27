@@ -96,7 +96,9 @@ test('kills and records controller Git commands that exceed the closed output li
   const registry = new OperationRegistry(); await registry.onStart();
   try {
     const operation = await registry.startOperation({ kind: 'worktree' }); operation.start(); operation.active();
-    const runner = new ControllerGitRunner(binary, { home, globalConfig, templateDirectory }, 1_000, 2_000, 8);
+    // Preserve the output-limit assertion under full-suite CPU contention: the
+    // fixture emits immediately, while these deadlines only bound a broken test.
+    const runner = new ControllerGitRunner(binary, { home, globalConfig, templateDirectory }, 5_000, 10_000, 8);
     await assert.rejects(() => runner.run(operation, 'private-verify', root, runner.protectedArguments(['rev-parse', '--verify', 'HEAD'])),
       (error: unknown) => error instanceof GitRunError && error.code === 'GIT_SEED_OUTPUT_LIMIT');
     await operation.cleanup(); operation.fail('PROCESS_EXIT_NONZERO', 'GitRunError');
