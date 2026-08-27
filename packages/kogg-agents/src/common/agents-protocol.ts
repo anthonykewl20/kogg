@@ -6,6 +6,7 @@ export const KoggAgentsServicePath = '/services/kogg-agents';
 export const KoggAgentsService = Symbol('KoggAgentsService');
 export const KoggAdapterRegistry = Symbol('KoggAdapterRegistry');
 export const CredentialLeaseAuthority = Symbol('CredentialLeaseAuthority');
+export const KoggAgentBindingAuthorizer = Symbol('KoggAgentBindingAuthorizer');
 
 export type Decimal = string;
 export type AttemptState = 'requested' | 'admitted' | 'adapter_resolved' | 'registered' | 'starting' | 'ready' | 'active'
@@ -72,6 +73,9 @@ export interface AdapterAttemptBindingV1 {
   readonly repositoryBindingRevision: Decimal; readonly specificationId: string; readonly approvalId: string; readonly runId: string;
   readonly roleRevisionId: string; readonly deadlinePolicyId: string; readonly providerId: string; readonly modelId: string;
 }
+export interface AgentBindingAuthorizationRequestV1 { readonly roleRevisionId: string; readonly providerId: string; readonly modelId: string; readonly adapterKey: string; readonly adapterVersion: string; readonly deadlinePolicyId: string; }
+export interface AgentBindingAuthorizationResultV1 { readonly allowed: boolean; readonly code: AgentSafeCode; readonly registryRevision: Decimal; }
+export interface AgentBindingAuthorizer { authorizeBinding(request: AgentBindingAuthorizationRequestV1): Promise<AgentBindingAuthorizationResultV1>; }
 export interface AgentAdapterFactory { readonly descriptor: AdapterDescriptorV1; create(input: { readonly binding: AdapterAttemptBindingV1; readonly operation: OperationLease; readonly credentialLease: OpaqueCredentialLease; readonly onObservation: (observation: AdapterObservationV1) => void }): AgentAdapterSession; }
 export interface AdapterRegistryApi { register(factory: AgentAdapterFactory): void; descriptors(): readonly AdapterDescriptorV1[]; resolveExact(input: { adapterKey: string; adapterVersion: string; providerId: string; modelId: string; requiredCapabilities: readonly string[] }): AgentAdapterFactory; }
 export interface KoggAgentsService { snapshot(): Promise<AgentRegistrySnapshot>; subscribe(): Promise<AgentRegistrySnapshot>; listAttempts(): Promise<readonly AttemptProjectionV1[]>; getAttempt(attemptId: string): Promise<AttemptProjectionV1>; listRoleRevisions(): Promise<readonly RoleRevisionV1[]>; createRoleRevision(request: CreateRoleRevisionRequestV1): Promise<AgentMutationResult>; startAttempt(request: StartAttemptRequestV1): Promise<AgentMutationResult>; cancelAttempt(request: CancelAttemptRequestV1): Promise<AgentMutationResult>; }

@@ -40,6 +40,12 @@ test('runs a real supervised fixture host through completion and proves cleanup'
   } finally { await registry.onStop(); if (prior === undefined) delete process.env.KOGG_STATE_DIR; else process.env.KOGG_STATE_DIR = prior; await rm(directory, { recursive: true, force: true }); }
 });
 
+test('authoritatively resolves exact immutable workflow role/provider/adapter bindings without dispatch', async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), 'kogg-agents-binding-')); const prior = process.env.KOGG_STATE_DIR; process.env.KOGG_STATE_DIR = directory; const adapters = new AdapterRegistry(); const registry = new AgentRegistry({ resolveAdmission: async () => ADMISSION }, new TestOperations(), adapters, new LocalCredentialLeaseAuthority()); const fixture = new FixtureAdapter(adapters);
+  try { await registry.onStart(); fixture.onStart(); const role = await registry.createRoleRevision(roleRequest('20000000-0000-4000-8000-000000000090', '0')); assert.ok(role.role); const request = { roleRevisionId: role.role.roleRevisionId, providerId: 'kogg.fixture', modelId: 'fixture.echo', adapterKey: 'kogg.fixture', adapterVersion: '1.0.0', deadlinePolicyId: 'interactive-v1' }; assert.deepEqual(await registry.authorizeBinding(request), { allowed: true, code: 'AGENT_OK', registryRevision: role.registryRevision }); assert.equal((await registry.snapshot()).attempts.length, 0); assert.equal((await registry.authorizeBinding({ ...request, modelId: 'fixture.other' })).code, 'MODEL_MISMATCH'); assert.equal((await registry.authorizeBinding({ ...request, roleRevisionId: '60000000-0000-4000-8000-000000000099' })).code, 'ROLE_NOT_FOUND'); }
+  finally { await registry.onStop(); if (prior === undefined) delete process.env.KOGG_STATE_DIR; else process.env.KOGG_STATE_DIR = prior; await rm(directory, { recursive: true, force: true }); }
+});
+
 test('publishes restart-safe adapter owner facts into the operations projection', async () => {
   const directory = await mkdtemp(path.join(os.tmpdir(), 'kogg-agents-owner-')); const prior = process.env.KOGG_STATE_DIR; process.env.KOGG_STATE_DIR = directory;
   const authority: TaskAdmissionAuthority = { resolveAdmission: async () => ADMISSION }; const adapters = new AdapterRegistry(); const projection = new OperationsReadModel(path.join(directory, 'operations.sqlite3')); projection.onStart(); projection.registerOwner('adapter');
@@ -274,6 +280,7 @@ class TestOperations implements OperationRegistryApi {
   async snapshot() { return { schemaVersion: 1 as const, revision: 1, admission: 'enabled' as const, active: [], recent: [] }; }
   async cancel() { return this.snapshot(); }
   async recoveryResult() { return { status: this.recoveryStatus }; }
+  async processExecutionAttestation() { return undefined; }
   diagnostics() { return { integrity: true, foreignKeys: true, permissions: true, recoveryComplete: true, activeCount: 0, stalledCount: 0, residualCount: 0, cleanupFailureCount: 0, admission: 'enabled' as const }; }
 }
 class TestProcess implements ProcessLease { cleaned = false; constructor(readonly input: StartProcess) {} readonly id = crypto.randomUUID(); spawning(): void {} started(): void {} ready(): void {} activity(): void {} failed(): void {} exited(): void {} cleanup(): void { this.cleaned = true; } }
