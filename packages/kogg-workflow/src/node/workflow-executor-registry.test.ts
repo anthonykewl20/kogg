@@ -18,9 +18,9 @@ test('resolves the exact attested control artifact and executes deterministic pr
   assert.deepEqual(registry.execute({ runId: RUN, node, attempt: 1, predecessorOutcomes: ['failure'] }, binding), { kind: 'completed', code: 'WORKFLOW_OK', output: 'false', processCount: 0, residualProcessCount: 0 });
 });
 
-test('refuses forged artifacts, digest tampering, incomplete joins, and unavailable side-effecting nodes', () => {
+test('exact-attests supervised agent dispatch while refusing forged artifacts, digest tampering, and incomplete joins', () => {
   const registry = new WorkflowExecutorRegistry(); const binding = registry.binding('control.join')!;
-  assert.throws(() => registry.resolveExact('control.join', { ...binding, artifactDigest: 'f'.repeat(64) }), /WORKFLOW_EXECUTOR_INCOMPATIBLE/u); assert.equal(registry.binding('implementation.agent'), undefined);
+  assert.throws(() => registry.resolveExact('control.join', { ...binding, artifactDigest: 'f'.repeat(64) }), /WORKFLOW_EXECUTOR_INCOMPATIBLE/u); const agentBinding = registry.binding('implementation.agent'); assert.ok(agentBinding); assert.equal(registry.resolveExact('implementation.agent', agentBinding).executionKind, 'supervised-registry'); assert.equal(registry.binding('tool.build'), undefined);
   const join: EditableWorkflowNodeV1 = { nodeId: NODE, kind: 'control.join', kindVersion: '1', configurationDigest: 'a'.repeat(64), requestedEffects: [], retry: { maxAttempts: 1, backoffMs: 0, sideEffectPolicy: 'none' } };
   assert.deepEqual(registry.execute({ runId: RUN, node: join, attempt: 1, predecessorOutcomes: ['success','skipped'] }, binding), { kind: 'completed', code: 'WORKFLOW_OK', output: 'success', processCount: 0, residualProcessCount: 0 });
   assert.deepEqual(registry.execute({ runId: RUN, node: join, attempt: 1, predecessorOutcomes: ['success'] }, binding), { kind: 'refused', code: 'WORKFLOW_JOIN_AMBIGUOUS', processCount: 0, residualProcessCount: 0 });

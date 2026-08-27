@@ -3,36 +3,42 @@ import type { EditableNodeKind, EditableWorkflowNodeV1, EdgeOutcome, WorkflowSaf
 import { workflowDigest } from '../common/workflow-canonical';
 import { workflowLog } from './workflow-logger';
 
-// Executes only process-free control transitions; external and state-changing nodes remain unavailable in the closed catalog.
+// Attests deterministic controls and supervised agent dispatch; direct execution here remains limited to process-free controls.
 // diagnostic-coverage: workflow.catalog, workflow.scheduler, workflow.processes, workflow.cleanup, workflow.source-maps
 
 export interface WorkflowExecutorAttestationV1 {
-  readonly schemaVersion: '1'; readonly executorId: 'kogg.workflow.control'; readonly executorVersion: '1.0.0';
-  readonly executionKind: 'in-process-deterministic'; readonly ownerKind: 'workflow'; readonly artifactDigest: string;
+  readonly schemaVersion: '1'; readonly executorId: 'kogg.workflow.control' | 'kogg.agents.registry'; readonly executorVersion: '1.0.0';
+  readonly executionKind: 'in-process-deterministic' | 'supervised-registry'; readonly ownerKind: 'workflow' | 'kogg'; readonly artifactDigest: string;
   readonly supportedKinds: readonly EditableNodeKind[];
 }
 export interface WorkflowExecutorBindingV1 { readonly executorId: string; readonly executorVersion: string; readonly artifactDigest: string; }
 export interface WorkflowControlExecutionRequestV1 { readonly runId: string; readonly node: EditableWorkflowNodeV1; readonly attempt: number; readonly predecessorOutcomes: readonly ('success' | 'failure' | 'skipped')[]; }
 export interface WorkflowControlExecutionResultV1 { readonly kind: 'completed' | 'refused'; readonly code: WorkflowSafeCode; readonly output?: EdgeOutcome; readonly processCount: 0; readonly residualProcessCount: 0; }
 
-const SUPPORTED: readonly EditableNodeKind[] = Object.freeze(['control.condition','control.parallel','control.join','control.group','control.finally']);
-const CONTRACT = { schemaVersion: '1', executorId: 'kogg.workflow.control', executorVersion: '1.0.0', executionKind: 'in-process-deterministic', ownerKind: 'workflow', supportedKinds: SUPPORTED, semantics: { condition: ['always','prior-success','prior-failure'], passiveOutput: 'success', joinMinimumPredecessors: 2, processCount: 0 } } as const;
-const ATTESTATION: WorkflowExecutorAttestationV1 = Object.freeze({ ...CONTRACT, artifactDigest: workflowDigest('executor-artifact', CONTRACT) });
+const CONTROL_KINDS: readonly EditableNodeKind[] = Object.freeze(['control.condition','control.parallel','control.join','control.group','control.finally']);
+const AGENT_KINDS: readonly EditableNodeKind[] = Object.freeze(['research.agent','pseudocode.agent','probe.agent','implementation.agent']);
+const CONTROL_CONTRACT = { schemaVersion: '1', executorId: 'kogg.workflow.control', executorVersion: '1.0.0', executionKind: 'in-process-deterministic', ownerKind: 'workflow', supportedKinds: CONTROL_KINDS, semantics: { condition: ['always','prior-success','prior-failure'], passiveOutput: 'success', joinMinimumPredecessors: 2, processCount: 0 } } as const;
+const AGENT_CONTRACT = { schemaVersion: '1', executorId: 'kogg.agents.registry', executorVersion: '1.0.0', executionKind: 'supervised-registry', ownerKind: 'kogg', supportedKinds: AGENT_KINDS, semantics: { taskAdmission: 'exact', roleBinding: 'exact', ownership: 'agent-registry', terminalCleanup: 'required' } } as const;
+const ATTESTATIONS: readonly WorkflowExecutorAttestationV1[] = Object.freeze([
+  Object.freeze({ ...CONTROL_CONTRACT, artifactDigest: workflowDigest('executor-artifact', CONTROL_CONTRACT) }),
+  Object.freeze({ ...AGENT_CONTRACT, artifactDigest: workflowDigest('executor-artifact', AGENT_CONTRACT) })
+]);
 
 @injectable()
 export class WorkflowExecutorRegistry {
-  attestations(): readonly WorkflowExecutorAttestationV1[] { return [ATTESTATION]; }
-  binding(kind: EditableNodeKind): WorkflowExecutorBindingV1 | undefined { return SUPPORTED.includes(kind) ? pickBinding(ATTESTATION) : undefined; }
+  attestations(): readonly WorkflowExecutorAttestationV1[] { return ATTESTATIONS; }
+  binding(kind: EditableNodeKind): WorkflowExecutorBindingV1 | undefined { const attestation = ATTESTATIONS.find(item => item.supportedKinds.includes(kind)); return attestation ? pickBinding(attestation) : undefined; }
   resolveExact(kind: EditableNodeKind, binding: WorkflowExecutorBindingV1): WorkflowExecutorAttestationV1 {
-    if (!SUPPORTED.includes(kind) || binding.executorId !== ATTESTATION.executorId || binding.executorVersion !== ATTESTATION.executorVersion || binding.artifactDigest !== ATTESTATION.artifactDigest) throw new WorkflowExecutorError('WORKFLOW_EXECUTOR_INCOMPATIBLE');
-    return ATTESTATION;
+    const attestation = ATTESTATIONS.find(item => item.supportedKinds.includes(kind));
+    if (!attestation || binding.executorId !== attestation.executorId || binding.executorVersion !== attestation.executorVersion || binding.artifactDigest !== attestation.artifactDigest) throw new WorkflowExecutorError('WORKFLOW_EXECUTOR_INCOMPATIBLE');
+    return attestation;
   }
   execute(request: WorkflowControlExecutionRequestV1, binding: WorkflowExecutorBindingV1): WorkflowControlExecutionResultV1 {
     const fields = { runId: safeId(request.runId), nodeId: safeId(request.node.nodeId), nodeKind: request.node.kind, attempt: safeAttempt(request.attempt), executorId: binding.executorId };
     workflowLog('node.execution.started', fields);
     try {
       if (fields.runId === 'invalid' || fields.nodeId === 'invalid' || fields.attempt === 0) throw new WorkflowExecutorError('WORKFLOW_SCHEMA_INVALID');
-      this.resolveExact(request.node.kind, binding);
+      const attestation = this.resolveExact(request.node.kind, binding); if (attestation.executionKind !== 'in-process-deterministic') throw new WorkflowExecutorError('WORKFLOW_EXECUTOR_INCOMPATIBLE');
       if (request.node.configuration && workflowDigest('node-configuration', request.node.configuration) !== request.node.configurationDigest) throw new WorkflowExecutorError('WORKFLOW_STORE_INTEGRITY');
       const output = transition(request);
       const result = { kind: 'completed', code: 'WORKFLOW_OK', output, processCount: 0, residualProcessCount: 0 } as const;

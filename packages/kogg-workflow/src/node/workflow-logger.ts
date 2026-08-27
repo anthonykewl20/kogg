@@ -19,7 +19,7 @@ type Fields = {
   'run.admission.refused': { requestId: string; planId: string; taskAdmissionId: string; safeCode: WorkflowSafeCode; unavailableExecutorCount: number };
   'run.admitted': { requestId: string; planId: string; taskAdmissionId: string; runId: string; nodeCount: number };
   'run.completed': { planId: string; runId: string; completedNodeCount: number; skippedNodeCount: number; safeCode: 'WORKFLOW_OK'; processCount: 0; residualProcessCount: 0 };
-  'run.failed': { planId: string; runId: string; completedNodeCount: number; skippedNodeCount: number; failedNodeCount: number; safeCode: WorkflowSafeCode; processCount: 0; residualProcessCount: 0 };
+  'run.failed': { planId: string; runId: string; completedNodeCount: number; skippedNodeCount: number; failedNodeCount: number; safeCode: WorkflowSafeCode; processCount: 0; residualProcessCount: number };
   'node.execution.started': { runId: string; nodeId: string; nodeKind: string; attempt: number; executorId: string };
   'node.execution.completed': { runId: string; nodeId: string; nodeKind: string; attempt: number; executorId: string; output: string; safeCode: WorkflowSafeCode; processCount: number; residualProcessCount: number };
   'node.execution.refused': { runId: string; nodeId: string; nodeKind: string; attempt: number; executorId: string; safeCode: WorkflowSafeCode; processCount: number; residualProcessCount: number };
