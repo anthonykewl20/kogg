@@ -72,7 +72,7 @@ export class MergeAuthorizationRegistry implements BackendApplicationContributio
       console.info('[kogg:merge:authorization] challenge.requested', { requestId, explanationId: request.explanationId });
       const now = this.clock(); const binding = await this.verdicts.currentAuthorizationBinding(request.explanationId, now);
       if (!binding) return this.refusedChallenge(requestId, 'VERDICT_UNKNOWN');
-      if (binding.explanation.gateRows.some(row => prefixed(row.producerRoleDigest) === actor.authorizerRoleDigest || prefixed(row.verifierRoleDigest) === actor.authorizerRoleDigest)) return this.refusedChallenge(requestId, 'IDENTITY_SEPARATION_INVALID');
+      if (binding.explanation.gateRows.some(row => (row.producerRoleDigest !== null && prefixed(row.producerRoleDigest) === actor.authorizerRoleDigest) || prefixed(row.verifierRoleDigest) === actor.authorizerRoleDigest)) return this.refusedChallenge(requestId, 'IDENTITY_SEPARATION_INVALID');
       const expiresAt = new Date(Math.min(Date.parse(binding.explanation.expiresAt), now.getTime() + 120_000));
       if (expiresAt.getTime() <= now.getTime()) return this.refusedChallenge(requestId, 'AUTHORIZATION_EXPIRED');
       const exactBindingsDigest = prefixed(verdictMergeDigest('authorization', {
