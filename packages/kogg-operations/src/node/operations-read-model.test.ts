@@ -182,6 +182,7 @@ test('routes exact cancel authority once without optimistic lifecycle mutation',
     const operations = { async cancel(request: { requestId: string; operationId: string }) { calls++; assert.equal(request.operationId, operationId); return { schemaVersion: 1, revision: 1, admission: 'enabled', active: [], recent: [] }; } } as unknown as OperationRegistryApi;
     const router = new OperationsActionRouter(fixture.model, operations); const request = { requestId: randomUUID(), action: 'cancel' as const, runId, operationId, expectedProjectionSequence: fixture.model.snapshot().changeSequence };
     const first = await router.request(request); assert.equal(first.status, 'forwarded'); assert.equal(first.safeCode, 'ACTION_OWNER_ACCEPTED');
+    assert.deepEqual(router.diagnostics(), { cancelRouteAvailable: true, unsynchronizedOutcomeCount: 0 });
     assert.equal(fixture.model.snapshot().runs[0]?.lifecycle, 'active');
     assert.deepEqual(await router.request(request), first); assert.equal(calls, 1);
     await assert.rejects(router.request({ ...request, action: 'retry' }), /ACTION_REQUEST_REPLAY_MISMATCH/u);
@@ -198,6 +199,7 @@ test('keeps failed owner action outcome unknown and never retries it automatical
     const router = new OperationsActionRouter(fixture.model, operations); const request = { requestId: randomUUID(), action: 'cancel' as const, runId, operationId, expectedProjectionSequence: fixture.model.snapshot().changeSequence };
     await assert.rejects(router.request(request), /transport lost/u); const replay = await router.request(request);
     assert.equal(replay.status, 'unknown'); assert.equal(replay.safeCode, 'ACTION_OUTCOME_UNKNOWN'); assert.equal(calls, 1);
+    assert.deepEqual(router.diagnostics(), { cancelRouteAvailable: true, unsynchronizedOutcomeCount: 1 });
   } finally { await fixture.close(); }
 });
 

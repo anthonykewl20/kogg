@@ -15,6 +15,11 @@ export class OperationsActionRouter {
   constructor(@inject(OperationsReadModel) private readonly projection: OperationsReadModel,
     @inject(KoggOperationRegistry) private readonly operations: OperationRegistryApi) {}
 
+  diagnostics(): { readonly cancelRouteAvailable: boolean; readonly unsynchronizedOutcomeCount: number } {
+    const projection = this.projection.actionDiagnostics();
+    return { cancelRouteAvailable: typeof this.operations.cancel === 'function', unsynchronizedOutcomeCount: projection.unsynchronizedOutcomeCount };
+  }
+
   async request(request: OperationsActionRequestV1): Promise<OperationsActionReceiptV1> {
     validate(request); const digest = createHash('sha256').update(JSON.stringify([request.action, request.runId, request.operationId ?? null, request.expectedProjectionSequence])).digest('hex');
     const replay = this.projection.actionReceipt(request.requestId);

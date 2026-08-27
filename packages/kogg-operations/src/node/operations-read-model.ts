@@ -322,6 +322,11 @@ export class OperationsReadModel implements BackendApplicationContribution {
     return row ? { requestId: String(row.request_id), action: String(row.action_kind) as OperationsActionReceiptV1['action'], runId: String(row.run_id), status: String(row.status) as OperationsActionReceiptV1['status'], safeCode: String(row.safe_code) } : undefined;
   }
 
+  actionDiagnostics(): { readonly unsynchronizedOutcomeCount: number } {
+    this.start();
+    return { unsynchronizedOutcomeCount: this.count("SELECT count(*) AS count FROM action_requests WHERE status='unknown'") };
+  }
+
   recordAction(request: OperationsActionRequestV1, requestDigest: string, status: OperationsActionReceiptV1['status'], safeCode: string): OperationsActionReceiptV1 {
     this.start(); const prior = this.db().prepare('SELECT request_digest FROM action_requests WHERE request_id=?').get(request.requestId) as Row | undefined;
     if (prior && String(prior.request_digest) !== requestDigest) throw new ProjectionFault('ACTION_REQUEST_REPLAY_MISMATCH');
