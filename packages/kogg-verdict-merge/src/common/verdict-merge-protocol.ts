@@ -4,6 +4,7 @@ export const KoggVerdictMergeServicePath = '/services/kogg-verdict-merge';
 export type VerdictMergeSafeCode = 'VERDICT_OK' | 'VERDICT_FAIL' | 'VERDICT_BLOCKED' | 'VERDICT_STALE' | 'VERDICT_UNKNOWN'
   | 'RANEX_PROVENANCE_INVALID' | 'JOURNAL_INVALID' | 'BINDING_MISMATCH' | 'IDENTITY_SEPARATION_INVALID'
   | 'AUTHORIZATION_OK' | 'AUTHORIZATION_REQUIRED' | 'AUTHORIZATION_EXPIRED' | 'AUTHORIZATION_REPLAY' | 'REQUEST_CONFLICT'
+  | 'MERGE_PREFLIGHT_PENDING' | 'MERGE_ALREADY_REQUESTED'
   | 'STORE_INTEGRITY_FAILED' | 'PROTOCOL_INVALID' | 'INTERNAL_FAILURE';
 export interface VerdictQueryV1 {
   readonly queryId: string; readonly requestId: string; readonly taskId: string; readonly taskRevisionId: string;
@@ -21,4 +22,7 @@ export interface MergeChallengeProjectionV1 { readonly challengeId: string; read
 export interface MergeAuthorizationProjectionV1 { readonly authorizationId: string; readonly challengeId: string; readonly explanationDigest: string; readonly exactBindingsDigest: string; readonly state: 'authorized'; readonly recordedAt: string; readonly expiresAt: string; }
 export type MergeChallengeResultV1 = { readonly kind: 'created'; readonly safeCode: 'AUTHORIZATION_REQUIRED'; readonly challenge: MergeChallengeProjectionV1; readonly replay: boolean } | { readonly kind: 'refused'; readonly safeCode: VerdictMergeSafeCode };
 export type MergeAuthorizationResultV1 = { readonly kind: 'authorized'; readonly safeCode: 'AUTHORIZATION_OK'; readonly authorization: MergeAuthorizationProjectionV1; readonly replay: boolean } | { readonly kind: 'refused'; readonly safeCode: VerdictMergeSafeCode };
+export interface MergeExecuteRequestV1 { readonly requestId: string; readonly authorizationId: string; }
+export interface MergeIntentProjectionV1 { readonly mergeId: string; readonly authorizationId: string; readonly destinationRef: string; readonly expectedOldOid: string; readonly subjectOid: string; readonly expectedTreeOid: string; readonly mergePolicyId: 'local-two-parent-no-ff-v1'; readonly state: 'preflight-pending'; readonly createdAt: string; }
+export type MergeExecuteResultV1 = { readonly kind: 'accepted'; readonly safeCode: 'MERGE_PREFLIGHT_PENDING'; readonly intent: MergeIntentProjectionV1; readonly replay: boolean } | { readonly kind: 'refused'; readonly safeCode: VerdictMergeSafeCode };
 export interface KoggVerdictMergeService { explain(input: unknown): Promise<VerdictExplanationResultV1>; }

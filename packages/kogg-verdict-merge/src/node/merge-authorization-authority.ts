@@ -33,7 +33,7 @@ export class MergeAuthorizationAuthority {
   }
 }
 
-export function mergeAuthorizationScopeDigest(domain: 'challenge' | 'authorize', value: unknown): string {
+export function mergeAuthorizationScopeDigest(domain: 'challenge' | 'authorize' | 'execute', value: unknown): string {
   return `sha256:${createHash('sha256').update(`kogg:merge-authorization:${domain}:v1\0${canonicalJson(value)}`).digest('hex')}`;
 }
 export function mergeNonceDigest(): string { return `sha256:${createHash('sha256').update(randomBytes(32)).digest('hex')}`; }
