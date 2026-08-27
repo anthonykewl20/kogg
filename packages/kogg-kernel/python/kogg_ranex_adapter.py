@@ -7,6 +7,7 @@ import json
 import os
 import platform
 import sys
+import uuid
 from pathlib import Path
 from typing import Any
 
@@ -29,6 +30,7 @@ COMMANDS = [
     "task.merge",
     "task.delegate",
     "task.fanout",
+    "execution.qualify",
 ]
 
 
@@ -53,7 +55,6 @@ def _schema_fingerprints() -> dict[str, str]:
 
 def _capabilities() -> dict[str, Any]:
     provenance = _provenance()
-    qualified = platform.system() == "Linux"
     return {
         "protocol": PROTOCOL,
         "protocolVersion": PROTOCOL_VERSION,
@@ -62,9 +63,9 @@ def _capabilities() -> dict[str, Any]:
         "schemaFingerprints": _schema_fingerprints(),
         "commands": COMMANDS,
         "qualifiedProviders": [],
-        "confinement": "qualified" if qualified else "degraded",
-        "degradationReasons": [] if qualified else [
-            "strict Ranex confinement requires a qualified Linux host"
+        "confinement": "unavailable",
+        "degradationReasons": [
+            "the pinned Ranex revision has no qualified writable-agent profile"
         ],
     }
 
@@ -145,6 +146,36 @@ def _evaluate(params: dict[str, Any]) -> dict[str, Any]:
     return result.as_record()
 
 
+def _execution_qualification(params: dict[str, Any]) -> dict[str, Any]:
+    target_id = params.get("targetId")
+    if not isinstance(target_id, str) or not target_id or len(target_id.encode("utf-8")) > 128:
+        raise ValueError("target identity is invalid")
+    # The pinned Ranex revision has no writable-agent profile implementation. Returning a
+    # closed refusal prevents Linux alone from being misrepresented as qualification.
+    return {
+        "schemaVersion": 1,
+        "qualificationId": str(uuid.uuid4()),
+        "targetId": target_id,
+        "architecture": "amd64",
+        "profileId": "kogg-writable-agent-v1",
+        "profileDigest": "sha256:" + "0" * 64,
+        "bootIdDigest": "sha256:" + "0" * 64,
+        "kernelRelease": platform.release()[:128],
+        "landlockAbi": "0",
+        "cgroupProfileDigest": "sha256:" + "0" * 64,
+        "mountQuotaDigest": "sha256:" + "0" * 64,
+        "launcherDigest": "sha256:" + "0" * 64,
+        "bubblewrapDigest": "sha256:" + "0" * 64,
+        "seccompDigest": "sha256:" + "0" * 64,
+        "brokerDigest": "sha256:" + "0" * 64,
+        "ranexCommit": _provenance()["commit"],
+        "checkedAt": "1970-01-01T00:00:00.000Z",
+        "expiresAt": "1970-01-01T00:00:00.000Z",
+        "status": "refused",
+        "refusalCodes": ["QUALIFICATION_PROFILE_UNAVAILABLE"],
+    }
+
+
 def _dispatch(method: str, params: dict[str, Any]) -> Any:
     if method == "handshake":
         return _handshake(params)
@@ -156,6 +187,8 @@ def _dispatch(method: str, params: dict[str, Any]) -> Any:
         return _list_verdicts()
     if method == "evaluate":
         return _evaluate(params)
+    if method == "execution.qualify":
+        return _execution_qualification(params)
     if method == "shutdown":
         return {"stopping": True}
     raise ValueError("unsupported kernel method")

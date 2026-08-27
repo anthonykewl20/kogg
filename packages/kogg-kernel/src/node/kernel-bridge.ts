@@ -6,6 +6,7 @@ import {
   KernelBridge,
   KernelCapabilities,
   KernelEvaluationRequest,
+  KernelExecutionQualification,
   KernelHealth,
   KOGG_RANEX_COMMIT,
   KOGG_RANEX_PROTOCOL,
@@ -146,6 +147,10 @@ export class KernelBridgeImpl implements KernelBridge {
 
   evaluate(evaluation: KernelEvaluationRequest): Promise<Record<string, unknown>> {
     return this.request<Record<string, unknown>>('evaluate', evaluation);
+  }
+
+  qualifyExecution(targetId: string): Promise<KernelExecutionQualification> {
+    return this.request<KernelExecutionQualification>('execution.qualify', { targetId });
   }
 
   verifyJournal(): Promise<{ readonly valid: boolean; readonly reason?: string }> {

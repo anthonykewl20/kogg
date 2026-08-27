@@ -22,6 +22,14 @@
     { "id": "tasks.registry", "owner": "kogg-tasks", "description": "The task registry schema, integrity, permissions, immutable triggers, and writer state are valid." },
     { "id": "tasks.revisions", "owner": "kogg-tasks", "description": "Task specification revisions and canonical digests verify successfully." },
     { "id": "tasks.bindings", "owner": "kogg-tasks", "description": "Task repository bindings remain current and available." },
-    { "id": "tasks.approvals", "owner": "kogg-tasks", "description": "Current task approvals match immutable frozen revisions." }
+    { "id": "tasks.approvals", "owner": "kogg-tasks", "description": "Current task approvals match immutable frozen revisions." },
+    { "id": "execution.target-qualification", "owner": "kogg-execution", "description": "The exact writable-agent Linux target profile is current and qualified." },
+    { "id": "execution.worktree-registry", "owner": "kogg-execution", "description": "Private execution allocation records and filesystem identities agree." },
+    { "id": "execution.git-independence", "owner": "kogg-execution", "description": "Every private run repository is independent from registered source Git authority." },
+    { "id": "execution.source-integrity", "owner": "kogg-execution", "description": "Registered source repositories remain unchanged across governed execution." },
+    { "id": "execution.process-cleanup", "owner": "kogg-execution", "description": "Every execution process scope is registered and has zero hidden or residual descendants." },
+    { "id": "execution.capacity", "owner": "kogg-execution", "description": "Execution byte, inode, process, CPU, memory, and time reservations are within policy." },
+    { "id": "execution.recovery", "owner": "kogg-execution", "description": "Execution startup reconciliation completed without an unknown or unowned resource." },
+    { "id": "execution.source-maps", "owner": "kogg-execution", "description": "Execution backend and owner failure branches retain debugger-ready source maps." }
   ]
 }

@@ -9,6 +9,7 @@
     "@kogg/marketplace": "0.1.0",
     "@kogg/operations": "0.1.0",
     "@kogg/projects": "0.1.0",
+    "@kogg/execution": "0.1.0",
     "@kogg/providers": "0.1.0",
     "@kogg/tasks": "0.1.0",
     "@theia/core": "1.74.1",

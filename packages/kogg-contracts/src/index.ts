@@ -40,12 +40,36 @@ export interface KernelEvaluationRequest {
   readonly suiteManifest?: Record<string, unknown>;
 }
 
+export interface KernelExecutionQualification {
+  readonly schemaVersion: 1;
+  readonly qualificationId: string;
+  readonly targetId: string;
+  readonly architecture: 'amd64';
+  readonly profileId: 'kogg-writable-agent-v1';
+  readonly profileDigest: string;
+  readonly bootIdDigest: string;
+  readonly kernelRelease: string;
+  readonly landlockAbi: string;
+  readonly cgroupProfileDigest: string;
+  readonly mountQuotaDigest: string;
+  readonly launcherDigest: string;
+  readonly bubblewrapDigest: string;
+  readonly seccompDigest: string;
+  readonly brokerDigest: string;
+  readonly ranexCommit: typeof KOGG_RANEX_COMMIT;
+  readonly checkedAt: string;
+  readonly expiresAt: string;
+  readonly status: 'qualified' | 'refused';
+  readonly refusalCodes: readonly string[];
+}
+
 export interface KernelBridge {
   start(): Promise<KernelCapabilities>;
   handshake(): Promise<KernelCapabilities>;
   health(): Promise<KernelHealth>;
   capabilities(): Promise<KernelCapabilities>;
   evaluate(request: KernelEvaluationRequest): Promise<Record<string, unknown>>;
+  qualifyExecution(targetId: string): Promise<KernelExecutionQualification>;
   verifyJournal(): Promise<{ readonly valid: boolean; readonly reason?: string }>;
   listVerdicts(): Promise<readonly Record<string, unknown>[]>;
   shutdown(): Promise<void>;
