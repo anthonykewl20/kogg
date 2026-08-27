@@ -37,7 +37,9 @@ class FixtureSession implements AgentAdapterSession {
       lines.on('line', line => { try { const observation = parseObservation(line); if (observation.kind === 'ready') this.process?.ready(); else this.process?.activity(); this.input.onObservation(observation); } catch (error) { /* observability-exempt: closed agentLog emits the sanitized invalid-observation boundary before rejection. */ agentLog('adapter.observation.refused', { attemptId: this.input.binding.attemptId, resourceId: this.resourceId, safeCode: 'ADAPTER_OBSERVATION_INVALID', errorType: error instanceof Error ? error.name : 'UnknownError' }); reject(error); } });
       child.stderr.resume();
       child.once('error', error => { this.process?.failed('PROCESS_SPAWN_FAILED', error.name); reject(new FixtureAdapterError('ADAPTER_HOST_EXITED')); });
-      child.once('exit', (code, signal) => { this.process?.exited(signal ? 'signal' : code === 0 ? 'zero' : 'nonzero'); agentLog('adapter.host.exited', { attemptId: this.input.binding.attemptId, resourceId: this.resourceId, exitClass: signal ? 'signal' : code === 0 ? 'zero' : 'nonzero' }); if (code === 0 || signal) resolve(); else reject(new FixtureAdapterError('ADAPTER_HOST_EXITED')); });
+      child.once('exit', (code, signal) => { this.process?.exited(signal ? 'signal' : code === 0 ? 'zero' : 'nonzero'); agentLog('adapter.host.exited', { attemptId: this.input.binding.attemptId, resourceId: this.resourceId, exitClass: signal ? 'signal' : code === 0 ? 'zero' : 'nonzero' }); });
+      // Child `close` follows stdio closure, so every complete stdout line reaches the lifecycle reducer before host settlement on every platform.
+      child.once('close', (code, signal) => { if (code === 0 || signal) resolve(); else reject(new FixtureAdapterError('ADAPTER_HOST_EXITED')); });
     });
     return this.settled;
   }
