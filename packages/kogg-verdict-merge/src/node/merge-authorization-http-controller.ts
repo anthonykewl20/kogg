@@ -2,7 +2,7 @@ import { BrowserAuthContribution, BrowserMutationAuthorizationError } from '@kog
 import { BackendApplicationContribution } from '@theia/core/lib/node';
 import { Application, json, type Request, type Response } from '@theia/core/shared/express';
 import { inject, injectable } from '@theia/core/shared/inversify';
-import type { MergeAuthorizeRequestV1, MergeChallengeRequestV1 } from '../common/verdict-merge-protocol';
+import type { MergeAuthorizeRequestV1, MergeChallengeRequestV1, MergeExecuteRequestV1 } from '../common/verdict-merge-protocol';
 import { MergeAuthorizationAuthority, mergeAuthorizationScopeDigest } from './merge-authorization-authority';
 import { MergeAuthorizationError, MergeAuthorizationRegistry } from './merge-authorization-registry';
 
@@ -21,7 +21,20 @@ export class MergeAuthorizationHttpController implements BackendApplicationContr
     app.use('/kogg/merge/authorization', json({ limit: '8kb', strict: true }));
     app.post('/kogg/merge/authorization/challenge', (request, response) => void this.challenge(request, response));
     app.post('/kogg/merge/authorization/authorize', (request, response) => void this.authorize(request, response));
+    app.post('/kogg/merge/authorization/execute', (request, response) => void this.execute(request, response));
     console.info('[kogg:merge:authorization-http] controller.enabled');
+  }
+
+  private async execute(httpRequest: Request, response: Response): Promise<void> {
+    try {
+      const request = httpRequest.body as MergeExecuteRequestV1; const actor = this.browserAuth.verifyMutation(httpRequest);
+      const context = this.authority.mint(actor, mergeAuthorizationScopeDigest('execute', request));
+      const result = await this.registry.createIntent(request, context); response.status(result.kind === 'accepted' ? 202 : 409).json(result);
+      console.info('[kogg:merge:authorization-http] consumption.completed', { requestId: request.requestId, authorizationId: request.authorizationId, safeCode: result.safeCode });
+    } catch (error) {
+      // observability-exempt: failure() emits the bounded consumption failure before returning a closed response.
+      this.failure(response, error, 'consumption.failed');
+    }
   }
 
   private async challenge(httpRequest: Request, response: Response): Promise<void> {
@@ -48,7 +61,7 @@ export class MergeAuthorizationHttpController implements BackendApplicationContr
     }
   }
 
-  private failure(response: Response, error: unknown, event: 'challenge.failed' | 'authorization.failed'): void {
+  private failure(response: Response, error: unknown, event: 'challenge.failed' | 'authorization.failed' | 'consumption.failed'): void {
     const safeCode = error instanceof BrowserMutationAuthorizationError ? error.code : error instanceof MergeAuthorizationError ? error.safeCode : 'INTERNAL_FAILURE';
     const status = error instanceof BrowserMutationAuthorizationError ? (error.code === 'authentication_required' ? 401 : 403) : error instanceof MergeAuthorizationError && error.safeCode === 'PROTOCOL_INVALID' ? 400 : 503;
     console.error('[kogg:merge:authorization-http]', event, { safeCode, errorType: error instanceof Error ? error.name : 'UnknownError' }); response.status(status).json({ error: safeCode });
