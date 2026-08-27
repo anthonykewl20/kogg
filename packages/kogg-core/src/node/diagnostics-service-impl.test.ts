@@ -7,7 +7,7 @@ import { DatabaseSync } from 'node:sqlite';
 import test from 'node:test';
 import type { ContributionProvider } from '@theia/core/lib/common/contribution-provider';
 import type { KoggDiagnosticContributor } from '@kogg/contracts';
-import type { OperationRegistryApi } from '@kogg/operations/lib/common/operations-protocol';
+import type { OperationRegistryApi, StartOperation } from '@kogg/operations/lib/common/operations-protocol';
 import { KoggDiagnosticsServiceImpl } from './diagnostics-service-impl';
 import { DiagnosticOwnerJournal } from './diagnostic-owner-journal';
 import { OperationsReadModel } from '@kogg/operations/lib/node/operations-read-model';
@@ -41,12 +41,15 @@ test('diagnostics aggregate failures and export a redacted private support bundl
     { id: 'broken', async diagnose() { throw new Error('sensitive failure body'); } }
   ];
   const provider = { getContributions: () => contributors } as ContributionProvider<KoggDiagnosticContributor>;
+  const startedOperations: StartOperation[] = [];
   const operations = {
-    startOperation: async () => ({
-      id: 'diagnostics-test-operation', cancellable: false, start() {}, active() {}, waiting() {}, activity() {}, refuse() {},
+    startOperation: async (input: StartOperation) => {
+      startedOperations.push(input);
+      return {
+      id: input.id!, cancellable: false, start() {}, active() {}, waiting() {}, activity() {}, refuse() {},
       complete() {}, fail() {}, timeout() {}, cancel: async () => undefined, cleanup: async () => undefined,
       registerProcess() { throw new Error('No process is expected in this diagnostics test'); }
-    })
+    }; }
   } as unknown as OperationRegistryApi;
   const service = new KoggDiagnosticsServiceImpl(provider, operations, owner);
 
@@ -54,6 +57,10 @@ test('diagnostics aggregate failures and export a redacted private support bundl
   assert.equal(report.overall, 'fail');
   assert.equal(report.checks.find(check => check.id === 'broken.contributor')?.status, 'fail');
   assert.equal(projection.diagnostics().acceptedEventCount, 2);
+  assert.equal(startedOperations[0]?.id, startedOperations[0]?.correlations?.runId);
+  assert.equal(projection.snapshot().runs.length, 1);
+  assert.equal(projection.snapshot().runs[0]?.lifecycle, 'failed');
+  assert.deepEqual(projection.timeline(startedOperations[0]!.id!), projection.timeline(startedOperations[0]!.id!).filter(entry => entry.ownerKind === 'diagnostic'));
 
   const bundle = await service.createSupportBundle();
   const files = await fs.readdir(path.join(state, 'support'));
@@ -67,6 +74,7 @@ test('diagnostics aggregate failures and export a redacted private support bundl
   if (process.platform !== 'win32') assert.equal((await fs.stat(destination)).mode & 0o777, 0o600);
   assert.match(bundle.uri, /^file:/u);
   assert.equal(projection.diagnostics().acceptedEventCount, 4);
+  assert.equal(projection.snapshot().runs.length, 2);
   const journalBytes = await fs.readFile(path.join(state, 'diagnostics', 'owner.sqlite3'));
   assert.equal(journalBytes.includes(Buffer.from('hidden-value')), false);
   assert.equal(journalBytes.includes(Buffer.from('should-not-survive')), false);

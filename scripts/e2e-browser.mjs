@@ -968,6 +968,7 @@ async function exerciseOperationsStream(page) {
     const diagnosticMessage = page.getByText(/Diagnostics: (?:FAIL|WARN|PASS)/u).filter({ visible: true }).first();
     await diagnosticMessage.waitFor({ timeout: 15_000 });
     assert.doesNotMatch(await diagnosticMessage.innerText(), /operations\.(?:stream|actions|source-maps)/u);
+    await exerciseGovernedRunDetails(first, 'diagnostic');
     await clearNotifications(page);
 
     await secondPage.reload({ waitUntil: 'domcontentloaded' });
@@ -998,6 +999,22 @@ async function streamSequence(widget) {
     const match = /sequence (\d+)/u.exec(status);
     assert(match, `Missing operations stream sequence in: ${status}`);
     return BigInt(match[1]);
+}
+
+async function exerciseGovernedRunDetails(widget, ownerKind) {
+    const row = widget.locator('[data-projected-run]').filter({ hasText: /failed|completed/u }).last();
+    await row.waitFor({ state: 'visible', timeout: 15_000 });
+    await row.getByRole('button').click();
+    const tabs = widget.getByRole('tablist', { name: 'Governed run details' });
+    await tabs.waitFor({ state: 'visible', timeout: 10_000 });
+    for (const name of ['Timeline', 'Files / execution', 'Checks', 'Evidence / verdict', 'Merge', 'Usage', 'Processes']) {
+        const tab = tabs.getByRole('tab', { name });
+        await tab.click();
+        assert.equal(await tab.getAttribute('aria-selected'), 'true');
+        await widget.getByRole('tabpanel', { name: `${name} details` }).waitFor({ state: 'visible' });
+    }
+    await tabs.getByRole('tab', { name: 'Timeline' }).click();
+    await widget.getByRole('tabpanel', { name: 'Timeline details' }).getByRole('cell', { name: ownerKind, exact: true }).first().waitFor({ timeout: 10_000 });
 }
 
 async function synchronizeStreamSequences(first, second) {

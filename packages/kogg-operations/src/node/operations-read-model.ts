@@ -363,6 +363,9 @@ export class OperationsReadModel implements BackendApplicationContribution {
     let lifecycle: RunLifecycle | undefined;
     if (event.eventKind === 'run.queued') lifecycle = 'queued';
     else if (event.eventKind === 'run.started') lifecycle = 'active';
+    else if (event.eventKind === 'diagnostic.started') lifecycle = 'active';
+    else if (event.eventKind === 'diagnostic.passed') lifecycle = 'completed';
+    else if (event.eventKind === 'diagnostic.failed') lifecycle = 'failed';
     else if (event.eventKind === 'run.waiting') lifecycle = 'waiting';
     else if (event.eventKind === 'run.retrying') lifecycle = 'retrying';
     else if (event.eventKind === 'run.blocked') lifecycle = 'blocked';

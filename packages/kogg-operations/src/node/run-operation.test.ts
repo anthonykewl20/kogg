@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import type { OperationLease, OperationRegistryApi } from '../common/operations-protocol';
+import type { OperationLease, OperationRegistryApi, StartOperation } from '../common/operations-protocol';
 import { runOperation } from './run-operation';
 
 test('tracked non-process boundary records success and timeout cleanup in stable order', async () => {
@@ -21,6 +21,18 @@ test('tracked negative result is durably failed while preserving the boundary re
   });
   assert.deepEqual(result, { ok: false });
   assert.deepEqual(events, ['start', 'active', 'activity', 'cleanup', 'fail:OWNER_UNAVAILABLE:ProviderConnectionError']);
+});
+
+test('binds an explicit operation identity and safe correlations at the tracked boundary', async () => {
+  const events: string[] = []; let started: StartOperation | undefined;
+  const source = registry(events); const original = source.startOperation.bind(source);
+  source.startOperation = async input => { started = input; return original(input); };
+  await runOperation(source, 'diagnostics', async () => undefined, {
+    operationId: '20000000-0000-4000-8000-000000000001',
+    correlations: { runId: '20000000-0000-4000-8000-000000000001' }
+  });
+  assert.equal(started?.id, '20000000-0000-4000-8000-000000000001');
+  assert.equal(started?.correlations?.runId, started?.id);
 });
 
 function registry(events: string[]): OperationRegistryApi {
