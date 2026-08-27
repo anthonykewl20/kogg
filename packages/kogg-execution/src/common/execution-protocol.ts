@@ -1,5 +1,8 @@
 // observability-exempt: This file contains pure closed declarations with no operational behavior.
 // diagnostic-exempt: Pure declarations have no independent runtime state.
+export const KoggExecutionServicePath = '/services/kogg-execution';
+export const KoggExecutionService = Symbol('KoggExecutionService');
+
 export type ExecutionQualificationCode = 'EXECUTION_OK' | 'QUALIFICATION_PLATFORM_UNSUPPORTED'
   | 'QUALIFICATION_PROFILE_UNAVAILABLE' | 'QUALIFICATION_PROTOCOL_INVALID' | 'QUALIFICATION_EXPIRED'
   | 'QUALIFICATION_FAILED' | 'EXECUTION_INTERNAL_FAILED';
@@ -37,6 +40,21 @@ export interface ExecutionAllocationSummaryV1 {
   readonly allocationName: string; readonly allocationNonceDigest: string; readonly bindingDigest: string;
   readonly state: ExecutionState; readonly revision: string; readonly cleanupState: 'required' | 'cleaning' | 'cleaned' | 'failed';
   readonly safeCode: ExecutionLifecycleCode;
+}
+export interface ExecutionRunProjectionV1 {
+  readonly schemaVersion: 1; readonly projectId: string; readonly repositoryId: string;
+  readonly runId: string; readonly attemptId: string; readonly state: ExecutionState; readonly revision: string;
+  readonly cleanupState: 'required' | 'cleaning' | 'cleaned' | 'failed'; readonly safeCode: ExecutionLifecycleCode;
+}
+export interface GetExecutionRunV1 { readonly requestId: string; readonly runId: string; }
+export interface ListExecutionRunsV1 { readonly requestId: string; readonly projectId: string; }
+export interface ExecutionRunListV1 {
+  readonly schemaVersion: 1; readonly projectId: string; readonly runs: readonly ExecutionRunProjectionV1[];
+  readonly truncated: boolean;
+}
+export interface KoggExecutionService {
+  getRun(request: GetExecutionRunV1): Promise<ExecutionRunProjectionV1 | undefined>;
+  listRuns(request: ListExecutionRunsV1): Promise<ExecutionRunListV1>;
 }
 export interface AdvanceExecutionStateV1 {
   readonly requestId: string; readonly worktreeId: string; readonly expectedRevision: string;

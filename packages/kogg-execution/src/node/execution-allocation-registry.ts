@@ -6,7 +6,8 @@ import { BackendApplicationContribution } from '@theia/core/lib/node';
 import { injectable } from '@theia/core/shared/inversify';
 import type {
   AdvanceExecutionStateV1, CandidateBindingV1, CandidateImportIntentV1, CompleteCandidateImportV1, ExecutionAllocationCode,
-  ExecutionAllocationSummaryV1, ExecutionBindingV1, ExecutionState, FailCandidateImportV1, ImportedCandidateV1, PrepareCandidateImportV1,
+  ExecutionAllocationSummaryV1, ExecutionBindingV1, ExecutionRunListV1, ExecutionRunProjectionV1, ExecutionState,
+  FailCandidateImportV1, GetExecutionRunV1, ImportedCandidateV1, ListExecutionRunsV1, PrepareCandidateImportV1,
   RecordSealedCandidateV1, ReserveExecutionAllocationV1
 } from '../common/execution-protocol';
 import { CANDIDATE_MUTATION_POLICY_DIGEST } from './candidate-sealer';
@@ -51,6 +52,36 @@ export class ExecutionAllocationRegistry implements BackendApplicationContributi
 
   onStart(): Promise<void> { return this.ensureStarted(); }
   onStop(): void { this.database?.close(); this.database = undefined; this.startup = undefined; }
+
+  async getRun(request: GetExecutionRunV1): Promise<ExecutionRunProjectionV1 | undefined> {
+    validateProjectionRequest(request, 'requestId,runId');
+    log('projection.get.requested', { requestId: request.requestId, runId: request.runId });
+    try {
+      await this.ensureStarted();
+      const row = this.databaseOrThrow().prepare('SELECT project_id,repository_id,run_id,attempt_id,state,revision,cleanup_state,safe_code FROM allocations WHERE run_id=?').get(request.runId) as SqlRow | undefined;
+      const projection = row ? runProjection(row) : undefined;
+      log('projection.get.completed', { requestId: request.requestId, runId: request.runId, resultCount: projection ? 1 : 0 });
+      return projection;
+    } catch (error) {
+      log('projection.get.failed', { requestId: request.requestId, runId: request.runId, safeCode: projectionErrorCode(error), errorType: errorType(error) });
+      throw error;
+    }
+  }
+
+  async listRuns(request: ListExecutionRunsV1): Promise<ExecutionRunListV1> {
+    validateProjectionRequest(request, 'projectId,requestId');
+    log('projection.list.requested', { requestId: request.requestId, projectId: request.projectId });
+    try {
+      await this.ensureStarted();
+      const rows = this.databaseOrThrow().prepare('SELECT project_id,repository_id,run_id,attempt_id,state,revision,cleanup_state,safe_code FROM allocations WHERE project_id=? ORDER BY updated_at DESC,run_id LIMIT 201').all(request.projectId) as SqlRow[];
+      const truncated = rows.length > 200; const runs = rows.slice(0, 200).map(runProjection);
+      log('projection.list.completed', { requestId: request.requestId, projectId: request.projectId, resultCount: runs.length, truncated: truncated ? 1 : 0 });
+      return { schemaVersion: 1, projectId: request.projectId, runs, truncated };
+    } catch (error) {
+      log('projection.list.failed', { requestId: request.requestId, projectId: request.projectId, safeCode: projectionErrorCode(error), errorType: errorType(error) });
+      throw error;
+    }
+  }
 
   async reserve(request: ReserveExecutionAllocationV1): Promise<ExecutionAllocationSummaryV1> {
     await this.ensureStarted(); validateRequest(request);
@@ -349,6 +380,16 @@ function validateRequest(request: ReserveExecutionAllocationV1): void {
     || !boundedDecimal(request.quotaInodes, 1_000_000_000n)) throw new AllocationRegistryError('ALLOCATION_PROTOCOL_INVALID');
   validateBinding(request.binding);
 }
+function validateProjectionRequest(request: unknown, keys: 'requestId,runId' | 'projectId,requestId'): asserts request is GetExecutionRunV1 & ListExecutionRunsV1 {
+  const value = request as Record<string, unknown> | undefined;
+  if (!value || Object.keys(value).sort().join(',') !== keys
+    || typeof value.requestId !== 'string' || !UUID.test(value.requestId)
+    || (keys === 'requestId,runId' && (typeof value.runId !== 'string' || !UUID.test(value.runId)))
+    || (keys === 'projectId,requestId' && (typeof value.projectId !== 'string' || !UUID.test(value.projectId)))) {
+    log('projection.request.refused', { safeCode: 'ALLOCATION_PROTOCOL_INVALID' });
+    throw new AllocationRegistryError('ALLOCATION_PROTOCOL_INVALID');
+  }
+}
 function validateAdvance(request: AdvanceExecutionStateV1): void {
   if (!request || Object.keys(request).sort().join(',') !== 'bindingDigest,expectedRevision,nextState,requestId,safeCode,worktreeId'
     || !UUID.test(request.requestId) || !UUID.test(request.worktreeId) || !DIGEST.test(request.bindingDigest)
@@ -404,6 +445,14 @@ function digest(domain: string, value: string): string { return `sha256:${create
 function allocationName(worktreeId: string): string { const alphabet = 'abcdefghijklmnopqrstuvwxyz234567'; const bytes = Buffer.from(worktreeId.replaceAll('-', ''), 'hex'); let bits = 0; let accumulator = 0; let output = ''; for (const byte of bytes) { accumulator = (accumulator << 8) | byte; bits += 8; while (bits >= 5) { bits -= 5; output += alphabet[(accumulator >>> bits) & 31]; } } if (bits) output += alphabet[(accumulator << (5 - bits)) & 31]; return `r-${output}`; }
 function stateRoot(): string { return path.resolve(process.env.KOGG_STATE_DIR ?? path.join(process.env.KOGG_ROOT ? path.resolve(process.env.KOGG_ROOT) : process.cwd(), '.kogg', 'state')); }
 function errorType(error: unknown): string { return error instanceof Error ? error.name : 'UnknownError'; }
+function projectionErrorCode(error: unknown): ExecutionAllocationCode { return error instanceof AllocationRegistryError ? error.code : 'ALLOCATION_INTEGRITY_FAILED'; }
+function runProjection(row: SqlRow): ExecutionRunProjectionV1 {
+  return {
+    schemaVersion: 1, projectId: String(row.project_id), repositoryId: String(row.repository_id), runId: String(row.run_id),
+    attemptId: String(row.attempt_id), state: String(row.state) as ExecutionState, revision: String(row.revision),
+    cleanupState: String(row.cleanup_state) as ExecutionRunProjectionV1['cleanupState'], safeCode: String(row.safe_code) as ExecutionRunProjectionV1['safeCode']
+  };
+}
 function boundedDecimal(value: string, maximum: bigint): boolean {
   if (!DECIMAL.test(value) || value === '0') return false;
   try { return BigInt(value) <= maximum; }
@@ -423,7 +472,11 @@ const LOG_FIELDS = {
   'import.completed': ['requestId', 'worktreeId', 'candidateId', 'intentId'],
   'import.quarantined': ['requestId', 'worktreeId', 'candidateId', 'intentId', 'safeCode'],
   'recovery.resource.classified': ['runId', 'worktreeId', 'state', 'safeCode'],
-  'recovery.completed': ['resourceCount', 'quarantinedCount', 'admission']
+  'recovery.completed': ['resourceCount', 'quarantinedCount', 'admission'],
+  'projection.request.refused': ['safeCode'], 'projection.get.requested': ['requestId', 'runId'],
+  'projection.get.completed': ['requestId', 'runId', 'resultCount'], 'projection.get.failed': ['requestId', 'runId', 'safeCode', 'errorType'],
+  'projection.list.requested': ['requestId', 'projectId'], 'projection.list.completed': ['requestId', 'projectId', 'resultCount', 'truncated'],
+  'projection.list.failed': ['requestId', 'projectId', 'safeCode', 'errorType']
 } as const;
 type AllocationLogEvent = keyof typeof LOG_FIELDS;
 let allocationLoggingViolations = 0;
@@ -433,7 +486,7 @@ function log(event: AllocationLogEvent, fields: Readonly<Record<string, string |
   const validValues = Object.entries(fields).every(([key, value]) => {
     if (typeof value === 'number') return Number.isSafeInteger(value) && value >= 0 && value <= 1_000_000;
     if (Buffer.byteLength(value) > 128) return false;
-    if (['requestId', 'runId', 'worktreeId', 'candidateId', 'intentId'].includes(key)) return UUID.test(value);
+    if (['requestId', 'projectId', 'runId', 'worktreeId', 'candidateId', 'intentId'].includes(key)) return UUID.test(value);
     if (key === 'admission') return ['enabled', 'recovering', 'blocked'].includes(value);
     if (key === 'state') return Object.hasOwn(LEGAL_TRANSITIONS, value);
     if (key === 'safeCode') return /^[A-Z][A-Z0-9_]{1,63}$/u.test(value);

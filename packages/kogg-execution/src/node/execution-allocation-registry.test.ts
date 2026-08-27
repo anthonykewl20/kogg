@@ -53,6 +53,30 @@ test('refuses unknown allocation fields before creating durable state', async ()
   } finally { registry.onStop(); await rm(root, { recursive: true, force: true }); }
 });
 
+test('projects execution runs through the closed path-free RPC contract and refuses extra fields', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'kogg-allocation-projection-')); process.env.KOGG_STATE_DIR = root;
+  const registry = new ExecutionAllocationRegistry(); await registry.onStart();
+  try {
+    const allocation = await registry.reserve(allocationRequest());
+    const requestId = '10000000-0000-4000-8000-000000000020';
+    const run = await registry.getRun({ requestId, runId: allocation.runId });
+    assert.deepEqual(run, {
+      schemaVersion: 1, projectId: allocationRequest().binding.projectId, repositoryId: allocationRequest().binding.repositoryId,
+      runId: allocation.runId, attemptId: allocation.attemptId, state: 'admitted', revision: '1', cleanupState: 'required', safeCode: 'ALLOCATION_OK'
+    });
+    assert.deepEqual(await registry.getRun({ requestId: '10000000-0000-4000-8000-000000000021', runId: '10000000-0000-4000-8000-000000000099' }), undefined);
+    const list = await registry.listRuns({ requestId: '10000000-0000-4000-8000-000000000022', projectId: allocationRequest().binding.projectId });
+    assert.equal(list.schemaVersion, 1); assert.equal(list.projectId, allocationRequest().binding.projectId); assert.equal(list.truncated, false);
+    assert.deepEqual(list.runs, [run]);
+    const serialized = JSON.stringify(list); assert.equal(serialized.includes('worktreeId'), false); assert.equal(serialized.includes('allocationName'), false);
+    assert.equal(serialized.includes('bindingDigest'), false); assert.equal(serialized.includes('private'), false);
+    await assert.rejects(() => registry.getRun({ requestId: '10000000-0000-4000-8000-000000000023', runId: allocation.runId, sourceRoot: '/private/canary' } as never),
+      (error: unknown) => error instanceof AllocationRegistryError && error.code === 'ALLOCATION_PROTOCOL_INVALID');
+    await assert.rejects(() => registry.listRuns({ requestId: '10000000-0000-4000-8000-000000000024', projectId: 'not-an-id' }),
+      (error: unknown) => error instanceof AllocationRegistryError && error.code === 'ALLOCATION_PROTOCOL_INVALID');
+  } finally { registry.onStop(); await rm(root, { recursive: true, force: true }); }
+});
+
 test('persists only legal binding-and-revision-fenced state transitions with exact request replay', async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), 'kogg-allocation-state-')); process.env.KOGG_STATE_DIR = root; const registry = new ExecutionAllocationRegistry(); await registry.onStart();
   try {
