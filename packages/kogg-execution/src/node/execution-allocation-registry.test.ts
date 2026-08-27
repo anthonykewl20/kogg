@@ -97,11 +97,29 @@ test('records one sealed candidate only after the legal stopping state and repla
     assert.deepEqual(await registry.recordSeal(request), candidate); assert.deepEqual(await registry.recordSeal(request), candidate);
     const intentRequest = { requestId: '30000000-0000-4000-8000-000000000004', worktreeId: allocation.worktreeId, expectedRevision: String(Number(allocation.revision) + 1), bindingDigest: allocation.bindingDigest, candidateId: candidate.candidateId, expectedSourceIdentityDigest: `sha256:${'1'.repeat(64)}` };
     const intent = await registry.prepareCandidateImport(intentRequest); const intentReplay = await registry.prepareCandidateImport(intentRequest); assert.equal(intent.replay, false); assert.equal(intentReplay.replay, true); assert.equal(intentReplay.intentId, intent.intentId); assert.equal(intentReplay.fencingToken, intent.fencingToken); assert.match(intent.fencingToken, /^[0-9a-f]{64}$/u);
-    assert.equal(registry.diagnostics().candidateCount, 1); assert.equal(registry.diagnostics().pendingImportIntentCount, 1);
+    assert.equal(registry.diagnostics().candidateCount, 1); assert.equal(registry.diagnostics().pendingImportIntentCount, 1); assert.equal(registry.diagnostics().activeRepositoryLeaseCount, 1);
     const imported = await registry.completeCandidateImport({ requestId: '30000000-0000-4000-8000-000000000005', intentId: intent.intentId, worktreeId: allocation.worktreeId, expectedRevision: intentRequest.expectedRevision, bindingDigest: allocation.bindingDigest, candidateId: candidate.candidateId, fencingToken: intent.fencingToken, candidateCommit: candidate.candidateCommit, candidateTree: candidate.candidateTree, quarantineRefDigest: `sha256:${'2'.repeat(64)}` });
     assert.equal(imported.safeCode, 'IMPORT_OK'); assert.equal(imported.quarantineRefDigest, `sha256:${'2'.repeat(64)}`);
-    assert.equal(registry.diagnostics().pendingImportIntentCount, 0);
+    assert.equal(registry.diagnostics().pendingImportIntentCount, 0); assert.equal(registry.diagnostics().activeRepositoryLeaseCount, 0); assert.equal(registry.diagnostics().quarantinedRepositoryLeaseCount, 0);
     await assert.rejects(() => registry.recordSeal({ ...request, requestId: '30000000-0000-4000-8000-000000000003', expectedRevision: '1' }), (error: unknown) => error instanceof AllocationRegistryError && error.code === 'ALLOCATION_REVISION_CONFLICT');
+  } finally { registry.onStop(); await rm(root, { recursive: true, force: true }); }
+});
+
+test('allows only one durable import mutation lease per repository until terminal completion', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'kogg-allocation-repository-lease-')); process.env.KOGG_STATE_DIR = root; const registry = new ExecutionAllocationRegistry(); await registry.onStart();
+  try {
+    const first = await advanceToStopping(registry); const base = allocationRequest().binding;
+    const firstCandidate = candidateFor(first, '40000000-0000-4000-8000-000000000001');
+    await registry.recordSeal({ requestId: '40000000-0000-4000-8000-000000000002', worktreeId: first.worktreeId, expectedRevision: first.revision, bindingDigest: first.bindingDigest, candidate: firstCandidate });
+    await registry.prepareCandidateImport({ requestId: '40000000-0000-4000-8000-000000000003', worktreeId: first.worktreeId, expectedRevision: String(Number(first.revision) + 1), bindingDigest: first.bindingDigest, candidateId: firstCandidate.candidateId, expectedSourceIdentityDigest: `sha256:${'1'.repeat(64)}` });
+
+    const secondRequest: ReserveExecutionAllocationV1 = { ...allocationRequest(), requestId: '40000000-0000-4000-8000-000000000004', binding: { ...base, runId: '40000000-0000-4000-8000-000000000005', attemptId: '40000000-0000-4000-8000-000000000006' } };
+    const second = await advanceRequestToStopping(registry, secondRequest, '41000000');
+    const secondCandidate = candidateFor(second, '40000000-0000-4000-8000-000000000007');
+    await registry.recordSeal({ requestId: '40000000-0000-4000-8000-000000000008', worktreeId: second.worktreeId, expectedRevision: second.revision, bindingDigest: second.bindingDigest, candidate: secondCandidate });
+    await assert.rejects(() => registry.prepareCandidateImport({ requestId: '40000000-0000-4000-8000-000000000009', worktreeId: second.worktreeId, expectedRevision: String(Number(second.revision) + 1), bindingDigest: second.bindingDigest, candidateId: secondCandidate.candidateId, expectedSourceIdentityDigest: `sha256:${'1'.repeat(64)}` }),
+      (error: unknown) => error instanceof AllocationRegistryError && error.code === 'ALLOCATION_REPOSITORY_LEASE_CONFLICT');
+    assert.equal(registry.diagnostics().activeRepositoryLeaseCount, 1); assert.equal(registry.diagnostics().pendingImportIntentCount, 1);
   } finally { registry.onStop(); await rm(root, { recursive: true, force: true }); }
 });
 
@@ -114,7 +132,7 @@ test('atomically quarantines a failed import intent and blocks admission without
     const expectedRevision = String(Number(allocation.revision) + 1); const intent = await registry.prepareCandidateImport({ requestId: '30000000-0000-4000-8000-000000000023', worktreeId: allocation.worktreeId, expectedRevision, bindingDigest: allocation.bindingDigest, candidateId: candidate.candidateId, expectedSourceIdentityDigest: `sha256:${'1'.repeat(64)}` });
     const failure = { requestId: '30000000-0000-4000-8000-000000000024', intentId: intent.intentId, worktreeId: allocation.worktreeId, expectedRevision, bindingDigest: allocation.bindingDigest, candidateId: candidate.candidateId, fencingToken: intent.fencingToken, safeCode: 'IMPORT_SOURCE_INTEGRITY_FAILED' as const };
     const quarantined = await registry.failCandidateImport(failure); assert.equal(quarantined.state, 'quarantined'); assert.equal(quarantined.safeCode, 'IMPORT_SOURCE_INTEGRITY_FAILED'); assert.deepEqual(await registry.failCandidateImport(failure), quarantined);
-    const diagnostics = registry.diagnostics(); assert.equal(diagnostics.admission, 'blocked'); assert.equal(diagnostics.quarantinedCount, 1); assert.equal(diagnostics.pendingImportIntentCount, 0); assert.equal(diagnostics.candidateCount, 1);
+    const diagnostics = registry.diagnostics(); assert.equal(diagnostics.admission, 'blocked'); assert.equal(diagnostics.quarantinedCount, 1); assert.equal(diagnostics.pendingImportIntentCount, 0); assert.equal(diagnostics.candidateCount, 1); assert.equal(diagnostics.activeRepositoryLeaseCount, 0); assert.equal(diagnostics.quarantinedRepositoryLeaseCount, 1);
     await assert.rejects(() => registry.failCandidateImport({ ...failure, safeCode: 'IMPORT_FAILED' }), (error: unknown) => error instanceof AllocationRegistryError && error.code === 'ALLOCATION_REQUEST_REPLAY_MISMATCH');
   } finally { registry.onStop(); await rm(root, { recursive: true, force: true }); }
 });
@@ -126,7 +144,7 @@ test('startup retains an ambiguous import intent and quarantines its allocation 
   await first.recordSeal({ requestId: '30000000-0000-4000-8000-000000000012', worktreeId: allocation.worktreeId, expectedRevision: allocation.revision, bindingDigest: allocation.bindingDigest, candidate });
   await first.prepareCandidateImport({ requestId: '30000000-0000-4000-8000-000000000013', worktreeId: allocation.worktreeId, expectedRevision: String(Number(allocation.revision) + 1), bindingDigest: allocation.bindingDigest, candidateId: candidate.candidateId, expectedSourceIdentityDigest: `sha256:${'1'.repeat(64)}` }); first.onStop();
   const recovered = new ExecutionAllocationRegistry(); await recovered.onStart();
-  try { const diagnostics = recovered.diagnostics(); assert.equal(diagnostics.admission, 'blocked'); assert.equal(diagnostics.quarantinedCount, 1); assert.equal(diagnostics.pendingImportIntentCount, 1); assert.equal(diagnostics.candidateCount, 1); }
+  try { const diagnostics = recovered.diagnostics(); assert.equal(diagnostics.admission, 'blocked'); assert.equal(diagnostics.quarantinedCount, 1); assert.equal(diagnostics.pendingImportIntentCount, 1); assert.equal(diagnostics.candidateCount, 1); assert.equal(diagnostics.activeRepositoryLeaseCount, 0); assert.equal(diagnostics.quarantinedRepositoryLeaseCount, 1); }
   finally { recovered.onStop(); await rm(root, { recursive: true, force: true }); }
 });
 
@@ -134,9 +152,16 @@ function allocationRequest(): ReserveExecutionAllocationV1 {
   return { requestId: '10000000-0000-4000-8000-00000000000b', binding: binding(), quotaBytes: '1073741824', quotaInodes: '100000' };
 }
 async function advanceToStopping(registry: ExecutionAllocationRegistry) {
-  let allocation = await registry.reserve(allocationRequest()); const states = ['allocated', 'seeding', 'verified', 'ready', 'leased', 'executing', 'stopping'] as const;
-  for (let index = 0; index < states.length; index++) allocation = await registry.advance({ requestId: `20000000-0000-4000-8000-00000000000${index}`, worktreeId: allocation.worktreeId, expectedRevision: allocation.revision, bindingDigest: allocation.bindingDigest, nextState: states[index]!, safeCode: 'ALLOCATION_OK' });
+  return advanceRequestToStopping(registry, allocationRequest());
+}
+async function advanceRequestToStopping(registry: ExecutionAllocationRegistry, request: ReserveExecutionAllocationV1, requestNamespace = '20000000') {
+  let allocation = await registry.reserve(request); const states = ['allocated', 'seeding', 'verified', 'ready', 'leased', 'executing', 'stopping'] as const;
+  for (let index = 0; index < states.length; index++) allocation = await registry.advance({ requestId: `${requestNamespace}-0000-4000-8000-00000000000${index}`, worktreeId: allocation.worktreeId, expectedRevision: allocation.revision, bindingDigest: allocation.bindingDigest, nextState: states[index]!, safeCode: 'ALLOCATION_OK' });
   return allocation;
+}
+function candidateFor(allocation: Awaited<ReturnType<typeof advanceToStopping>>, candidateId: string) {
+  const base = allocationRequest().binding;
+  return { schemaVersion: 1 as const, candidateId, worktreeId: allocation.worktreeId, runId: allocation.runId, attemptId: allocation.attemptId, baseCommit: base.baseCommit, baseTree: base.baseTree, candidateCommit: 'd'.repeat(40), candidateTree: 'e'.repeat(40), objectClosureDigest: `sha256:${'f'.repeat(64)}`, mutationPolicyDigest: CANDIDATE_MUTATION_POLICY_DIGEST, sealedAt: new Date().toISOString(), retentionClass: 'pending-evidence' as const, retentionUntil: '9999-12-31T23:59:59.999Z', safeCode: 'SEAL_OK' as const };
 }
 function binding(): ExecutionBindingV1 {
   const digest = `sha256:${'a'.repeat(64)}`;

@@ -32,7 +32,7 @@ const LEGAL_TRANSITIONS: Readonly<Record<ExecutionState, readonly ExecutionState
   'cleanup-failed': ['cleaning', 'quarantined'], 'recovery-required': ['reconciling'], reconciling: ['refused', 'admitted', 'allocated', 'seeding', 'verified', 'ready', 'leased', 'executing', 'stopping', 'sealed', 'candidate-imported', 'retained', 'cleaning', 'cleaned', 'failed', 'timed-out', 'cancelled', 'cleanup-failed', 'quarantined'],
   cleaned: [], failed: ['cleaning'], 'timed-out': ['cleaning'], cancelled: ['cleaning'], quarantined: []
 };
-const TRANSITION_CODES = new Set(['ALLOCATION_OK', 'ALLOCATION_ADMISSION_BLOCKED', 'ALLOCATION_PROTOCOL_INVALID', 'ALLOCATION_REQUEST_REPLAY_MISMATCH', 'ALLOCATION_RUN_EXISTS', 'ALLOCATION_INTEGRITY_FAILED', 'ALLOCATION_REVISION_CONFLICT', 'ALLOCATION_BINDING_MISMATCH', 'ALLOCATION_STATE_INVALID', 'RECOVERY_OWNER_UNAVAILABLE', 'GIT_SEED_FAILED', 'GIT_SEED_TIMEOUT', 'GIT_SEED_OUTPUT_LIMIT', 'GIT_BASE_CHANGED', 'GIT_INDEPENDENCE_FAILED', 'GIT_SOURCE_INTEGRITY_FAILED', 'SEAL_OK', 'SEAL_FAILED', 'SEAL_BASE_MISMATCH', 'SEAL_NO_CHANGE', 'SEAL_DIRTY', 'SEAL_HEAD_INVALID', 'SEAL_ANCESTRY_INVALID', 'SEAL_MERGE_COMMIT', 'SEAL_MUTATION_POLICY', 'SEAL_OBJECT_INVALID', 'IMPORT_OK', 'IMPORT_FAILED', 'IMPORT_PROTOCOL_INVALID', 'IMPORT_SOURCE_CHANGED', 'IMPORT_CANDIDATE_INVALID', 'IMPORT_REF_EXISTS', 'IMPORT_SOURCE_INTEGRITY_FAILED', 'EXECUTION_OK', 'QUALIFICATION_PLATFORM_UNSUPPORTED', 'QUALIFICATION_PROFILE_UNAVAILABLE', 'QUALIFICATION_PROTOCOL_INVALID', 'QUALIFICATION_EXPIRED', 'QUALIFICATION_FAILED', 'EXECUTION_INTERNAL_FAILED', 'PROCESS_EXIT_NONZERO', 'CLEANUP_FAILED']);
+const TRANSITION_CODES = new Set(['ALLOCATION_OK', 'ALLOCATION_ADMISSION_BLOCKED', 'ALLOCATION_PROTOCOL_INVALID', 'ALLOCATION_REQUEST_REPLAY_MISMATCH', 'ALLOCATION_RUN_EXISTS', 'ALLOCATION_INTEGRITY_FAILED', 'ALLOCATION_REVISION_CONFLICT', 'ALLOCATION_BINDING_MISMATCH', 'ALLOCATION_STATE_INVALID', 'ALLOCATION_REPOSITORY_LEASE_CONFLICT', 'RECOVERY_OWNER_UNAVAILABLE', 'GIT_SEED_FAILED', 'GIT_SEED_TIMEOUT', 'GIT_SEED_OUTPUT_LIMIT', 'GIT_BASE_CHANGED', 'GIT_INDEPENDENCE_FAILED', 'GIT_SOURCE_INTEGRITY_FAILED', 'SEAL_OK', 'SEAL_FAILED', 'SEAL_BASE_MISMATCH', 'SEAL_NO_CHANGE', 'SEAL_DIRTY', 'SEAL_HEAD_INVALID', 'SEAL_ANCESTRY_INVALID', 'SEAL_MERGE_COMMIT', 'SEAL_MUTATION_POLICY', 'SEAL_OBJECT_INVALID', 'IMPORT_OK', 'IMPORT_FAILED', 'IMPORT_PROTOCOL_INVALID', 'IMPORT_SOURCE_CHANGED', 'IMPORT_CANDIDATE_INVALID', 'IMPORT_REF_EXISTS', 'IMPORT_SOURCE_INTEGRITY_FAILED', 'EXECUTION_OK', 'QUALIFICATION_PLATFORM_UNSUPPORTED', 'QUALIFICATION_PROFILE_UNAVAILABLE', 'QUALIFICATION_PROTOCOL_INVALID', 'QUALIFICATION_EXPIRED', 'QUALIFICATION_FAILED', 'EXECUTION_INTERNAL_FAILED', 'PROCESS_EXIT_NONZERO', 'CLEANUP_FAILED']);
 const IMPORT_FAILURE_CODES = new Set(['IMPORT_FAILED', 'IMPORT_PROTOCOL_INVALID', 'IMPORT_SOURCE_CHANGED', 'IMPORT_CANDIDATE_INVALID', 'IMPORT_REF_EXISTS', 'IMPORT_SOURCE_INTEGRITY_FAILED']);
 
 export interface ExecutionAllocationDiagnostics {
@@ -40,7 +40,8 @@ export interface ExecutionAllocationDiagnostics {
   readonly admission: 'enabled' | 'recovering' | 'blocked'; readonly activeCount: number;
   readonly quarantinedCount: number; readonly recoveryRequiredCount: number; readonly unverifiedCount: number;
   readonly cleanupFailureCount: number; readonly reservationCount: number;
-  readonly candidateCount: number; readonly pendingImportIntentCount: number; readonly loggingViolationCount: number;
+  readonly candidateCount: number; readonly pendingImportIntentCount: number; readonly activeRepositoryLeaseCount: number;
+  readonly quarantinedRepositoryLeaseCount: number; readonly loggingViolationCount: number;
 }
 
 @injectable()
@@ -193,7 +194,7 @@ export class ExecutionAllocationRegistry implements BackendApplicationContributi
       return { ...this.importIntent(String(replay.resource_id)), replay: true };
     }
     if (this.admission() !== 'enabled') throw new AllocationRegistryError('ALLOCATION_ADMISSION_BLOCKED');
-    const row = this.databaseOrThrow().prepare('SELECT state,revision,binding_digest FROM allocations WHERE worktree_id=?').get(request.worktreeId) as SqlRow | undefined;
+    const row = this.databaseOrThrow().prepare('SELECT state,revision,binding_digest,repository_id FROM allocations WHERE worktree_id=?').get(request.worktreeId) as SqlRow | undefined;
     if (!row) throw new AllocationRegistryError('ALLOCATION_INTEGRITY_FAILED');
     if (String(row.binding_digest) !== request.bindingDigest) throw new AllocationRegistryError('ALLOCATION_BINDING_MISMATCH');
     if (String(row.revision) !== request.expectedRevision) throw new AllocationRegistryError('ALLOCATION_REVISION_CONFLICT');
@@ -201,12 +202,21 @@ export class ExecutionAllocationRegistry implements BackendApplicationContributi
     const candidate = this.databaseOrThrow().prepare('SELECT candidate_id FROM candidates WHERE candidate_id=? AND worktree_id=?').get(request.candidateId, request.worktreeId) as SqlRow | undefined;
     if (!candidate) throw new AllocationRegistryError('ALLOCATION_BINDING_MISMATCH');
     const intentId = randomUUID(); const fencingToken = randomBytes(32).toString('hex'); const now = new Date().toISOString();
+    log('repository.lease.requested', { requestId: request.requestId, repositoryId: String(row.repository_id) });
     this.transaction(database => {
+      const conflictingLease = database.prepare(`SELECT lease_id FROM repository_mutation_leases WHERE repository_id=? AND phase IN ('active','quarantined')`).get(String(row.repository_id)) as SqlRow | undefined;
+      if (conflictingLease) {
+        log('repository.lease.refused', { requestId: request.requestId, repositoryId: String(row.repository_id), safeCode: 'ALLOCATION_REPOSITORY_LEASE_CONFLICT' });
+        throw new AllocationRegistryError('ALLOCATION_REPOSITORY_LEASE_CONFLICT');
+      }
       database.prepare(`INSERT INTO candidate_import_intents(intent_id,worktree_id,candidate_id,fencing_token,expected_source_identity_digest,phase,safe_code,created_at,updated_at) VALUES(?,?,?,?,?,'requested','IMPORT_OK',?,?)`)
         .run(intentId, request.worktreeId, request.candidateId, fencingToken, request.expectedSourceIdentityDigest, now, now);
+      database.prepare(`INSERT INTO repository_mutation_leases(lease_id,repository_id,intent_id,worktree_id,fencing_token,owner_instance_id,phase,safe_code,created_at,updated_at) VALUES(?,?,?,?,?,?,'active','IMPORT_OK',?,?)`)
+        .run(randomUUID(), String(row.repository_id), intentId, request.worktreeId, fencingToken, this.ownerInstanceId, now, now);
       database.prepare(`INSERT INTO lifecycle_request_results(request_id,request_digest,response_kind,resource_id,created_at) VALUES(?,?,'import-intent',?,?)`).run(request.requestId, requestDigest, intentId, now);
       this.event(database, request.worktreeId, 'import.requested', 'IMPORT_OK'); this.bump(database);
     });
+    log('repository.lease.acquired', { requestId: request.requestId, repositoryId: String(row.repository_id), intentId });
     log('import.intent.recorded', { requestId: request.requestId, worktreeId: request.worktreeId, candidateId: request.candidateId, intentId });
     return { schemaVersion: 1, intentId, worktreeId: request.worktreeId, candidateId: request.candidateId, fencingToken, phase: 'requested', replay: false, safeCode: 'IMPORT_OK' };
   }
@@ -229,12 +239,14 @@ export class ExecutionAllocationRegistry implements BackendApplicationContributi
     const now = new Date().toISOString();
     this.transaction(database => {
       const intentResult = database.prepare(`UPDATE candidate_import_intents SET phase='completed',observed_quarantine_ref_digest=?,safe_code='IMPORT_OK',updated_at=? WHERE intent_id=? AND phase='requested' AND fencing_token=?`).run(request.quarantineRefDigest, now, request.intentId, request.fencingToken);
+      const leaseResult = database.prepare(`UPDATE repository_mutation_leases SET phase='released',safe_code='IMPORT_OK',updated_at=? WHERE intent_id=? AND worktree_id=? AND phase='active' AND fencing_token=?`).run(now, request.intentId, request.worktreeId, request.fencingToken);
       const allocationResult = database.prepare(`UPDATE allocations SET state='candidate-imported',safe_code='IMPORT_OK',revision=revision+1,updated_at=? WHERE worktree_id=? AND revision=? AND state='sealed' AND binding_digest=?`).run(now, request.worktreeId, Number(request.expectedRevision), request.bindingDigest);
-      if (intentResult.changes !== 1 || allocationResult.changes !== 1) throw new AllocationRegistryError('ALLOCATION_REVISION_CONFLICT');
+      if (intentResult.changes !== 1 || leaseResult.changes !== 1 || allocationResult.changes !== 1) throw new AllocationRegistryError('ALLOCATION_REVISION_CONFLICT');
       database.prepare('UPDATE candidates SET quarantine_ref_digest=?,updated_at=? WHERE candidate_id=? AND quarantine_ref_digest IS NULL').run(request.quarantineRefDigest, now, request.candidateId);
       database.prepare(`INSERT INTO lifecycle_request_results(request_id,request_digest,response_kind,resource_id,created_at) VALUES(?,?,'import-complete',?,?)`).run(request.requestId, requestDigest, request.candidateId, now);
       this.event(database, request.worktreeId, 'import.completed', 'IMPORT_OK'); this.bump(database);
     });
+    log('repository.lease.released', { requestId: request.requestId, worktreeId: request.worktreeId, intentId: request.intentId });
     log('import.completed', { requestId: request.requestId, worktreeId: request.worktreeId, candidateId: request.candidateId, intentId: request.intentId });
     return this.importedCandidate(request.candidateId);
   }
@@ -257,13 +269,16 @@ export class ExecutionAllocationRegistry implements BackendApplicationContributi
     this.transaction(database => {
       const intentResult = database.prepare(`UPDATE candidate_import_intents SET phase='quarantined',safe_code=?,updated_at=? WHERE intent_id=? AND phase='requested' AND fencing_token=?`)
         .run(request.safeCode, now, request.intentId, request.fencingToken);
+      const leaseResult = database.prepare(`UPDATE repository_mutation_leases SET phase='quarantined',safe_code=?,updated_at=? WHERE intent_id=? AND worktree_id=? AND phase='active' AND fencing_token=?`)
+        .run(request.safeCode, now, request.intentId, request.worktreeId, request.fencingToken);
       const allocationResult = database.prepare(`UPDATE allocations SET state='quarantined',safe_code=?,revision=revision+1,updated_at=? WHERE worktree_id=? AND revision=? AND state='sealed' AND binding_digest=?`)
         .run(request.safeCode, now, request.worktreeId, Number(request.expectedRevision), request.bindingDigest);
-      if (intentResult.changes !== 1 || allocationResult.changes !== 1) throw new AllocationRegistryError('ALLOCATION_REVISION_CONFLICT');
+      if (intentResult.changes !== 1 || leaseResult.changes !== 1 || allocationResult.changes !== 1) throw new AllocationRegistryError('ALLOCATION_REVISION_CONFLICT');
       database.prepare(`INSERT INTO lifecycle_request_results(request_id,request_digest,response_kind,resource_id,created_at) VALUES(?,?,'state',?,?)`).run(request.requestId, requestDigest, request.worktreeId, now);
       database.prepare(`UPDATE execution_meta SET admission='blocked',revision=revision+1 WHERE singleton=1`).run();
       this.event(database, request.worktreeId, 'import.quarantined', request.safeCode);
     });
+    log('repository.lease.quarantined', { requestId: request.requestId, worktreeId: request.worktreeId, intentId: request.intentId, safeCode: request.safeCode });
     log('import.quarantined', { requestId: request.requestId, worktreeId: request.worktreeId, candidateId: request.candidateId, intentId: request.intentId, safeCode: request.safeCode });
     return this.summary(request.worktreeId);
   }
@@ -284,6 +299,8 @@ export class ExecutionAllocationRegistry implements BackendApplicationContributi
       reservationCount: count(`SELECT count(*) AS count FROM allocations WHERE state NOT IN ('refused','cleaned')`),
       candidateCount: count('SELECT count(*) AS count FROM candidates'),
       pendingImportIntentCount: count(`SELECT count(*) AS count FROM candidate_import_intents WHERE phase='requested'`),
+      activeRepositoryLeaseCount: count(`SELECT count(*) AS count FROM repository_mutation_leases WHERE phase='active'`),
+      quarantinedRepositoryLeaseCount: count(`SELECT count(*) AS count FROM repository_mutation_leases WHERE phase='quarantined'`),
       loggingViolationCount: allocationLoggingViolations
     };
   }
@@ -319,6 +336,8 @@ export class ExecutionAllocationRegistry implements BackendApplicationContributi
       CREATE TABLE IF NOT EXISTS lifecycle_request_results(request_id TEXT PRIMARY KEY,request_digest TEXT NOT NULL,response_kind TEXT NOT NULL CHECK(response_kind IN ('state','seal','import-intent','import-complete')),resource_id TEXT NOT NULL,created_at TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS candidates(candidate_id TEXT PRIMARY KEY,worktree_id TEXT NOT NULL UNIQUE REFERENCES allocations(worktree_id),candidate_json TEXT NOT NULL,candidate_commit TEXT NOT NULL,candidate_tree TEXT NOT NULL,object_closure_digest TEXT NOT NULL,mutation_policy_digest TEXT NOT NULL,quarantine_ref_digest TEXT,retention_class TEXT NOT NULL CHECK(retention_class IN ('pending-evidence','rejected','incident','completed')),retention_until TEXT NOT NULL,created_at TEXT NOT NULL,updated_at TEXT);
       CREATE TABLE IF NOT EXISTS candidate_import_intents(intent_id TEXT PRIMARY KEY,worktree_id TEXT NOT NULL REFERENCES allocations(worktree_id),candidate_id TEXT NOT NULL REFERENCES candidates(candidate_id),fencing_token TEXT NOT NULL,expected_source_identity_digest TEXT NOT NULL,observed_quarantine_ref_digest TEXT,phase TEXT NOT NULL CHECK(phase IN ('requested','completed','failed','quarantined')),safe_code TEXT NOT NULL,created_at TEXT NOT NULL,updated_at TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS repository_mutation_leases(lease_id TEXT PRIMARY KEY,repository_id TEXT NOT NULL,intent_id TEXT NOT NULL UNIQUE REFERENCES candidate_import_intents(intent_id),worktree_id TEXT NOT NULL REFERENCES allocations(worktree_id),fencing_token TEXT NOT NULL,owner_instance_id TEXT NOT NULL,phase TEXT NOT NULL CHECK(phase IN ('active','released','quarantined')),safe_code TEXT NOT NULL,created_at TEXT NOT NULL,updated_at TEXT NOT NULL);
+      CREATE UNIQUE INDEX IF NOT EXISTS repository_mutation_lease_owner ON repository_mutation_leases(repository_id) WHERE phase IN ('active','quarantined');
       INSERT OR IGNORE INTO execution_meta(singleton,schema_version,revision,owner_instance_id,admission) VALUES(1,1,1,'bootstrap','recovering');
     `);
     const version = Number((this.databaseOrThrow().prepare('SELECT schema_version FROM execution_meta WHERE singleton=1').get() as SqlRow).schema_version);
@@ -344,6 +363,7 @@ export class ExecutionAllocationRegistry implements BackendApplicationContributi
         current.prepare(`UPDATE allocations SET state='reconciling',revision=revision+1,updated_at=? WHERE worktree_id=?`).run(new Date().toISOString(), worktreeId);
         this.event(current, worktreeId, 'recovery.resource.classified', 'RECOVERY_OWNER_UNAVAILABLE');
         current.prepare(`UPDATE allocations SET state='quarantined',cleanup_state='failed',safe_code='RECOVERY_OWNER_UNAVAILABLE',revision=revision+1,updated_at=? WHERE worktree_id=?`).run(new Date().toISOString(), worktreeId);
+        current.prepare(`UPDATE repository_mutation_leases SET phase='quarantined',safe_code='RECOVERY_OWNER_UNAVAILABLE',updated_at=? WHERE worktree_id=? AND phase='active'`).run(new Date().toISOString(), worktreeId);
         this.event(current, worktreeId, 'resource.quarantined', 'RECOVERY_OWNER_UNAVAILABLE');
       });
       log('recovery.resource.classified', { runId, worktreeId, state: 'quarantined', safeCode: 'RECOVERY_OWNER_UNAVAILABLE' });
@@ -468,6 +488,10 @@ const LOG_FIELDS = {
   'state.requested': ['requestId', 'worktreeId', 'state'], 'state.completed': ['requestId', 'worktreeId', 'state'],
   'state.refused': ['requestId', 'worktreeId', 'state', 'safeCode'],
   'candidate.recorded': ['requestId', 'worktreeId', 'candidateId'],
+  'repository.lease.requested': ['requestId', 'repositoryId'], 'repository.lease.acquired': ['requestId', 'repositoryId', 'intentId'],
+  'repository.lease.refused': ['requestId', 'repositoryId', 'safeCode'],
+  'repository.lease.released': ['requestId', 'worktreeId', 'intentId'],
+  'repository.lease.quarantined': ['requestId', 'worktreeId', 'intentId', 'safeCode'],
   'import.intent.recorded': ['requestId', 'worktreeId', 'candidateId', 'intentId'],
   'import.completed': ['requestId', 'worktreeId', 'candidateId', 'intentId'],
   'import.quarantined': ['requestId', 'worktreeId', 'candidateId', 'intentId', 'safeCode'],
@@ -486,7 +510,7 @@ function log(event: AllocationLogEvent, fields: Readonly<Record<string, string |
   const validValues = Object.entries(fields).every(([key, value]) => {
     if (typeof value === 'number') return Number.isSafeInteger(value) && value >= 0 && value <= 1_000_000;
     if (Buffer.byteLength(value) > 128) return false;
-    if (['requestId', 'projectId', 'runId', 'worktreeId', 'candidateId', 'intentId'].includes(key)) return UUID.test(value);
+    if (['requestId', 'projectId', 'repositoryId', 'runId', 'worktreeId', 'candidateId', 'intentId'].includes(key)) return UUID.test(value);
     if (key === 'admission') return ['enabled', 'recovering', 'blocked'].includes(value);
     if (key === 'state') return Object.hasOwn(LEGAL_TRANSITIONS, value);
     if (key === 'safeCode') return /^[A-Z][A-Z0-9_]{1,63}$/u.test(value);
