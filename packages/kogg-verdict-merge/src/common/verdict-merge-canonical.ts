@@ -1,4 +1,5 @@
-import type { VerdictQueryV1 } from './verdict-merge-protocol';
+import { createHash } from 'node:crypto';
+import type { GateExplanationV1, VerdictExplanationV1, VerdictQueryV1 } from './verdict-merge-protocol';
 
 // observability-exempt: Pure closed decoding performs no I/O and retains no query content.
 // diagnostic-coverage: verdict.bindings, verdict.currentness
@@ -15,4 +16,19 @@ export function decodeVerdictQuery(input: unknown): VerdictQueryV1 {
   if (typeof value.destinationRef !== 'string' || !/^refs\/heads\/[A-Za-z0-9][A-Za-z0-9._/-]{0,127}$/u.test(value.destinationRef) || value.destinationRef.includes('..') || value.destinationRef.endsWith('/') || value.ranexProtocolVersion !== '2' || typeof value.ranexJournalSeq !== 'string' || !/^(?:0|[1-9][0-9]{0,18})$/u.test(value.ranexJournalSeq)) fail();
   return value as unknown as VerdictQueryV1;
 }
+export function verdictMergeDigest(domain: 'query' | 'explanation', value: unknown): string { return createHash('sha256').update(`kogg:verdict-merge:${domain}:v1\n`).update(canonicalJson(value)).digest('hex'); }
+export function canonicalJson(value: unknown): string { if (value === null) return 'null'; if (typeof value === 'string') return JSON.stringify(value.normalize('NFC')); if (typeof value === 'boolean') return value ? 'true' : 'false'; if (typeof value === 'number') { if (!Number.isSafeInteger(value)) fail(); return String(value); } if (Array.isArray(value)) return `[${value.map(canonicalJson).join(',')}]`; if (typeof value === 'object') { const item = value as Record<string, unknown>; return `{${Object.keys(item).sort().map(key => `${JSON.stringify(key)}:${canonicalJson(item[key])}`).join(',')}}`; } fail(); }
+export function validateExplanation(input: Omit<VerdictExplanationV1, 'explanationDigest'>, query: VerdictQueryV1, queryDigest: string): VerdictExplanationV1 {
+  if (!input || typeof input !== 'object' || Object.keys(input).sort().join(',') !== ['explanationId','queryDigest','ranexDecision','currentness','currentnessCode','gateRows','requiredCount','passCount','failCount','blockedCount','verifiedAt','expiresAt','ranexProvenanceDigest','journalRoot','journalSeq'].sort().join(',')) fail();
+  if (!UUID.test(input.explanationId) || input.queryDigest !== queryDigest || !['pass','fail','blocked'].includes(input.ranexDecision) || !['current','stale','unknown'].includes(input.currentness) || !DIGEST.test(input.ranexProvenanceDigest) || input.journalRoot !== query.ranexJournalRoot || input.journalSeq !== query.ranexJournalSeq || !timestamp(input.verifiedAt) || !timestamp(input.expiresAt) || Date.parse(input.expiresAt) <= Date.parse(input.verifiedAt)) fail();
+  if (!Array.isArray(input.gateRows) || input.gateRows.length > 256) fail(); const rows = input.gateRows.map(validateGate).sort((a,b) => `${a.gateId}\0${a.gateVersion}`.localeCompare(`${b.gateId}\0${b.gateVersion}`));
+  if (new Set(rows.map(row => `${row.gateId}\0${row.gateVersion}`)).size !== rows.length || JSON.stringify(rows) !== JSON.stringify(input.gateRows)) fail();
+  const required = rows.filter(row => row.required); const counts = { requiredCount: required.length, passCount: required.filter(row => row.result === 'pass').length, failCount: required.filter(row => row.result === 'fail').length, blockedCount: required.filter(row => row.result === 'blocked').length };
+  if (input.requiredCount !== counts.requiredCount || input.passCount !== counts.passCount || input.failCount !== counts.failCount || input.blockedCount !== counts.blockedCount || counts.passCount + counts.failCount + counts.blockedCount !== counts.requiredCount) fail();
+  const decision = counts.failCount > 0 ? 'fail' : counts.blockedCount > 0 ? 'blocked' : 'pass'; const currentnessCode = input.currentness === 'stale' ? 'VERDICT_STALE' : input.currentness === 'unknown' ? 'VERDICT_UNKNOWN' : decision === 'pass' ? 'VERDICT_OK' : decision === 'fail' ? 'VERDICT_FAIL' : 'VERDICT_BLOCKED';
+  if (input.ranexDecision !== decision || input.currentnessCode !== currentnessCode) fail();
+  const body = { ...input, gateRows: rows }; return { ...body, explanationDigest: verdictMergeDigest('explanation', body) };
+}
+function validateGate(input: GateExplanationV1): GateExplanationV1 { if (!input || typeof input !== 'object' || Object.keys(input).sort().join(',') !== ['gateId','gateVersion','required','result','safeReasonCode','producerRoleDigest','verifierRoleDigest','evidenceDigest','subjectDigest','journalSeq'].sort().join(',')) fail(); if (!/^[a-z][a-z0-9.-]{0,63}$/u.test(input.gateId) || !/^[1-9][0-9]{0,8}$/u.test(input.gateVersion) || typeof input.required !== 'boolean' || !['pass','fail','blocked'].includes(input.result) || !/^[A-Z][A-Z0-9_]{0,63}$/u.test(input.safeReasonCode) || !DIGEST.test(input.producerRoleDigest) || !DIGEST.test(input.verifierRoleDigest) || !DIGEST.test(input.evidenceDigest) || !DIGEST.test(input.subjectDigest) || !/^(?:0|[1-9][0-9]{0,18})$/u.test(input.journalSeq)) fail(); return { ...input }; }
+function timestamp(value: string): boolean { return typeof value === 'string' && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/u.test(value) && Number.isFinite(Date.parse(value)); }
 function fail(): never { throw new VerdictMergeProtocolError(); }
