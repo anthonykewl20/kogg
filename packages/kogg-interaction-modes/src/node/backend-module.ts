@@ -10,6 +10,7 @@ import { InteractionModeHttpController } from './interaction-mode-http-controlle
 import { InteractionModesRpcService } from './interaction-modes-rpc-service';
 import { ModeTransitionCoordinator } from './mode-transition-coordinator';
 import { OperationsTransitionOwner } from './operations-transition-owner';
+import { TaskPlanningModeAuthorizer, type TaskPlanningModeAuthorizer as PlanningModeAuthorizer } from '@kogg/tasks/lib/common/tasks-protocol';
 
 // diagnostic-coverage: interaction-modes.registry, interaction-modes.authority, interaction-modes.operations, interaction-modes.restoration
 export default new ContainerModule(bind => {
@@ -19,6 +20,9 @@ export default new ContainerModule(bind => {
   bind(KoggModeTransitionOwner).toService(OperationsTransitionOwner);
   bind(InteractionModeRegistry).toSelf().inSingletonScope(); bind(BackendApplicationContribution).toService(InteractionModeRegistry);
   bind(KoggModeOperationAuthorizer).toService(InteractionModeRegistry);
+  bind<PlanningModeAuthorizer>(TaskPlanningModeAuthorizer).toDynamicValue(context => ({
+    authorizePlanningOperation: request => context.container.get(InteractionModeRegistry).authorizeOperation(request)
+  })).inSingletonScope();
   bind(InteractionModesRpcService).toSelf().inSingletonScope();
   bind(InteractionModeHttpController).toSelf().inSingletonScope(); bind(BackendApplicationContribution).toService(InteractionModeHttpController);
   bind(InteractionModesDiagnosticContributor).toSelf().inSingletonScope(); bind(KoggDiagnosticContribution).toService(InteractionModesDiagnosticContributor);

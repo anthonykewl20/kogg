@@ -8,6 +8,7 @@ import { ProjectBindingAuthority, type ProjectBindingAuthority as BindingAuthori
 import {
   TaskAdmissionAuthority,
   TaskKernelBindingAuthority,
+  TaskPlanningModeAuthorizer,
   type ApprovalProjection,
   type KoggTasksService,
   type MutationPrecondition,
@@ -15,6 +16,8 @@ import {
   type TaskAdmissionSnapshot,
   type TaskKernelAuthoritySnapshot,
   type TaskMutationResult,
+  type TaskPlanningModeAuthorizer as PlanningModeAuthorizer,
+  type TaskPlanningModeOperation,
   type TaskProjection,
   type TaskSafeCode,
   type TaskSummary
@@ -37,7 +40,10 @@ export class TaskRegistry implements KoggTasksService, TaskAdmissionAuthority, T
   private readonly databasePath = path.join(stateRoot(), 'tasks', 'registry.sqlite3');
   private ownerSink: OperationsOwnerSink | undefined;
 
-  constructor(@inject(ProjectBindingAuthority) private readonly projects: BindingAuthority) {}
+  constructor(
+    @inject(ProjectBindingAuthority) private readonly projects: BindingAuthority,
+    @inject(TaskPlanningModeAuthorizer) private readonly planningModes: PlanningModeAuthorizer
+  ) {}
 
   async onStart(): Promise<void> {
     console.info('[kogg:tasks:registry] registry.start.requested');
@@ -113,6 +119,7 @@ export class TaskRegistry implements KoggTasksService, TaskAdmissionAuthority, T
   }
 
   async edit(input: MutationPrecondition & { taskId: string; content: string }): Promise<TaskMutationResult> {
+    const refused = await this.requirePlanningMode(input.requestId, input.taskId, 'plan-save'); if (refused) return refused;
     const binding = await this.binding(input.taskId);
     return this.mutate('specification.edit', input, binding, (db, task, current, revision) => {
       this.requireActiveDraft(task, current);
@@ -125,6 +132,7 @@ export class TaskRegistry implements KoggTasksService, TaskAdmissionAuthority, T
   }
 
   async freeze(input: MutationPrecondition & { taskId: string }): Promise<TaskMutationResult> {
+    const refused = await this.requirePlanningMode(input.requestId, input.taskId, 'plan-save'); if (refused) return refused;
     const binding = await this.binding(input.taskId);
     return this.mutate('specification.freeze', input, binding, (db, task, current, revision) => {
       this.requireActiveDraft(task, current);
@@ -133,6 +141,7 @@ export class TaskRegistry implements KoggTasksService, TaskAdmissionAuthority, T
   }
 
   async createSuccessorDraft(input: MutationPrecondition & { taskId: string }): Promise<TaskMutationResult> {
+    const refused = await this.requirePlanningMode(input.requestId, input.taskId, 'plan-save'); if (refused) return refused;
     const binding = await this.binding(input.taskId);
     return this.mutate('specification.successor', input, binding, (db, task, current, revision) => {
       if (str(task, 'lifecycle') !== 'active') throw new Refusal('TASK_ARCHIVED');
@@ -145,6 +154,7 @@ export class TaskRegistry implements KoggTasksService, TaskAdmissionAuthority, T
     this.requested('review', input.requestId, { taskId: safe(input.taskId), sessionId: safe(input.sessionId) });
     try {
       uuid(input.requestId); uuid(input.taskId); uuid(input.sessionId);
+      if (!await this.planningModeAllowed(input.requestId, input.taskId, 'plan-approval-request')) return this.reviewRefused(input, 'MODE_AUTHORITY_REFUSED');
       const task = this.task(input.taskId); const current = this.spec(str(task, 'current_specification_id'));
       const binding = await this.projects.resolveBinding(str(task, 'project_id'), str(task, 'repository_id'));
       if (str(task, 'lifecycle') !== 'active' || str(current, 'lifecycle') !== 'frozen') return this.reviewRefused(input, 'REVIEW_REQUIRED');
@@ -312,6 +322,27 @@ export class TaskRegistry implements KoggTasksService, TaskAdmissionAuthority, T
       if (error instanceof Refusal) return this.refused(operation, input.requestId, error.code, { taskId: safe(input.taskId) });
       if (error instanceof Conflict) { const result: TaskMutationResult = { kind: 'conflict', code: error.code, currentRegistryRevision: String(error.registry), currentTaskRevision: String(error.task) }; this.terminal(operation, input.requestId, result, { taskId: safe(input.taskId) }); return result; }
       return this.failed(operation, input.requestId, error, { taskId: safe(input.taskId) });
+    }
+  }
+
+  private async requirePlanningMode(requestId: string, taskId: string, operation: TaskPlanningModeOperation): Promise<TaskMutationResult | undefined> {
+    if (await this.planningModeAllowed(requestId, taskId, operation)) return undefined;
+    return this.refused(operation, requestId, 'MODE_AUTHORITY_REFUSED', { taskId: safe(taskId) });
+  }
+
+  private async planningModeAllowed(requestId: string, taskId: string, operation: TaskPlanningModeOperation): Promise<boolean> {
+    console.debug('[kogg:tasks:planning] authorization.requested', { requestId: safe(requestId), taskId: safe(taskId), operation });
+    try {
+      const result = await this.planningModes.authorizePlanningOperation({ requestId, taskId, operation });
+      if (!result.allowed) {
+        console.warn('[kogg:tasks:planning] authorization.refused', { requestId: safe(requestId), taskId: safe(taskId), operation, safeCode: 'MODE_AUTHORITY_REFUSED' });
+        return false;
+      }
+      console.info('[kogg:tasks:planning] authorization.completed', { requestId: safe(requestId), taskId: safe(taskId), operation });
+      return true;
+    } catch (error) { // observability-exempt: only the normalized error type and closed task safe code are logged.
+      console.error('[kogg:tasks:planning] authorization.failed', { requestId: safe(requestId), taskId: safe(taskId), operation, safeCode: 'MODE_AUTHORITY_REFUSED', errorType: errorName(error) });
+      return false;
     }
   }
 
