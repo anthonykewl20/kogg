@@ -32,15 +32,16 @@
     { "id": "tasks.revisions", "owner": "kogg-tasks", "description": "Task specification revisions and canonical digests verify successfully." },
     { "id": "tasks.bindings", "owner": "kogg-tasks", "description": "Task repository bindings remain current and available." },
     { "id": "tasks.approvals", "owner": "kogg-tasks", "description": "Current task approvals match immutable frozen revisions." },
-    { "id": "verdict.provenance", "owner": "kogg-verdict-merge", "description": "Ranex verdict artifact, protocol, journal, and gate provenance are exact." },
-    { "id": "verdict.bindings", "owner": "kogg-verdict-merge", "description": "Verdict task, approval, repository, subject, evidence, and catalog bindings are exact." },
-    { "id": "verdict.currentness", "owner": "kogg-verdict-merge", "description": "The projected Ranex verdict remains current at every authority boundary." },
-    { "id": "verdict.explanation", "owner": "kogg-verdict-merge", "description": "The safe closed verdict explanation is complete and immutable." },
-    { "id": "merge.authorization", "owner": "kogg-verdict-merge", "description": "Human merge challenges and consumable authorizations are current and role-separated." },
-    { "id": "merge.preflight", "owner": "kogg-verdict-merge", "description": "Repository, Git artifact, object, ref, and current PASS preflight checks are qualified." },
-    { "id": "merge.processes", "owner": "kogg-verdict-merge", "description": "No controlled-merge process is hidden, stalled, orphaned, or residual." },
-    { "id": "merge.atomicity", "owner": "kogg-verdict-merge", "description": "Merge construction, compare-and-swap, and post-verification state are unambiguous." },
-    { "id": "merge.recovery", "owner": "kogg-verdict-merge", "description": "Merge intents and owned processes are durably reconciled before admission." },
-    { "id": "merge.source-maps", "owner": "kogg-verdict-merge", "description": "Verdict and merge backend source maps are debugger-reachable." }
+    { "id": "workflow.schema", "owner": "kogg-workflow", "description": "Workflow canonical records, decoder versions, and immutable storage controls are valid." },
+    { "id": "workflow.catalog", "owner": "kogg-workflow", "description": "The compiled node catalog, executor artifacts, and compatibility set are exact." },
+    { "id": "workflow.graph", "owner": "kogg-workflow", "description": "Workflow ports, reachability, bounds, joins, retries, and conditions are valid." },
+    { "id": "workflow.anchors", "owner": "kogg-workflow", "description": "The policy-owned trust spine and compiled anchor proof are exact and current." },
+    { "id": "workflow.authority", "owner": "kogg-workflow", "description": "Workflow grants preserve role separation, target binding, and least authority." },
+    { "id": "workflow.scheduler", "owner": "kogg-workflow", "description": "Workflow leases, ready derivation, outbox, and concurrency controls are healthy." },
+    { "id": "workflow.processes", "owner": "kogg-workflow", "description": "Workflow intents, attempts, and registered processes correspond with no hidden descendants." },
+    { "id": "workflow.cleanup", "owner": "kogg-workflow", "description": "Workflow cancel-all-then-join cleanup has zero residual descendants." },
+    { "id": "workflow.recovery", "owner": "kogg-workflow", "description": "Workflow event integrity, uncertain outcomes, and restart reconciliation are complete." },
+    { "id": "workflow.accessibility", "owner": "kogg-workflow", "description": "The workflow canvas and structured outline expose equivalent semantic operations." },
+    { "id": "workflow.source-maps", "owner": "kogg-workflow", "description": "Workflow browser, backend, Electron, compiler, and executor boundaries are debugger reachable." }
   ]
 }

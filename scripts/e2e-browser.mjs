@@ -515,7 +515,7 @@ async function exerciseProjects(page) {
     assert.equal(supportReport.checks.find(check => check.id === 'projects.repositories')?.status, 'warn');
     assert.equal(supportReport.checks.find(check => check.id === 'projects.processes')?.status, 'pass');
     for (const id of ['operations.registry', 'operations.recovery', 'operations.processes', 'operations.cleanup', 'operations.admission']) {
-        assert.equal(supportReport.checks.find(check => check.id === id)?.status, 'pass');
+        assert.equal(supportReport.checks.find(check => check.id === id)?.status, 'pass', id);
     }
     await page.keyboard.press('Escape');
     assert.match(logs.join('\n'), /repository\.revalidation\.completed/iu);
@@ -640,7 +640,13 @@ async function exerciseTasks(page) {
     const supportFiles = (await waitForSupportBundle(supportDirectory, supportCount + 1)).sort();
     const supportReport = JSON.parse(await readFile(path.join(supportDirectory, supportFiles.at(-1)), 'utf8'));
     for (const id of ['tasks.registry', 'tasks.revisions', 'tasks.bindings', 'tasks.approvals']) {
+        assert.equal(supportReport.checks.find(check => check.id === id)?.status, 'pass', id);
+    }
+    for (const id of ['workflow.schema', 'workflow.graph', 'workflow.anchors', 'workflow.processes', 'workflow.cleanup', 'workflow.recovery', 'workflow.source-maps']) {
         assert.equal(supportReport.checks.find(check => check.id === id)?.status, 'pass');
+    }
+    for (const id of ['workflow.catalog', 'workflow.authority', 'workflow.scheduler', 'workflow.accessibility']) {
+        assert.equal(supportReport.checks.find(check => check.id === id)?.status, 'fail', id);
     }
     await page.keyboard.press('Escape');
     assert.equal(logs.join('\n').includes(canary), false);
