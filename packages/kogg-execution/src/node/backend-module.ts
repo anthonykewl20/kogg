@@ -8,12 +8,14 @@ import { ExecutionDiagnosticContributor } from './execution-diagnostic-contribut
 import { ExecutionService } from './execution-service';
 import { ExecutionTargetRegistry } from './execution-target-registry';
 import { ExecutionOperationsOwnerWiring } from './execution-operations-owner-wiring';
+import { NativeAllocationController } from './native-allocation-controller';
 
 // diagnostic-coverage: execution.target-qualification, execution.worktree-registry, execution.git-independence, execution.source-integrity, execution.process-cleanup, execution.capacity, execution.recovery, execution.retention, execution.source-maps
 export default new ContainerModule(bind => {
   bind(ExecutionAllocationRegistry).toSelf().inSingletonScope(); bind(BackendApplicationContribution).toService(ExecutionAllocationRegistry);
   bind(ExecutionOperationsOwnerWiring).toSelf().inSingletonScope(); bind(BackendApplicationContribution).toService(ExecutionOperationsOwnerWiring);
   bind(ExecutionTargetRegistry).toSelf().inSingletonScope(); bind(BackendApplicationContribution).toService(ExecutionTargetRegistry);
+  bind(NativeAllocationController).toSelf().inSingletonScope(); bind(BackendApplicationContribution).toService(NativeAllocationController);
   bind(ExecutionDiagnosticContributor).toSelf().inSingletonScope(); bind(KoggDiagnosticContribution).toService(ExecutionDiagnosticContributor);
   bind(ExecutionService).toSelf().inSingletonScope();
   bind(ConnectionHandler).toDynamicValue(context => new JsonRpcConnectionHandler<KoggExecutionService>(
