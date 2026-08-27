@@ -6,6 +6,8 @@ import {
   canonicalKernelJson,
   type CheckExecutionProjectionV1,
   type CheckExecutionV1,
+  type EvidenceAdmissionProjectionV1,
+  type EvidenceManifestV1,
   type FrozenSuiteProjectionV1,
   type FrozenSuiteV1,
   KERNEL_MAX_FRAME_BYTES,
@@ -22,6 +24,7 @@ import {
   type KernelResultV2,
   type ProducerBindingProjectionV1,
   type ProducerBindingV1,
+  type RepositoryStateV1,
   type TaskBindingProjectionV1,
   type TaskExecutionBindingV1,
   KOGG_RANEX_COMMIT,
@@ -161,7 +164,7 @@ export class KernelBridgeImpl implements KernelBridge {
   }
 
   execute<TProjection extends KernelJson>(operation: KernelOperationV2, body: KernelJson): Promise<KernelResultV2<TProjection>> {
-    if (operation === 'task.bind' || operation === 'producer.dispatch' || operation === 'suite.freeze' || operation === 'suite.execute') {
+    if (operation === 'task.bind' || operation === 'producer.dispatch' || operation === 'suite.freeze' || operation === 'suite.execute' || operation === 'evidence.admit') {
       console.warn('[kogg:kernel:bridge] request.refused', { operation, safeCode: 'KERNEL_AUTHORITY_INVALID' });
       return Promise.resolve({
         protocol: KOGG_RANEX_PROTOCOL, requestId: randomUUID(), operationId: randomUUID(), status: 'refused',
@@ -213,6 +216,13 @@ export class KernelBridgeImpl implements KernelBridge {
     const executionDigest = domainDigest('check-execution', execution as unknown as KernelJson);
     return this.requestResult<CheckExecutionProjectionV1>('suite.execute', {
       execution: execution as unknown as KernelJson, executionDigest, processAuthority: authority as unknown as KernelJson
+    });
+  }
+
+  admitEvidence(evidence: EvidenceManifestV1, currentSubject: RepositoryStateV1): Promise<KernelResultV2<EvidenceAdmissionProjectionV1>> {
+    const evidenceDigest = domainDigest('evidence', evidence as unknown as KernelJson);
+    return this.requestResult<EvidenceAdmissionProjectionV1>('evidence.admit', {
+      currentSubject: currentSubject as unknown as KernelJson, evidence: evidence as unknown as KernelJson, evidenceDigest
     });
   }
 
@@ -413,6 +423,11 @@ function validOperationProjection(operation: KernelOperationV2, value: unknown):
     return Object.keys(projection).sort().join(',') === 'checkExecutionDigest,executionId,outcome'
       && validDigest(projection.checkExecutionDigest) && validUuid(projection.executionId)
       && ['pass', 'fail', 'cancelled', 'timeout', 'infrastructure'].includes(String(projection.outcome));
+  }
+  if (operation === 'evidence.admit') {
+    return Object.keys(projection).sort().join(',') === 'claimType,evidenceDigest,evidenceId'
+      && validDigest(projection.evidenceDigest) && validUuid(projection.evidenceId)
+      && typeof projection.claimType === 'string' && /^[a-z0-9][a-z0-9._:-]{0,127}$/u.test(projection.claimType);
   }
   return true;
 }

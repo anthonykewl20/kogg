@@ -6,12 +6,14 @@ import os from 'node:os';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import test from 'node:test';
-import type { KernelBridge, KernelResultV2, TaskBindingProjectionV1, TaskExecutionBindingV1 } from '@kogg/contracts';
+import type { EvidenceAdmissionProjectionV1, EvidenceManifestV1, KernelBridge, KernelResultV2, RepositoryStateV1, TaskBindingProjectionV1, TaskExecutionBindingV1 } from '@kogg/contracts';
 import { OperationRegistry } from '@kogg/operations/lib/node/operation-registry';
 import type { TaskAdmissionSnapshot, TaskKernelBindingAuthority, TaskKernelAuthoritySnapshot } from '@kogg/tasks/lib/common/tasks-protocol';
 import type { ILogger } from '@theia/core/lib/common/logger';
 import { ProcessManager } from '@theia/process/lib/node/process-manager';
 import { KernelTaskBindingService } from './kernel-task-binding-service';
+import { KernelRepositoryStateAuthority } from './kernel-repository-state-authority';
+import { KernelEvidenceAdmissionService } from './kernel-evidence-admission-service';
 
 test('measures a clean repository and binds only an exact live task authority snapshot', async () => {
   const temporary = await mkdtemp(path.join(os.tmpdir(), 'kogg-kernel-binding-test-'));
@@ -39,7 +41,8 @@ test('measures a clean repository and binds only an exact live task authority sn
   const kernel = new FixtureKernel(); const operations = new OperationRegistry();
   try {
     await operations.onStart();
-    const service = new KernelTaskBindingService(authority, kernel as unknown as KernelBridge, operations, new ProcessManager(logger()), logger());
+    const repositories = new KernelRepositoryStateAuthority(new ProcessManager(logger()), logger());
+    const service = new KernelTaskBindingService(authority, kernel as unknown as KernelBridge, operations, repositories, logger());
     const result = await service.bind(admission);
     assert.equal(result.status, 'succeeded');
     assert.equal(kernel.binding?.protectedSource.isClean, true);
@@ -47,7 +50,14 @@ test('measures a clean repository and binds only an exact live task authority sn
     assert.equal(kernel.binding?.repositoryIdentityDigest, `sha256:${repositoryIdentityDigest}`);
     assert.equal((await operations.snapshot()).active.length, 0);
 
+    const evidenceService = new KernelEvidenceAdmissionService(authority, kernel as unknown as KernelBridge, operations, repositories, logger());
+    const admitted = await evidenceService.admit(admission, fixtureEvidence());
+    assert.equal(admitted.status, 'succeeded'); assert.equal(kernel.evidenceCalls, 1);
+    assert.equal(kernel.currentSubject?.commitObjectId, kernel.binding?.protectedSource.commitObjectId);
+
     await writeFile(path.join(repository, 'fixture.txt'), 'changed fixture\n');
+    const staleEvidence = await evidenceService.admit(admission, fixtureEvidence());
+    assert.equal(staleEvidence.safeCode, 'KERNEL_SUBJECT_STALE'); assert.equal(kernel.evidenceCalls, 1);
     const refused = await service.bind(admission);
     assert.equal(refused.safeCode, 'KERNEL_REPOSITORY_MISMATCH');
     assert.equal(kernel.calls, 1);
@@ -68,7 +78,9 @@ class FixtureTaskAuthority implements TaskKernelBindingAuthority {
 
 class FixtureKernel implements Partial<KernelBridge> {
   binding: TaskExecutionBindingV1 | undefined;
+  currentSubject: RepositoryStateV1 | undefined;
   calls = 0;
+  evidenceCalls = 0;
   async bindTask(binding: TaskExecutionBindingV1): Promise<KernelResultV2<TaskBindingProjectionV1>> {
     this.binding = binding; this.calls += 1;
     return {
@@ -77,6 +89,24 @@ class FixtureKernel implements Partial<KernelBridge> {
       projection: { taskBindingDigest: `sha256:${'5'.repeat(64)}`, taskId: binding.taskId, taskRevision: binding.taskRevision }
     };
   }
+  async admitEvidence(evidence: EvidenceManifestV1, currentSubject: RepositoryStateV1): Promise<KernelResultV2<EvidenceAdmissionProjectionV1>> {
+    this.currentSubject = currentSubject; this.evidenceCalls += 1;
+    return {
+      protocol: 'kogg.ranex/v2', requestId: randomUUID(), operationId: randomUUID(), status: 'succeeded', safeCode: 'KERNEL_OK',
+      resultDigest: `sha256:${'6'.repeat(64)}`, journal: { sequence: '5', rootDigest: `sha256:${'7'.repeat(64)}` },
+      projection: { evidenceDigest: `sha256:${'8'.repeat(64)}`, evidenceId: evidence.evidenceId, claimType: evidence.claimType }
+    };
+  }
+}
+
+function fixtureEvidence(): EvidenceManifestV1 {
+  return {
+    evidenceId: '77777777-7777-4777-8777-777777777777', claimType: 'tests.unit', subjectStateDigest: `sha256:${'1'.repeat(64)}`,
+    taskBindingDigest: `sha256:${'2'.repeat(64)}`, producerBindingDigest: `sha256:${'3'.repeat(64)}`, suiteDigest: `sha256:${'4'.repeat(64)}`,
+    checkDefinitionDigest: `sha256:${'5'.repeat(64)}`, checkExecutionDigest: `sha256:${'6'.repeat(64)}`,
+    resultArtifactDigest: `sha256:${'7'.repeat(64)}`, authorityDigest: `sha256:${'8'.repeat(64)}`,
+    ranexProvenanceDigest: `sha256:${'9'.repeat(64)}`, createdAt: '2099-08-27T08:00:00.000Z'
+  };
 }
 
 function fixtureAdmission(): TaskAdmissionSnapshot {
