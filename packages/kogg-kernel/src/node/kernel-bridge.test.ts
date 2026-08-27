@@ -12,13 +12,16 @@ import { ProcessManager } from '@theia/process/lib/node/process-manager';
 import { DatabaseSync } from 'node:sqlite';
 import { OperationsReadModel } from '@kogg/operations/lib/node/operations-read-model';
 import { KernelBridgeImpl } from './kernel-bridge';
-import { RanexOperationsOwner } from './ranex-operations-owner';
+import { RanexOperationsOwner, RanexOwnerIntegrityError } from './ranex-operations-owner';
+import { CheckOperationsOwner } from './check-operations-owner';
 
 test('handshakes with the pinned Ranex kernel and fails closed on missing journal', async () => {
   const state = await mkdtemp(path.join(os.tmpdir(), 'kogg-kernel-operation-test-'));
   process.env.KOGG_STATE_DIR = state;
   const operations = new OperationRegistry();
-  const bridge = new KernelBridgeImpl(operations, new ProcessManager(logger()), logger());
+  let checkProjectionFailure = false;
+  const checkOwner = { refresh: () => { if (checkProjectionFailure) throw new RanexOwnerIntegrityError(new Error('projection failure')); } };
+  const bridge = new KernelBridgeImpl(operations, new ProcessManager(logger()), logger(), checkOwner as never);
   try {
     const capabilities = await bridge.start();
     assert.equal(capabilities.ranexCommit, KOGG_RANEX_COMMIT);
@@ -104,6 +107,10 @@ test('handshakes with the pinned Ranex kernel and fails closed on missing journa
     assert.equal(executed.projection?.outcome, 'pass');
     const executionReplay = await bridge.executeCheck(execution);
     assert.deepEqual(executionReplay, { ...executed, requestId: executionReplay.requestId, operationId: executionReplay.operationId });
+    checkProjectionFailure = true;
+    const unknownExecution = await bridge.executeCheck(execution);
+    assert.equal(unknownExecution.status, 'unknown'); assert.equal(unknownExecution.safeCode, 'KERNEL_OUTCOME_UNKNOWN');
+    checkProjectionFailure = false;
     const evidence: EvidenceManifestV1 = {
       evidenceId: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb', claimType: 'tests.unit',
       subjectStateDigest, taskBindingDigest: committed.projection!.taskBindingDigest,
@@ -155,11 +162,13 @@ test('handshakes with the pinned Ranex kernel and fails closed on missing journa
     assert.equal(blocked.status, 'succeeded'); assert.equal(blocked.projection?.decision, 'blocked'); assert.equal(blocked.projection?.evidenceCount, 0);
     const readModel = new OperationsReadModel(path.join(state, 'operations-projection.sqlite3')); readModel.start();
     const ranexOwner = new RanexOperationsOwner(readModel); ranexOwner.onStart();
+    const projectedCheckOwner = new CheckOperationsOwner(readModel); projectedCheckOwner.onStart();
     const ranexTimeline = readModel.timeline(fixtureBinding().runId);
-    assert.deepEqual(ranexTimeline.map(entry => entry.eventKind), ['evidence.admitted', 'gate.decided', 'gate.decided']);
-    ranexOwner.refresh();
-    assert.equal(readModel.timeline(fixtureBinding().runId).length, 3);
-    ranexOwner.onStop(); readModel.stop();
+    assert.deepEqual(ranexTimeline.map(entry => entry.eventKind), ['evidence.admitted', 'gate.decided', 'gate.decided', 'check.passed']);
+    assert.equal(ranexTimeline.at(-1)?.entryId, execution.executionId);
+    ranexOwner.refresh(); projectedCheckOwner.refresh();
+    assert.equal(readModel.timeline(fixtureBinding().runId).length, 4);
+    projectedCheckOwner.onStop(); ranexOwner.onStop(); readModel.stop();
     const bindingBody = { binding: binding as unknown as KernelJson, bindingDigest: domainDigest('task-binding', binding as unknown as KernelJson) };
     const targetBodyDigest = jsonDigest(bindingBody as unknown as KernelJson);
     const reconciliation = await bridge.reconcileOperation({
@@ -196,7 +205,9 @@ test('handshakes with the pinned Ranex kernel and fails closed on missing journa
     journal.exec('DROP TRIGGER evaluations_no_update; UPDATE evaluations SET link=\'sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff\' WHERE seq=1;'); journal.close();
     const corruptProjection = new OperationsReadModel(path.join(state, 'corrupt-operations-projection.sqlite3')); corruptProjection.start();
     const corruptOwner = new RanexOperationsOwner(corruptProjection);
-    assert.throws(() => corruptOwner.onStart(), /integrity verification/u);
+    assert.throws(() => corruptOwner.onStart(), /KERNEL_JOURNAL_INTEGRITY/u);
+    const corruptCheckOwner = new CheckOperationsOwner(corruptProjection);
+    assert.throws(() => corruptCheckOwner.onStart(), /KERNEL_JOURNAL_INTEGRITY/u);
     corruptProjection.stop();
   } finally {
     await bridge.shutdown();

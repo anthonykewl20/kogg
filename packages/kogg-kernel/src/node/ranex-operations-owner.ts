@@ -11,7 +11,8 @@ import { inject, injectable } from '@theia/core/shared/inversify';
 // diagnostic-coverage: kernel.protocol, operations.owners, operations.ranex-owner, operations.projection, operations.correlations
 
 type Row = Record<string, SQLOutputValue>;
-type SourceRecord = Record<string, unknown>;
+export type RanexSourceRecord = Record<string, unknown>;
+type SourceRecord = RanexSourceRecord;
 const GENESIS = `sha256:${'0'.repeat(64)}`;
 
 @injectable()
@@ -65,10 +66,7 @@ export class RanexOperationsOwner implements BackendApplicationContribution {
   }
 
   private sourceRecords(): SourceRecord[] {
-    if (!existsSync(this.journalPath)) return [];
-    const source = new DatabaseSync(this.journalPath, { readOnly: true, allowExtension: false });
-    try { return verifySource(source.prepare('SELECT seq,record,prev_link,link FROM evaluations ORDER BY seq').all() as Row[]); }
-    finally { source.close(); }
+    return readVerifiedRanexJournal(this.journalPath);
   }
 
   private mapEvents(records: readonly SourceRecord[]): OwnerEventV1[] {
@@ -130,6 +128,13 @@ export class RanexOperationsOwner implements BackendApplicationContribution {
   }
 
   private db(): DatabaseSync { if (!this.metadata) throw new Error('Ranex owner metadata is unavailable'); return this.metadata; }
+}
+
+export function readVerifiedRanexJournal(journalPath: string): RanexSourceRecord[] {
+  if (!existsSync(journalPath)) return [];
+  const source = new DatabaseSync(journalPath, { readOnly: true, allowExtension: false });
+  try { return verifySource(source.prepare('SELECT seq,record,prev_link,link FROM evaluations ORDER BY seq').all() as Row[]); }
+  finally { source.close(); }
 }
 
 export class RanexOwnerIntegrityError extends Error {
