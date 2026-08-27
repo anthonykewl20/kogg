@@ -16,8 +16,9 @@ export type ExecutionSealCode = 'SEAL_OK' | 'SEAL_FAILED' | 'SEAL_BASE_MISMATCH'
   | 'SEAL_HEAD_INVALID' | 'SEAL_ANCESTRY_INVALID' | 'SEAL_MERGE_COMMIT' | 'SEAL_MUTATION_POLICY' | 'SEAL_OBJECT_INVALID';
 export type ExecutionImportCode = 'IMPORT_OK' | 'IMPORT_FAILED' | 'IMPORT_PROTOCOL_INVALID' | 'IMPORT_SOURCE_CHANGED'
   | 'IMPORT_CANDIDATE_INVALID' | 'IMPORT_REF_EXISTS' | 'IMPORT_SOURCE_INTEGRITY_FAILED';
+export type ExecutionRetentionCode = 'RETENTION_OK' | 'RETENTION_ACTIVE' | 'RETENTION_PROTOCOL_INVALID';
 export type ExecutionLifecycleCode = ExecutionAllocationCode | ExecutionGitCode | ExecutionSealCode | ExecutionImportCode
-  | ExecutionQualificationCode | 'PROCESS_EXIT_NONZERO' | 'CLEANUP_FAILED';
+  | ExecutionRetentionCode | ExecutionQualificationCode | 'PROCESS_EXIT_NONZERO' | 'CLEANUP_FAILED';
 export type ExecutionState = 'requested' | 'refused' | 'admitted' | 'allocated' | 'seeding' | 'verified' | 'ready'
   | 'leased' | 'executing' | 'stopping' | 'sealed' | 'candidate-imported' | 'retained' | 'cleaning' | 'cleaned'
   | 'failed' | 'timed-out' | 'cancelled' | 'cleanup-failed' | 'quarantined' | 'recovery-required' | 'reconciling';
@@ -72,7 +73,8 @@ export interface CandidateBindingV1 {
   readonly schemaVersion: 1; readonly candidateId: string; readonly worktreeId: string; readonly runId: string;
   readonly attemptId: string; readonly baseCommit: string; readonly baseTree: string; readonly candidateCommit: string;
   readonly candidateTree: string; readonly objectClosureDigest: string; readonly mutationPolicyDigest: string;
-  readonly quarantineRefDigest?: string; readonly sealedAt: string; readonly retentionClass: 'pending-evidence'; readonly retentionUntil: string;
+  readonly quarantineRefDigest?: string; readonly sealedAt: string;
+  readonly retentionClass: 'pending-evidence' | 'rejected' | 'incident' | 'completed'; readonly retentionUntil: string;
   readonly safeCode: ExecutionSealCode;
 }
 export interface RecordSealedCandidateV1 {
@@ -96,6 +98,16 @@ export interface FailCandidateImportV1 {
   readonly requestId: string; readonly intentId: string; readonly worktreeId: string; readonly expectedRevision: string;
   readonly bindingDigest: string; readonly candidateId: string; readonly fencingToken: string;
   readonly safeCode: Exclude<ExecutionImportCode, 'IMPORT_OK'>;
+}
+export interface RecordCandidateRetentionV1 {
+  readonly requestId: string; readonly worktreeId: string; readonly expectedRevision: string;
+  readonly bindingDigest: string; readonly candidateId: string;
+  readonly retentionClass: 'rejected' | 'incident' | 'completed'; readonly authorityDigest: string;
+}
+export interface CandidateRetentionV1 {
+  readonly schemaVersion: 1; readonly candidateId: string; readonly worktreeId: string;
+  readonly retentionClass: 'rejected' | 'incident' | 'completed'; readonly retentionUntil: string;
+  readonly state: 'retained'; readonly revision: string; readonly safeCode: 'RETENTION_OK';
 }
 export interface ImportCandidateV1 {
   readonly projectId: string; readonly repositoryId: string; readonly sourceRoot: string; readonly sourceGitDirectory: string; readonly privateRoot: string;

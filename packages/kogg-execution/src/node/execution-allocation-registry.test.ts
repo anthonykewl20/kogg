@@ -105,6 +105,27 @@ test('records one sealed candidate only after the legal stopping state and repla
   } finally { registry.onStop(); await rm(root, { recursive: true, force: true }); }
 });
 
+test('requires a durable authority-bound retention fact and refuses cleanup before its policy deadline', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'kogg-allocation-retention-')); process.env.KOGG_STATE_DIR = root; const registry = new ExecutionAllocationRegistry(); await registry.onStart();
+  try {
+    const allocation = await advanceToStopping(registry); const candidate = candidateFor(allocation, '35000000-0000-4000-8000-000000000001');
+    const sealed = await registry.recordSeal({ requestId: '35000000-0000-4000-8000-000000000002', worktreeId: allocation.worktreeId, expectedRevision: allocation.revision, bindingDigest: allocation.bindingDigest, candidate });
+    const sealedRevision = String(Number(allocation.revision) + 1);
+    await assert.rejects(() => registry.advance({ requestId: '35000000-0000-4000-8000-000000000003', worktreeId: allocation.worktreeId, expectedRevision: sealedRevision, bindingDigest: allocation.bindingDigest, nextState: 'cleaning', safeCode: 'ALLOCATION_OK' }),
+      (error: unknown) => error instanceof AllocationRegistryError && error.code === 'ALLOCATION_STATE_INVALID');
+    const request = { requestId: '35000000-0000-4000-8000-000000000004', worktreeId: allocation.worktreeId, expectedRevision: sealedRevision, bindingDigest: allocation.bindingDigest, candidateId: sealed.candidateId, retentionClass: 'rejected' as const, authorityDigest: `sha256:${'9'.repeat(64)}` };
+    const before = Date.now(); const retained = await registry.recordRetention(request); const after = Date.now();
+    assert.equal(retained.state, 'retained'); assert.equal(retained.retentionClass, 'rejected'); assert.equal(retained.safeCode, 'RETENTION_OK');
+    assert.ok(Date.parse(retained.retentionUntil) >= before + 86_400_000); assert.ok(Date.parse(retained.retentionUntil) <= after + 86_400_000);
+    assert.deepEqual(await registry.recordRetention(request), retained);
+    assert.equal(registry.diagnostics().retentionViolationCount, 0); assert.equal(registry.diagnostics().loggingViolationCount, 0);
+    await assert.rejects(() => registry.recordRetention({ ...request, retentionClass: 'completed' }),
+      (error: unknown) => error instanceof AllocationRegistryError && error.code === 'ALLOCATION_REQUEST_REPLAY_MISMATCH');
+    await assert.rejects(() => registry.advance({ requestId: '35000000-0000-4000-8000-000000000005', worktreeId: allocation.worktreeId, expectedRevision: retained.revision, bindingDigest: allocation.bindingDigest, nextState: 'cleaning', safeCode: 'ALLOCATION_OK' }),
+      (error: unknown) => error instanceof AllocationRegistryError && error.code === 'RETENTION_ACTIVE');
+  } finally { registry.onStop(); await rm(root, { recursive: true, force: true }); }
+});
+
 test('allows only one durable import mutation lease per repository until terminal completion', async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), 'kogg-allocation-repository-lease-')); process.env.KOGG_STATE_DIR = root; const registry = new ExecutionAllocationRegistry(); await registry.onStart();
   try {

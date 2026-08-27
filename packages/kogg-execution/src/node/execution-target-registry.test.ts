@@ -7,7 +7,7 @@ import { EXECUTION_CHECKS, ExecutionDiagnosticContributor } from './execution-di
 import { executionLog, executionLoggingDiagnostics } from './execution-logger';
 import { ExecutionTargetRegistry } from './execution-target-registry';
 
-// diagnostic-coverage: execution.target-qualification, execution.worktree-registry, execution.git-independence, execution.source-integrity, execution.process-cleanup, execution.capacity, execution.recovery, execution.source-maps
+// diagnostic-coverage: execution.target-qualification, execution.worktree-registry, execution.git-independence, execution.source-integrity, execution.process-cleanup, execution.capacity, execution.recovery, execution.retention, execution.source-maps
 test('refuses non-Linux controllers without contacting the kernel or logging private values', async () => {
   let calls = 0; const canary = `private-target-${Date.now()}`; const logs: string[] = []; const original = { info: console.info, warn: console.warn };
   console.info = (...values: unknown[]) => { logs.push(JSON.stringify(values)); }; console.warn = (...values: unknown[]) => { logs.push(JSON.stringify(values)); };
@@ -50,5 +50,5 @@ function qualification(): KernelExecutionQualification {
   const checkedAt = new Date(Date.now() - 1_000).toISOString(); const expiresAt = new Date(Date.now() + 4 * 60_000).toISOString(); const digest = `sha256:${'a'.repeat(64)}`;
   return { schemaVersion: 1, qualificationId: '10000000-0000-4000-8000-000000000001', targetId: 'local-qualified-linux', architecture: 'amd64', profileId: 'kogg-writable-agent-v1', profileDigest: digest, bootIdDigest: digest, kernelRelease: '6.6.1', landlockAbi: '4', cgroupProfileDigest: digest, mountQuotaDigest: digest, launcherDigest: digest, bubblewrapDigest: digest, seccompDigest: digest, brokerDigest: digest, ranexCommit: KOGG_RANEX_COMMIT, checkedAt, expiresAt, status: 'qualified', refusalCodes: [] };
 }
-function healthyAllocations(): ExecutionAllocationRegistry { return { diagnostics: () => ({ integrity: true, foreignKeys: true, permissions: true, admission: 'enabled', activeCount: 0, quarantinedCount: 0, recoveryRequiredCount: 0, unverifiedCount: 0, cleanupFailureCount: 0, reservationCount: 0, candidateCount: 0, pendingImportIntentCount: 0, loggingViolationCount: 0 }) } as ExecutionAllocationRegistry; }
+function healthyAllocations(): ExecutionAllocationRegistry { return { diagnostics: () => ({ integrity: true, foreignKeys: true, permissions: true, admission: 'enabled', activeCount: 0, quarantinedCount: 0, recoveryRequiredCount: 0, unverifiedCount: 0, cleanupFailureCount: 0, reservationCount: 0, candidateCount: 0, pendingImportIntentCount: 0, activeRepositoryLeaseCount: 0, quarantinedRepositoryLeaseCount: 0, retentionViolationCount: 0, loggingViolationCount: 0 }) } as ExecutionAllocationRegistry; }
 function healthyOperations(): OperationRegistryApi { return { diagnostics: () => ({ integrity: true, foreignKeys: true, permissions: true, recoveryComplete: true, activeCount: 0, stalledCount: 0, residualCount: 0, cleanupFailureCount: 0, admission: 'enabled' }) } as OperationRegistryApi; }

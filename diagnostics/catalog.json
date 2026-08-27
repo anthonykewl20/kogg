@@ -30,6 +30,7 @@
     { "id": "execution.process-cleanup", "owner": "kogg-execution", "description": "Every execution process scope is registered and has zero hidden or residual descendants." },
     { "id": "execution.capacity", "owner": "kogg-execution", "description": "Execution byte, inode, process, CPU, memory, and time reservations are within policy." },
     { "id": "execution.recovery", "owner": "kogg-execution", "description": "Execution startup reconciliation completed without an unknown or unowned resource." },
+    { "id": "execution.retention", "owner": "kogg-execution", "description": "Candidate cleanup is fenced by a durable owner decision and an unexpired fixed retention policy." },
     { "id": "execution.source-maps", "owner": "kogg-execution", "description": "Execution backend and owner failure branches retain debugger-ready source maps." }
   ]
 }

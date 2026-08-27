@@ -5,15 +5,15 @@ import { DatabaseSync, type SQLOutputValue } from 'node:sqlite';
 import { BackendApplicationContribution } from '@theia/core/lib/node';
 import { injectable } from '@theia/core/shared/inversify';
 import type {
-  AdvanceExecutionStateV1, CandidateBindingV1, CandidateImportIntentV1, CompleteCandidateImportV1, ExecutionAllocationCode,
-  ExecutionAllocationSummaryV1, ExecutionBindingV1, ExecutionRunListV1, ExecutionRunProjectionV1, ExecutionState,
+  AdvanceExecutionStateV1, CandidateBindingV1, CandidateImportIntentV1, CompleteCandidateImportV1,
+  CandidateRetentionV1, ExecutionAllocationSummaryV1, ExecutionBindingV1, ExecutionLifecycleCode, ExecutionRunListV1, ExecutionRunProjectionV1, ExecutionState,
   FailCandidateImportV1, GetExecutionRunV1, ImportedCandidateV1, ListExecutionRunsV1, PrepareCandidateImportV1,
-  RecordSealedCandidateV1, ReserveExecutionAllocationV1
+  RecordCandidateRetentionV1, RecordSealedCandidateV1, ReserveExecutionAllocationV1
 } from '../common/execution-protocol';
 import { CANDIDATE_MUTATION_POLICY_DIGEST } from './candidate-sealer';
 
 // Allocation identity and idempotency commit before external effects; ambiguous startup state is quarantined without pathname deletion or side-effect replay.
-// diagnostic-coverage: execution.worktree-registry, execution.capacity, execution.recovery
+// diagnostic-coverage: execution.worktree-registry, execution.capacity, execution.recovery, execution.retention
 type SqlRow = Record<string, SQLOutputValue>;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u;
 const DIGEST = /^sha256:[0-9a-f]{64}$/u;
@@ -27,13 +27,14 @@ const LEGAL_TRANSITIONS: Readonly<Record<ExecutionState, readonly ExecutionState
   requested: ['refused', 'admitted'], refused: [], admitted: ['allocated', 'failed'], allocated: ['seeding', 'cleaning', 'quarantined'],
   seeding: ['verified', 'failed', 'timed-out', 'recovery-required'], verified: ['ready', 'cleaning', 'quarantined'], ready: ['leased', 'cleaning', 'quarantined'],
   leased: ['executing', 'cancelled', 'recovery-required'], executing: ['stopping', 'timed-out', 'failed', 'recovery-required'],
-  stopping: ['sealed', 'cancelled', 'timed-out', 'failed', 'cleanup-failed'], sealed: ['candidate-imported', 'retained', 'cleaning', 'recovery-required'],
-  'candidate-imported': ['retained', 'cleaning', 'recovery-required'], retained: ['cleaning'], cleaning: ['cleaned', 'cleanup-failed', 'quarantined'],
+  stopping: ['sealed', 'cancelled', 'timed-out', 'failed', 'cleanup-failed'], sealed: ['candidate-imported', 'recovery-required'],
+  'candidate-imported': ['recovery-required'], retained: ['cleaning'], cleaning: ['cleaned', 'cleanup-failed', 'quarantined'],
   'cleanup-failed': ['cleaning', 'quarantined'], 'recovery-required': ['reconciling'], reconciling: ['refused', 'admitted', 'allocated', 'seeding', 'verified', 'ready', 'leased', 'executing', 'stopping', 'sealed', 'candidate-imported', 'retained', 'cleaning', 'cleaned', 'failed', 'timed-out', 'cancelled', 'cleanup-failed', 'quarantined'],
   cleaned: [], failed: ['cleaning'], 'timed-out': ['cleaning'], cancelled: ['cleaning'], quarantined: []
 };
-const TRANSITION_CODES = new Set(['ALLOCATION_OK', 'ALLOCATION_ADMISSION_BLOCKED', 'ALLOCATION_PROTOCOL_INVALID', 'ALLOCATION_REQUEST_REPLAY_MISMATCH', 'ALLOCATION_RUN_EXISTS', 'ALLOCATION_INTEGRITY_FAILED', 'ALLOCATION_REVISION_CONFLICT', 'ALLOCATION_BINDING_MISMATCH', 'ALLOCATION_STATE_INVALID', 'ALLOCATION_REPOSITORY_LEASE_CONFLICT', 'RECOVERY_OWNER_UNAVAILABLE', 'GIT_SEED_FAILED', 'GIT_SEED_TIMEOUT', 'GIT_SEED_OUTPUT_LIMIT', 'GIT_BASE_CHANGED', 'GIT_INDEPENDENCE_FAILED', 'GIT_SOURCE_INTEGRITY_FAILED', 'SEAL_OK', 'SEAL_FAILED', 'SEAL_BASE_MISMATCH', 'SEAL_NO_CHANGE', 'SEAL_DIRTY', 'SEAL_HEAD_INVALID', 'SEAL_ANCESTRY_INVALID', 'SEAL_MERGE_COMMIT', 'SEAL_MUTATION_POLICY', 'SEAL_OBJECT_INVALID', 'IMPORT_OK', 'IMPORT_FAILED', 'IMPORT_PROTOCOL_INVALID', 'IMPORT_SOURCE_CHANGED', 'IMPORT_CANDIDATE_INVALID', 'IMPORT_REF_EXISTS', 'IMPORT_SOURCE_INTEGRITY_FAILED', 'EXECUTION_OK', 'QUALIFICATION_PLATFORM_UNSUPPORTED', 'QUALIFICATION_PROFILE_UNAVAILABLE', 'QUALIFICATION_PROTOCOL_INVALID', 'QUALIFICATION_EXPIRED', 'QUALIFICATION_FAILED', 'EXECUTION_INTERNAL_FAILED', 'PROCESS_EXIT_NONZERO', 'CLEANUP_FAILED']);
+const TRANSITION_CODES = new Set(['ALLOCATION_OK', 'ALLOCATION_ADMISSION_BLOCKED', 'ALLOCATION_PROTOCOL_INVALID', 'ALLOCATION_REQUEST_REPLAY_MISMATCH', 'ALLOCATION_RUN_EXISTS', 'ALLOCATION_INTEGRITY_FAILED', 'ALLOCATION_REVISION_CONFLICT', 'ALLOCATION_BINDING_MISMATCH', 'ALLOCATION_STATE_INVALID', 'ALLOCATION_REPOSITORY_LEASE_CONFLICT', 'RECOVERY_OWNER_UNAVAILABLE', 'GIT_SEED_FAILED', 'GIT_SEED_TIMEOUT', 'GIT_SEED_OUTPUT_LIMIT', 'GIT_BASE_CHANGED', 'GIT_INDEPENDENCE_FAILED', 'GIT_SOURCE_INTEGRITY_FAILED', 'SEAL_OK', 'SEAL_FAILED', 'SEAL_BASE_MISMATCH', 'SEAL_NO_CHANGE', 'SEAL_DIRTY', 'SEAL_HEAD_INVALID', 'SEAL_ANCESTRY_INVALID', 'SEAL_MERGE_COMMIT', 'SEAL_MUTATION_POLICY', 'SEAL_OBJECT_INVALID', 'IMPORT_OK', 'IMPORT_FAILED', 'IMPORT_PROTOCOL_INVALID', 'IMPORT_SOURCE_CHANGED', 'IMPORT_CANDIDATE_INVALID', 'IMPORT_REF_EXISTS', 'IMPORT_SOURCE_INTEGRITY_FAILED', 'RETENTION_OK', 'RETENTION_ACTIVE', 'RETENTION_PROTOCOL_INVALID', 'EXECUTION_OK', 'QUALIFICATION_PLATFORM_UNSUPPORTED', 'QUALIFICATION_PROFILE_UNAVAILABLE', 'QUALIFICATION_PROTOCOL_INVALID', 'QUALIFICATION_EXPIRED', 'QUALIFICATION_FAILED', 'EXECUTION_INTERNAL_FAILED', 'PROCESS_EXIT_NONZERO', 'CLEANUP_FAILED']);
 const IMPORT_FAILURE_CODES = new Set(['IMPORT_FAILED', 'IMPORT_PROTOCOL_INVALID', 'IMPORT_SOURCE_CHANGED', 'IMPORT_CANDIDATE_INVALID', 'IMPORT_REF_EXISTS', 'IMPORT_SOURCE_INTEGRITY_FAILED']);
+const RETENTION_MILLISECONDS = { rejected: 24 * 60 * 60 * 1000, completed: 24 * 60 * 60 * 1000, incident: 30 * 24 * 60 * 60 * 1000 } as const;
 
 export interface ExecutionAllocationDiagnostics {
   readonly integrity: boolean; readonly foreignKeys: boolean; readonly permissions: boolean;
@@ -41,7 +42,7 @@ export interface ExecutionAllocationDiagnostics {
   readonly quarantinedCount: number; readonly recoveryRequiredCount: number; readonly unverifiedCount: number;
   readonly cleanupFailureCount: number; readonly reservationCount: number;
   readonly candidateCount: number; readonly pendingImportIntentCount: number; readonly activeRepositoryLeaseCount: number;
-  readonly quarantinedRepositoryLeaseCount: number; readonly loggingViolationCount: number;
+  readonly quarantinedRepositoryLeaseCount: number; readonly retentionViolationCount: number; readonly loggingViolationCount: number;
 }
 
 @injectable()
@@ -141,6 +142,11 @@ export class ExecutionAllocationRegistry implements BackendApplicationContributi
     if (String(row.binding_digest) !== request.bindingDigest) refuseState(request, 'ALLOCATION_BINDING_MISMATCH');
     if (String(row.revision) !== request.expectedRevision) refuseState(request, 'ALLOCATION_REVISION_CONFLICT');
     const current = String(row.state) as ExecutionState; if (!LEGAL_TRANSITIONS[current].includes(request.nextState)) refuseState(request, 'ALLOCATION_STATE_INVALID');
+    if (current === 'retained' && request.nextState === 'cleaning') {
+      const retention = this.databaseOrThrow().prepare('SELECT retention_class,retention_until FROM candidates WHERE worktree_id=?').get(request.worktreeId) as SqlRow | undefined;
+      if (!retention || String(retention.retention_class) === 'pending-evidence' || !validTime(String(retention.retention_until))) refuseState(request, 'ALLOCATION_INTEGRITY_FAILED');
+      if (Date.parse(String(retention.retention_until)) > Date.now()) refuseState(request, 'RETENTION_ACTIVE');
+    }
     const now = new Date().toISOString();
     this.transaction(database => {
       const cleanupState = request.nextState === 'cleaning' ? 'cleaning' : request.nextState === 'cleaned' ? 'cleaned' : request.nextState === 'cleanup-failed' ? 'failed' : undefined;
@@ -283,6 +289,42 @@ export class ExecutionAllocationRegistry implements BackendApplicationContributi
     return this.summary(request.worktreeId);
   }
 
+  async recordRetention(request: RecordCandidateRetentionV1): Promise<CandidateRetentionV1> {
+    await this.ensureStarted(); validateRetention(request);
+    const requestDigest = digest('kogg-execution-retention-v1', canonicalRetention(request));
+    log('retention.requested', { requestId: request.requestId, worktreeId: request.worktreeId, candidateId: request.candidateId, retentionClass: request.retentionClass });
+    const replay = this.databaseOrThrow().prepare('SELECT request_digest,candidate_id FROM retention_request_results WHERE request_id=?').get(request.requestId) as SqlRow | undefined;
+    if (replay) {
+      if (String(replay.request_digest) !== requestDigest) refuseRetention(request, 'ALLOCATION_REQUEST_REPLAY_MISMATCH');
+      const result = this.retention(String(replay.candidate_id));
+      log('retention.completed', { requestId: request.requestId, worktreeId: request.worktreeId, candidateId: request.candidateId, retentionClass: result.retentionClass });
+      return result;
+    }
+    if (this.admission() !== 'enabled') refuseRetention(request, 'ALLOCATION_ADMISSION_BLOCKED');
+    const allocation = this.databaseOrThrow().prepare('SELECT state,revision,binding_digest FROM allocations WHERE worktree_id=?').get(request.worktreeId) as SqlRow | undefined;
+    const candidateRow = this.databaseOrThrow().prepare('SELECT candidate_json,retention_class FROM candidates WHERE candidate_id=? AND worktree_id=?').get(request.candidateId, request.worktreeId) as SqlRow | undefined;
+    if (!allocation || !candidateRow) refuseRetention(request, 'ALLOCATION_INTEGRITY_FAILED');
+    if (String(allocation.binding_digest) !== request.bindingDigest) refuseRetention(request, 'ALLOCATION_BINDING_MISMATCH');
+    if (String(allocation.revision) !== request.expectedRevision) refuseRetention(request, 'ALLOCATION_REVISION_CONFLICT');
+    if (!['sealed', 'candidate-imported'].includes(String(allocation.state)) || String(candidateRow.retention_class) !== 'pending-evidence') refuseRetention(request, 'ALLOCATION_STATE_INVALID');
+    const now = new Date(); const retentionUntil = new Date(now.getTime() + RETENTION_MILLISECONDS[request.retentionClass]).toISOString();
+    const candidate = JSON.parse(String(candidateRow.candidate_json)) as CandidateBindingV1;
+    const retainedCandidate: CandidateBindingV1 = { ...candidate, retentionClass: request.retentionClass, retentionUntil };
+    this.transaction(database => {
+      const candidateResult = database.prepare(`UPDATE candidates SET candidate_json=?,retention_class=?,retention_until=?,updated_at=? WHERE candidate_id=? AND worktree_id=? AND retention_class='pending-evidence'`)
+        .run(canonicalCandidate(retainedCandidate), request.retentionClass, retentionUntil, now.toISOString(), request.candidateId, request.worktreeId);
+      const allocationResult = database.prepare(`UPDATE allocations SET state='retained',safe_code='RETENTION_OK',revision=revision+1,updated_at=? WHERE worktree_id=? AND revision=? AND state=? AND binding_digest=?`)
+        .run(now.toISOString(), request.worktreeId, Number(request.expectedRevision), String(allocation.state), request.bindingDigest);
+      if (candidateResult.changes !== 1 || allocationResult.changes !== 1) throw new AllocationRegistryError('ALLOCATION_REVISION_CONFLICT');
+      database.prepare('INSERT INTO retention_request_results(request_id,request_digest,candidate_id,authority_digest,created_at) VALUES(?,?,?,?,?)')
+        .run(request.requestId, requestDigest, request.candidateId, request.authorityDigest, now.toISOString());
+      this.event(database, request.worktreeId, 'retention.committed', 'RETENTION_OK'); this.bump(database);
+    });
+    const result = this.retention(request.candidateId);
+    log('retention.completed', { requestId: request.requestId, worktreeId: request.worktreeId, candidateId: request.candidateId, retentionClass: result.retentionClass });
+    return result;
+  }
+
   diagnostics(): ExecutionAllocationDiagnostics {
     const database = this.databaseOrThrow();
     const count = (sql: string): number => Number((database.prepare(sql).get() as SqlRow).count);
@@ -301,6 +343,7 @@ export class ExecutionAllocationRegistry implements BackendApplicationContributi
       pendingImportIntentCount: count(`SELECT count(*) AS count FROM candidate_import_intents WHERE phase='requested'`),
       activeRepositoryLeaseCount: count(`SELECT count(*) AS count FROM repository_mutation_leases WHERE phase='active'`),
       quarantinedRepositoryLeaseCount: count(`SELECT count(*) AS count FROM repository_mutation_leases WHERE phase='quarantined'`),
+      retentionViolationCount: count(`SELECT count(*) AS count FROM candidates JOIN allocations ON allocations.worktree_id=candidates.worktree_id LEFT JOIN retention_request_results ON retention_request_results.candidate_id=candidates.candidate_id WHERE (allocations.state='retained' AND (candidates.retention_class='pending-evidence' OR retention_request_results.candidate_id IS NULL)) OR (allocations.state IN ('sealed','candidate-imported') AND candidates.retention_class<>'pending-evidence') OR (allocations.state IN ('cleaning','cleaned') AND candidates.retention_until>strftime('%Y-%m-%dT%H:%M:%fZ','now'))`),
       loggingViolationCount: allocationLoggingViolations
     };
   }
@@ -335,6 +378,7 @@ export class ExecutionAllocationRegistry implements BackendApplicationContributi
       CREATE TABLE IF NOT EXISTS request_results(request_id TEXT PRIMARY KEY,request_digest TEXT NOT NULL,worktree_id TEXT NOT NULL REFERENCES allocations(worktree_id),created_at TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS lifecycle_request_results(request_id TEXT PRIMARY KEY,request_digest TEXT NOT NULL,response_kind TEXT NOT NULL CHECK(response_kind IN ('state','seal','import-intent','import-complete')),resource_id TEXT NOT NULL,created_at TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS candidates(candidate_id TEXT PRIMARY KEY,worktree_id TEXT NOT NULL UNIQUE REFERENCES allocations(worktree_id),candidate_json TEXT NOT NULL,candidate_commit TEXT NOT NULL,candidate_tree TEXT NOT NULL,object_closure_digest TEXT NOT NULL,mutation_policy_digest TEXT NOT NULL,quarantine_ref_digest TEXT,retention_class TEXT NOT NULL CHECK(retention_class IN ('pending-evidence','rejected','incident','completed')),retention_until TEXT NOT NULL,created_at TEXT NOT NULL,updated_at TEXT);
+      CREATE TABLE IF NOT EXISTS retention_request_results(request_id TEXT PRIMARY KEY,request_digest TEXT NOT NULL,candidate_id TEXT NOT NULL REFERENCES candidates(candidate_id),authority_digest TEXT NOT NULL,created_at TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS candidate_import_intents(intent_id TEXT PRIMARY KEY,worktree_id TEXT NOT NULL REFERENCES allocations(worktree_id),candidate_id TEXT NOT NULL REFERENCES candidates(candidate_id),fencing_token TEXT NOT NULL,expected_source_identity_digest TEXT NOT NULL,observed_quarantine_ref_digest TEXT,phase TEXT NOT NULL CHECK(phase IN ('requested','completed','failed','quarantined')),safe_code TEXT NOT NULL,created_at TEXT NOT NULL,updated_at TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS repository_mutation_leases(lease_id TEXT PRIMARY KEY,repository_id TEXT NOT NULL,intent_id TEXT NOT NULL UNIQUE REFERENCES candidate_import_intents(intent_id),worktree_id TEXT NOT NULL REFERENCES allocations(worktree_id),fencing_token TEXT NOT NULL,owner_instance_id TEXT NOT NULL,phase TEXT NOT NULL CHECK(phase IN ('active','released','quarantined')),safe_code TEXT NOT NULL,created_at TEXT NOT NULL,updated_at TEXT NOT NULL);
       CREATE UNIQUE INDEX IF NOT EXISTS repository_mutation_lease_owner ON repository_mutation_leases(repository_id) WHERE phase IN ('active','quarantined');
@@ -383,6 +427,11 @@ export class ExecutionAllocationRegistry implements BackendApplicationContributi
     };
   }
   private candidate(candidateId: string): CandidateBindingV1 { const row = this.databaseOrThrow().prepare('SELECT candidate_json FROM candidates WHERE candidate_id=?').get(candidateId) as SqlRow | undefined; if (!row) throw new AllocationRegistryError('ALLOCATION_INTEGRITY_FAILED'); return JSON.parse(String(row.candidate_json)) as CandidateBindingV1; }
+  private retention(candidateId: string): CandidateRetentionV1 {
+    const row = this.databaseOrThrow().prepare(`SELECT candidates.candidate_id,candidates.worktree_id,candidates.retention_class,candidates.retention_until,allocations.state,allocations.revision FROM candidates JOIN allocations ON allocations.worktree_id=candidates.worktree_id WHERE candidates.candidate_id=?`).get(candidateId) as SqlRow | undefined;
+    if (!row || String(row.state) !== 'retained' || !['rejected', 'incident', 'completed'].includes(String(row.retention_class)) || !validTime(String(row.retention_until))) throw new AllocationRegistryError('ALLOCATION_INTEGRITY_FAILED');
+    return { schemaVersion: 1, candidateId, worktreeId: String(row.worktree_id), retentionClass: String(row.retention_class) as CandidateRetentionV1['retentionClass'], retentionUntil: String(row.retention_until), state: 'retained', revision: String(row.revision), safeCode: 'RETENTION_OK' };
+  }
   private importIntent(intentId: string): CandidateImportIntentV1 { const row = this.databaseOrThrow().prepare('SELECT * FROM candidate_import_intents WHERE intent_id=?').get(intentId) as SqlRow | undefined; if (!row || String(row.phase) !== 'requested') throw new AllocationRegistryError('ALLOCATION_INTEGRITY_FAILED'); return { schemaVersion: 1, intentId, worktreeId: String(row.worktree_id), candidateId: String(row.candidate_id), fencingToken: String(row.fencing_token), phase: 'requested', replay: false, safeCode: 'IMPORT_OK' }; }
   private importedCandidate(candidateId: string): ImportedCandidateV1 { const candidate = this.candidate(candidateId); const row = this.databaseOrThrow().prepare('SELECT quarantine_ref_digest FROM candidates WHERE candidate_id=?').get(candidateId) as SqlRow | undefined; if (!row || !DIGEST.test(String(row.quarantine_ref_digest))) throw new AllocationRegistryError('ALLOCATION_INTEGRITY_FAILED'); const { safeCode: _sealCode, ...binding } = candidate; return { ...binding, quarantineRefDigest: String(row.quarantine_ref_digest), safeCode: 'IMPORT_OK' }; }
   private admission(): ExecutionAllocationDiagnostics['admission'] { return String((this.databaseOrThrow().prepare('SELECT admission FROM execution_meta WHERE singleton=1').get() as SqlRow).admission) as ExecutionAllocationDiagnostics['admission']; }
@@ -392,7 +441,7 @@ export class ExecutionAllocationRegistry implements BackendApplicationContributi
   private databaseOrThrow(): DatabaseSync { if (!this.database) throw new AllocationRegistryError('ALLOCATION_INTEGRITY_FAILED'); return this.database; }
 }
 
-export class AllocationRegistryError extends Error { constructor(readonly code: ExecutionAllocationCode) { super(code); this.name = 'AllocationRegistryError'; } }
+export class AllocationRegistryError extends Error { constructor(readonly code: ExecutionLifecycleCode) { super(code); this.name = 'AllocationRegistryError'; } }
 
 function validateRequest(request: ReserveExecutionAllocationV1): void {
   if (!request || Object.keys(request).sort().join(',') !== 'binding,quotaBytes,quotaInodes,requestId'
@@ -442,6 +491,13 @@ function validateImportFailure(request: FailCandidateImportV1): void {
     || !/^[0-9a-f]{64}$/u.test(request.fencingToken) || !DECIMAL.test(request.expectedRevision) || request.expectedRevision === '0'
     || !IMPORT_FAILURE_CODES.has(request.safeCode)) throw new AllocationRegistryError('ALLOCATION_PROTOCOL_INVALID');
 }
+function validateRetention(request: RecordCandidateRetentionV1): void {
+  if (!request || Object.keys(request).sort().join(',') !== 'authorityDigest,bindingDigest,candidateId,expectedRevision,requestId,retentionClass,worktreeId'
+    || ![request.requestId, request.worktreeId, request.candidateId].every(value => UUID.test(value))
+    || ![request.bindingDigest, request.authorityDigest].every(value => DIGEST.test(value))
+    || !DECIMAL.test(request.expectedRevision) || request.expectedRevision === '0'
+    || !Object.hasOwn(RETENTION_MILLISECONDS, request.retentionClass)) throw new AllocationRegistryError('RETENTION_PROTOCOL_INVALID');
+}
 function validateBinding(value: ExecutionBindingV1): void {
   const object = value?.gitObjectFormat === 'sha1' ? SHA1 : SHA256;
   if (!value || Object.keys(value).sort().join(',') !== [...BINDING_FIELDS].sort().join(',') || value.schemaVersion !== 1
@@ -457,15 +513,17 @@ function canonicalSealed(value: RecordSealedCandidateV1): string { return `{"bin
 function canonicalImportIntent(value: PrepareCandidateImportV1): string { return JSON.stringify({ bindingDigest: value.bindingDigest, candidateId: value.candidateId, expectedRevision: value.expectedRevision, expectedSourceIdentityDigest: value.expectedSourceIdentityDigest, requestId: value.requestId, worktreeId: value.worktreeId }); }
 function canonicalImportCompletion(value: CompleteCandidateImportV1): string { return JSON.stringify({ bindingDigest: value.bindingDigest, candidateCommit: value.candidateCommit, candidateId: value.candidateId, candidateTree: value.candidateTree, expectedRevision: value.expectedRevision, fencingToken: value.fencingToken, intentId: value.intentId, quarantineRefDigest: value.quarantineRefDigest, requestId: value.requestId, worktreeId: value.worktreeId }); }
 function canonicalImportFailure(value: FailCandidateImportV1): string { return JSON.stringify({ bindingDigest: value.bindingDigest, candidateId: value.candidateId, expectedRevision: value.expectedRevision, fencingToken: value.fencingToken, intentId: value.intentId, requestId: value.requestId, safeCode: value.safeCode, worktreeId: value.worktreeId }); }
+function canonicalRetention(value: RecordCandidateRetentionV1): string { return JSON.stringify({ authorityDigest: value.authorityDigest, bindingDigest: value.bindingDigest, candidateId: value.candidateId, expectedRevision: value.expectedRevision, requestId: value.requestId, retentionClass: value.retentionClass, worktreeId: value.worktreeId }); }
 function canonicalCandidate(value: CandidateBindingV1): string { const record = value as unknown as Record<string, unknown>; return `{${Object.keys(record).sort().map(key => `${JSON.stringify(key)}:${JSON.stringify(record[key])}`).join(',')}}`; }
 function validTime(value: string): boolean { const parsed = Date.parse(value); return Number.isFinite(parsed) && new Date(parsed).toISOString() === value; }
-function refuseState(request: AdvanceExecutionStateV1, code: ExecutionAllocationCode): never { log('state.refused', { requestId: request.requestId, worktreeId: request.worktreeId, state: request.nextState, safeCode: code }); throw new AllocationRegistryError(code); }
+function refuseState(request: AdvanceExecutionStateV1, code: ExecutionLifecycleCode): never { log('state.refused', { requestId: request.requestId, worktreeId: request.worktreeId, state: request.nextState, safeCode: code }); throw new AllocationRegistryError(code); }
+function refuseRetention(request: RecordCandidateRetentionV1, code: ExecutionLifecycleCode): never { log('retention.refused', { requestId: request.requestId, worktreeId: request.worktreeId, candidateId: request.candidateId, retentionClass: request.retentionClass, safeCode: code }); throw new AllocationRegistryError(code); }
 function canonicalBinding(value: ExecutionBindingV1): string { return `{${[...BINDING_FIELDS].sort().map(key => `${JSON.stringify(key)}:${JSON.stringify(value[key as keyof ExecutionBindingV1])}`).join(',')}}`; }
 function digest(domain: string, value: string): string { return `sha256:${createHash('sha256').update(`${domain}\0${value}`).digest('hex')}`; }
 function allocationName(worktreeId: string): string { const alphabet = 'abcdefghijklmnopqrstuvwxyz234567'; const bytes = Buffer.from(worktreeId.replaceAll('-', ''), 'hex'); let bits = 0; let accumulator = 0; let output = ''; for (const byte of bytes) { accumulator = (accumulator << 8) | byte; bits += 8; while (bits >= 5) { bits -= 5; output += alphabet[(accumulator >>> bits) & 31]; } } if (bits) output += alphabet[(accumulator << (5 - bits)) & 31]; return `r-${output}`; }
 function stateRoot(): string { return path.resolve(process.env.KOGG_STATE_DIR ?? path.join(process.env.KOGG_ROOT ? path.resolve(process.env.KOGG_ROOT) : process.cwd(), '.kogg', 'state')); }
 function errorType(error: unknown): string { return error instanceof Error ? error.name : 'UnknownError'; }
-function projectionErrorCode(error: unknown): ExecutionAllocationCode { return error instanceof AllocationRegistryError ? error.code : 'ALLOCATION_INTEGRITY_FAILED'; }
+function projectionErrorCode(error: unknown): ExecutionLifecycleCode { return error instanceof AllocationRegistryError ? error.code : 'ALLOCATION_INTEGRITY_FAILED'; }
 function runProjection(row: SqlRow): ExecutionRunProjectionV1 {
   return {
     schemaVersion: 1, projectId: String(row.project_id), repositoryId: String(row.repository_id), runId: String(row.run_id),
@@ -488,6 +546,9 @@ const LOG_FIELDS = {
   'state.requested': ['requestId', 'worktreeId', 'state'], 'state.completed': ['requestId', 'worktreeId', 'state'],
   'state.refused': ['requestId', 'worktreeId', 'state', 'safeCode'],
   'candidate.recorded': ['requestId', 'worktreeId', 'candidateId'],
+  'retention.requested': ['requestId', 'worktreeId', 'candidateId', 'retentionClass'],
+  'retention.completed': ['requestId', 'worktreeId', 'candidateId', 'retentionClass'],
+  'retention.refused': ['requestId', 'worktreeId', 'candidateId', 'retentionClass', 'safeCode'],
   'repository.lease.requested': ['requestId', 'repositoryId'], 'repository.lease.acquired': ['requestId', 'repositoryId', 'intentId'],
   'repository.lease.refused': ['requestId', 'repositoryId', 'safeCode'],
   'repository.lease.released': ['requestId', 'worktreeId', 'intentId'],
@@ -513,6 +574,7 @@ function log(event: AllocationLogEvent, fields: Readonly<Record<string, string |
     if (['requestId', 'projectId', 'repositoryId', 'runId', 'worktreeId', 'candidateId', 'intentId'].includes(key)) return UUID.test(value);
     if (key === 'admission') return ['enabled', 'recovering', 'blocked'].includes(value);
     if (key === 'state') return Object.hasOwn(LEGAL_TRANSITIONS, value);
+    if (key === 'retentionClass') return ['rejected', 'incident', 'completed'].includes(value);
     if (key === 'safeCode') return /^[A-Z][A-Z0-9_]{1,63}$/u.test(value);
     return /^[A-Za-z][A-Za-z0-9_.]{0,63}$/u.test(value);
   });

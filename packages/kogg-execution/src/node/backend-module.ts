@@ -8,7 +8,7 @@ import { ExecutionDiagnosticContributor } from './execution-diagnostic-contribut
 import { ExecutionService } from './execution-service';
 import { ExecutionTargetRegistry } from './execution-target-registry';
 
-// diagnostic-coverage: execution.target-qualification, execution.worktree-registry, execution.git-independence, execution.source-integrity, execution.process-cleanup, execution.capacity, execution.recovery, execution.source-maps
+// diagnostic-coverage: execution.target-qualification, execution.worktree-registry, execution.git-independence, execution.source-integrity, execution.process-cleanup, execution.capacity, execution.recovery, execution.retention, execution.source-maps
 export default new ContainerModule(bind => {
   bind(ExecutionAllocationRegistry).toSelf().inSingletonScope(); bind(BackendApplicationContribution).toService(ExecutionAllocationRegistry);
   bind(ExecutionTargetRegistry).toSelf().inSingletonScope(); bind(BackendApplicationContribution).toService(ExecutionTargetRegistry);
