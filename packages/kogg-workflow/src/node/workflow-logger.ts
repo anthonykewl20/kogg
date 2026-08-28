@@ -28,12 +28,13 @@ type Fields = {
   'approval.continue.requested': { requestId: string; runId: string; nodeId: string };
   'approval.continue.completed': { requestId: string; runId: string; nodeId: string };
   'approval.continue.refused': { requestId: string; runId: string; nodeId: string; safeCode: WorkflowSafeCode };
-  'run.completed': { planId: string; runId: string; completedNodeCount: number; skippedNodeCount: number; safeCode: 'WORKFLOW_OK'; processCount: 0; residualProcessCount: 0 };
+  'run.completed': { planId: string; runId: string; completedNodeCount: number; skippedNodeCount: number; failedNodeCount: number; safeCode: 'WORKFLOW_OK'; processCount: 0; residualProcessCount: 0 };
   'run.failed': { planId: string; runId: string; completedNodeCount: number; skippedNodeCount: number; failedNodeCount: number; safeCode: WorkflowSafeCode; processCount: 0; residualProcessCount: number };
   'node.execution.started': { runId: string; nodeId: string; nodeKind: string; attempt: number; executorId: string };
   'node.execution.completed': { runId: string; nodeId: string; nodeKind: string; attempt: number; executorId: string; output: string; safeCode: WorkflowSafeCode; processCount: number; residualProcessCount: number };
   'node.execution.refused': { runId: string; nodeId: string; nodeKind: string; attempt: number; executorId: string; safeCode: WorkflowSafeCode; processCount: number; residualProcessCount: number };
   'node.routing.skipped': { runId: string; nodeId: string; nodeKind: string; safeCode: 'WORKFLOW_OK'; processCount: 0; residualProcessCount: 0 };
+  'node.failure.routed': { runId: string; nodeId: string; nodeKind: string; safeCode: WorkflowSafeCode; routeCount: number; processCount: 0; residualProcessCount: 0 };
   'run.recovery.quarantined': { runId: string; safeCode: 'WORKFLOW_OUTCOME_UNKNOWN' };
   'owner.publish.failed': { safeCode: 'WORKFLOW_STORE_INTEGRITY'; errorType: string };
   'recovery.started': { versionCount: number; activeRunCount: number; pendingOutboxCount: number };
@@ -76,6 +77,7 @@ export function workflowLog<K extends keyof Fields>(event: K, fields: Fields[K])
   else if (event === 'node.execution.completed') console.info('[kogg:workflow:engine] node.execution.completed', fields);
   else if (event === 'node.execution.refused') console.warn('[kogg:workflow:engine] node.execution.refused', fields);
   else if (event === 'node.routing.skipped') console.info('[kogg:workflow:engine] node.routing.skipped', fields);
+  else if (event === 'node.failure.routed') console.info('[kogg:workflow:engine] node.failure.routed', fields);
   else if (event === 'run.recovery.quarantined') console.warn('[kogg:workflow:recovery] run.recovery.quarantined', fields);
   else if (event === 'owner.publish.failed') console.error('[kogg:workflow:owners] owner.publish.failed', fields);
   else if (event === 'recovery.started') console.info('[kogg:workflow:recovery] recovery.started', fields);
