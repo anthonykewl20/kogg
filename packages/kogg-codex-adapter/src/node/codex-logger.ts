@@ -1,10 +1,16 @@
 import type { CodexSafeCode } from '../common/codex-protocol';
 
-// diagnostic-coverage: codex.release, codex.protocol, codex.processes, codex.cleanup, codex.recovery
+// diagnostic-coverage: codex.release, codex.confinement, codex.protocol, codex.credentials, codex.processes, codex.cleanup, codex.recovery, codex.source-maps
 type EventFields = {
   'release.verification.started': { adapterVersion: string };
   'release.verification.completed': { releaseId: string; target: string; adapterVersion: string };
   'release.verification.failed': { adapterVersion: string; safeCode: CodexSafeCode };
+  'authority.verification.started': { releaseId: string; target: string };
+  'authority.verification.completed': { releaseId: string; target: string; qualificationProfileId: string };
+  'authority.verification.failed': { releaseId: string; safeCode: CodexSafeCode };
+  'session.create.requested': { attemptId: string; releaseId: string };
+  'session.create.completed': { attemptId: string; releaseId: string; resourceId: string };
+  'session.create.failed': { attemptId: string; releaseId: string; safeCode: CodexSafeCode };
   'process.start.requested': { operationId: string; processId: string };
   'process.started': { operationId: string; processId: string };
   'process.failed': { operationId: string; processId: string; safeCode: CodexSafeCode };
@@ -51,6 +57,8 @@ type EventFields = {
 const ALLOWED: { [K in keyof EventFields]: readonly (keyof EventFields[K])[] } = {
   'release.verification.started': ['adapterVersion'], 'release.verification.completed': ['releaseId', 'target', 'adapterVersion'],
   'release.verification.failed': ['adapterVersion', 'safeCode'], 'process.start.requested': ['operationId', 'processId'],
+  'authority.verification.started': ['releaseId', 'target'], 'authority.verification.completed': ['releaseId', 'target', 'qualificationProfileId'], 'authority.verification.failed': ['releaseId', 'safeCode'],
+  'session.create.requested': ['attemptId', 'releaseId'], 'session.create.completed': ['attemptId', 'releaseId', 'resourceId'], 'session.create.failed': ['attemptId', 'releaseId', 'safeCode'],
   'process.started': ['operationId', 'processId'], 'process.failed': ['operationId', 'processId', 'safeCode'],
   'protocol.phase.changed': ['phase'], 'protocol.frame.refused': ['safeCode'],
   'protocol.request.started': ['attemptId', 'requestClass'], 'protocol.request.completed': ['attemptId', 'requestClass'],
@@ -79,6 +87,12 @@ export function codexLog<K extends keyof EventFields>(event: K, fields: EventFie
   if (event === 'release.verification.started') console.info('[kogg:agents:codex-release] release.verification.started', fields);
   else if (event === 'release.verification.completed') console.info('[kogg:agents:codex-release] release.verification.completed', fields);
   else if (event === 'release.verification.failed') console.error('[kogg:agents:codex-release] release.verification.failed', fields);
+  else if (event === 'authority.verification.started') console.info('[kogg:agents:codex-authority] authority.verification.started', fields);
+  else if (event === 'authority.verification.completed') console.info('[kogg:agents:codex-authority] authority.verification.completed', fields);
+  else if (event === 'authority.verification.failed') console.error('[kogg:agents:codex-authority] authority.verification.failed', fields);
+  else if (event === 'session.create.requested') console.debug('[kogg:agents:codex-authority] session.create.requested', fields);
+  else if (event === 'session.create.completed') console.info('[kogg:agents:codex-authority] session.create.completed', fields);
+  else if (event === 'session.create.failed') console.error('[kogg:agents:codex-authority] session.create.failed', fields);
   else if (event === 'process.start.requested') console.info('[kogg:agents:codex-release] process.start.requested', fields);
   else if (event === 'process.started') console.info('[kogg:agents:codex-release] process.started', fields);
   else if (event === 'process.failed') console.error('[kogg:agents:codex-release] process.failed', fields);
