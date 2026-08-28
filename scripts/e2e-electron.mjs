@@ -11,7 +11,7 @@ import { _electron as electron } from 'playwright';
 import { captureSafeFailureArtifacts } from './e2e-artifact-manager.mjs';
 import { HarnessProcessRegistry } from './e2e-process-registry.mjs';
 import { HarnessRunManifest } from './e2e-run-manifest.mjs';
-import { discover, platformCapabilities } from './e2e-readiness.mjs';
+import { discover, platformCapabilities, selectedScenario } from './e2e-readiness.mjs';
 
 const require = createRequire(import.meta.url);
 const keytar = require('keytar');
@@ -91,7 +91,7 @@ try {
     await application.firstWindow({ timeout: 30_000 });
     const page = await waitForKoggWindow(application);
     processes.ready(application.process());
-    await run.active();
+    await run.active(selectedScenario('electron'));
     page.on('console', entry => logs.push(`[frontend:${entry.type()}] ${entry.text()}`));
     page.on('pageerror', error => logs.push(`[frontend:error] ${error.stack ?? error.message}`));
     assert.match(await page.title(), /Kogg|workspace/iu);
@@ -223,6 +223,8 @@ try {
 
 async function settleRun(scenarioError) {
     let cleanupError; let artifactError; let artifacts = [];
+    const state = await run.read();
+    if (state.state === 'active' && state.scenarioState === 'active') { try { if (scenarioError) await run.scenarioFailed(); else await run.scenarioCompleted(); } catch (error) { cleanupError = error; } }
     await run.cleaning(processes.manifest()).catch(error => { cleanupError = error; });
     if (application) { const closed = await Promise.race([application.close().then(() => true, () => false), new Promise(resolve => setTimeout(() => resolve(false), 10_000))]); if (!closed) { cleanupError ??= new Error('E2E_APPLICATION_CLOSE_TIMEOUT'); application.process().kill(); } application = undefined; }
     await processes.cleanup().catch(error => { cleanupError ??= error; }); await keytar.deletePassword(credentialService, 'openai:default').catch(error => { cleanupError ??= error; });

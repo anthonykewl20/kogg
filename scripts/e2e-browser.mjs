@@ -9,7 +9,7 @@ import { chromium } from 'playwright';
 import { captureSafeFailureArtifacts } from './e2e-artifact-manager.mjs';
 import { HarnessProcessRegistry } from './e2e-process-registry.mjs';
 import { HarnessRunManifest } from './e2e-run-manifest.mjs';
-import { discover, platformCapabilities } from './e2e-readiness.mjs';
+import { discover, platformCapabilities, selectedScenario } from './e2e-readiness.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const resultRoot = path.join(root, 'test-results');
@@ -84,7 +84,7 @@ try {
     }
     await page.waitForTimeout(2_000);
     assert.match(await page.title(), /^workspace(?: - Kogg)?$/u);
-    await run.active();
+    await run.active(selectedScenario('browser'));
 
     if (process.env.KOGG_E2E_EXECUTION_ONLY === '1') {
         await exerciseExecution(page);
@@ -291,6 +291,8 @@ try {
 
 async function settleRun(scenarioError) {
     let cleanupError; let artifactError; let artifacts = [];
+    const state = await run.read();
+    if (state.state === 'active' && state.scenarioState === 'active') { try { if (scenarioError) await run.scenarioFailed(); else await run.scenarioCompleted(); } catch (error) { cleanupError = error; } }
     await run.cleaning(processes.manifest()).catch(error => { cleanupError = error; });
     if (browser) { await browser.close().catch(error => { cleanupError ??= error; }); browser = undefined; }
     await processes.cleanup().catch(error => { cleanupError ??= error; });

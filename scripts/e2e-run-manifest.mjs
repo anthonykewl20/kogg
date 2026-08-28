@@ -6,6 +6,7 @@ const TRANSITIONS = { requested: ['starting'], starting: ['active','cleaning'], 
 const PLATFORMS = ['linux','macos','windows']; const RUNTIMES = ['browser','electron'];
 const FIXTURE_KINDS = ['browser-backend','electron-application','signed-registry']; const FIXTURE_STATES = ['started','ready','exited','cleaned','residual'];
 const CAPABILITY_NAMES = ['governed-generation','terminal-debug']; const CAPABILITY_STATUSES = ['available','pending-qualification','refusal-required','runtime-delegated'];
+const SCENARIOS = ['portable-surface','execution-refusal','projects','tasks','operations','workflow','verdict-merge'];
 const SAFE = /^[a-zA-Z0-9][a-zA-Z0-9._:-]{0,127}$/u; const SHA256 = /^[0-9a-f]{64}$/u;
 
 export class HarnessRunManifest {
@@ -21,10 +22,12 @@ export class HarnessRunManifest {
     get platform() { return this.value.platform; }
     get runtime() { return this.value.runtime; }
     async starting() { await this.#transition('starting'); this.#log('run.started'); }
-    async active() { await this.#transition('active'); }
-    async cleaning(fixtures) { const patch = { fixtures: validateFixtures(fixtures) }; if (this.value.state === 'cleaning') { this.value = { ...this.value, ...patch }; await this.#write(); return; } await this.#transition('cleaning', patch); this.#log('residual-check.started'); }
+    async active(scenarioId) { if (!SCENARIOS.includes(scenarioId)) throw new Error('E2E_MANIFEST_INVALID'); await this.#transition('active', { scenarioId, scenarioState: 'active', steps: [{ id: 'visible-journey', state: 'active' }] }); this.#log('scenario.started', { scenarioId }); this.#log('step.started', { scenarioId, stepId: 'visible-journey' }); }
+    async scenarioCompleted() { this.#scenarioTerminal('completed'); await this.#write(); this.#log('step.completed', { scenarioId: this.value.scenarioId, stepId: 'visible-journey' }); this.#log('scenario.completed', { scenarioId: this.value.scenarioId }); }
+    async scenarioFailed() { this.#scenarioTerminal('failed'); await this.#write(); this.#log('step.failed', { scenarioId: this.value.scenarioId, stepId: 'visible-journey', safeCode: 'E2E_STEP_FAILED' }); this.#log('scenario.failed', { scenarioId: this.value.scenarioId, safeCode: 'E2E_STEP_FAILED' }); }
+    async cleaning(fixtures) { const patch = { fixtures: validateFixtures(fixtures) }; if (this.value.state === 'cleaning') { this.value = { ...this.value, ...patch }; await this.#write(); return; } if (this.value.state === 'active' && !['completed','failed'].includes(this.value.scenarioState)) throw new Error('E2E_MANIFEST_SCENARIO_INCOMPLETE'); await this.#transition('cleaning', patch); this.#log('residual-check.started'); }
     async completed({ fixtures, artifacts = [], residualCount = 0 }) {
-        const final = finalFields(fixtures, artifacts, residualCount); if (final.harnessChecks.some(check => check.status !== 'pass')) throw new Error('E2E_MANIFEST_SUCCESS_REFUSED');
+        const final = finalFields(fixtures, artifacts, residualCount); if (this.value.scenarioState !== 'completed' || this.value.steps?.some(step => step.state !== 'passed') || final.harnessChecks.some(check => check.status !== 'pass')) throw new Error('E2E_MANIFEST_SUCCESS_REFUSED');
         await this.#transition('completed', final); this.#log('residual-check.completed', { residualCount }); this.#log('run.completed');
     }
     async failed({ fixtures, artifacts = [], residualCount = 0, safeCode = 'E2E_SCENARIO_FAILED', errorType = 'Error' }) {
@@ -38,6 +41,7 @@ export class HarnessRunManifest {
         if (!TRANSITIONS[this.value.state].includes(next)) throw new Error('E2E_MANIFEST_TRANSITION_INVALID');
         this.value = { ...this.value, ...patch, state: next }; await this.#write();
     }
+    #scenarioTerminal(state) { if (this.value.state !== 'active' || this.value.scenarioState !== 'active' || this.value.steps?.length !== 1 || this.value.steps[0].state !== 'active') throw new Error('E2E_MANIFEST_SCENARIO_INVALID'); this.value = { ...this.value, scenarioState: state, steps: [{ id: 'visible-journey', state: state === 'completed' ? 'passed' : 'failed', ...(state === 'failed' ? { safeCode: 'E2E_STEP_FAILED' } : {}) }] }; }
     async #write() {
         const text = `${JSON.stringify(this.value, null, 2)}\n`; const temporary = path.join(this.directory, `.manifest.${randomUUID()}.tmp`);
         await writeFile(temporary, text, { encoding: 'utf8', mode: 0o600, flag: 'wx' }); await rename(temporary, path.join(this.directory, 'manifest.json'));
