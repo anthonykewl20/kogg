@@ -3,6 +3,7 @@ import { inject, injectable } from '@theia/core/shared/inversify';
 import { codexLog, codexLoggingDiagnostics } from './codex-logger';
 import { CodexReleaseRegistry } from './codex-release-registry';
 import { CodexRecoveryRegistry } from './codex-recovery-registry';
+import { CodexRuntimeAuthorityRegistry } from './codex-runtime-authority';
 import { codexSourceMapDiagnostics } from './codex-source-map-diagnostics';
 
 // Logs through the closed [kogg:agents:codex-release] schema in codex-logger.
@@ -11,15 +12,16 @@ export const CODEX_CHECKS = [{ id: 'codex.release' }, { id: 'codex.confinement' 
 @injectable()
 export class CodexDiagnosticContributor implements KoggDiagnosticContributor {
   readonly id = 'codex'; constructor(@inject(CodexReleaseRegistry) private readonly releases: CodexReleaseRegistry,
-    @inject(CodexRecoveryRegistry) private readonly recovery: CodexRecoveryRegistry) {}
+    @inject(CodexRecoveryRegistry) private readonly recovery: CodexRecoveryRegistry,
+    @inject(CodexRuntimeAuthorityRegistry) private readonly runtimeAuthority: CodexRuntimeAuthorityRegistry) {}
   async diagnose(): Promise<readonly KoggDiagnosticCheck[]> {
     try {
-      await Promise.all([this.releases.onStart(), this.recovery.onStart()]); const value = this.releases.projection(); const runtime = this.recovery.projection(); const logging = codexLoggingDiagnostics(); const sourceMaps = codexSourceMapDiagnostics();
+      await Promise.all([this.runtimeAuthority.onStart(), this.recovery.onStart()]); const value = this.releases.projection(); const authority = this.runtimeAuthority.projection(); const runtime = this.recovery.projection(); const logging = codexLoggingDiagnostics(); const sourceMaps = codexSourceMapDiagnostics();
       return [
         check('codex.release', value.qualified && value.releasePresent && value.assetsVerified, 'The exact signed Codex release bundle is qualified.', 'No exact signed Codex release bundle is qualified.', { safeCode: value.safeCode }),
-        check('codex.confinement', value.qualified && value.confinementVerified, 'The qualified Linux confinement profile is available.', 'The qualified Linux confinement profile is unavailable.', { safeCode: value.safeCode }),
+        check('codex.confinement', value.qualified && authority.ownerReady && authority.confinementVerified, 'The qualified Linux confinement profile is available.', 'The qualified Linux confinement profile is unavailable.', { ownerReady: authority.ownerReady, safeCode: authority.safeCode }),
         check('codex.protocol', value.qualified && value.protocolVerified, 'The exact Codex app-server schema is verified.', 'The exact Codex app-server schema is unverified.', { safeCode: value.safeCode }),
-        check('codex.credentials', value.qualified && value.credentialBrokerReady, 'The scoped Codex credential broker is ready.', 'The scoped Codex credential broker is unavailable.', { safeCode: value.safeCode }),
+        check('codex.credentials', value.qualified && authority.ownerReady && authority.credentialBrokerReady, 'The scoped Codex credential broker is ready.', 'The scoped Codex credential broker is unavailable.', { ownerReady: authority.ownerReady, safeCode: authority.safeCode }),
         check('codex.processes', runtime.ownerReady && runtime.residualCount === 0, 'The qualified Codex owner reports no hidden or residual process.', 'The qualified Codex process inventory is unavailable or residual.', { ownerReady: runtime.ownerReady, processCount: runtime.processCount, residualCount: runtime.residualCount, safeCode: runtime.safeCode }),
         check('codex.cleanup', runtime.ownerReady && runtime.residualCount === 0 && runtime.cleanupFailureCount === 0, 'Codex resource cleanup has zero residuals or failures.', 'Codex cleanup authority is unavailable or reports residuals/failures.', { ownerReady: runtime.ownerReady, residualCount: runtime.residualCount, cleanupFailureCount: runtime.cleanupFailureCount, safeCode: runtime.safeCode }),
         check('codex.recovery', runtime.ownerReady && runtime.recoveryComplete && runtime.recoveryBacklog === 0 && runtime.residualCount === 0, 'Codex startup reconciliation is complete.', 'Codex startup reconciliation is unavailable, incomplete, or blocked.', { ownerReady: runtime.ownerReady, recoveryBacklog: runtime.recoveryBacklog, residualCount: runtime.residualCount, safeCode: runtime.safeCode }),
