@@ -40,7 +40,7 @@ export class CodexProcessHostGate {
 }
 
 export class CodexProcessHost {
-  private exitMonitor: Promise<void> | undefined; private expectedExit = false; private cleaned = false; private started = false; private identity: CodexProcessIdentityV1 | undefined; private terminating: Promise<void> | undefined; private onFault: ((code: 'CODEX_HOST_EXITED') => void | Promise<void>) | undefined;
+  private exitMonitor: Promise<void> | undefined; private expectedExit = false; private cleaned = false; private logicalFailure = false; private started = false; private identity: CodexProcessIdentityV1 | undefined; private terminating: Promise<void> | undefined; private onFault: ((code: 'CODEX_HOST_EXITED') => void | Promise<void>) | undefined;
   readonly binding: CodexProcessReservationV1;
   private constructor(private readonly input: CodexProcessHostInput, private readonly process: ProcessLease) { this.binding = processBinding(input.attempt, input.runtime); }
   static register(input: CodexProcessHostInput): CodexProcessHost {
@@ -60,11 +60,13 @@ export class CodexProcessHost {
   terminateOwnedHost(): Promise<void> { return this.terminating ??= this.terminateOnce(); }
   async enumerateResiduals(): Promise<number> {
     const count = await bounded(this.input.owner.enumerateResiduals(this.ownerIdentity()), this.cleanupTimeout()); if (!Number.isSafeInteger(count) || count < 0) throw new CodexProcessHostFault('CODEX_CLEANUP_FAILED');
-    if (count === 0 && !this.cleaned) { this.process.cleanup(); this.cleaned = true; } return count;
+    if (count === 0 && !this.cleaned && !this.logicalFailure) { try { this.process.cleanup(); this.cleaned = true; } catch { // observability-exempt: The logical registry error is discarded behind the closed cleanup failure after external zero-residual proof.
+        this.logicalFailure = true; this.markLogicalFailed('PROCESS_SIGNALLED'); } } if (this.logicalFailure) throw new CodexProcessHostFault('CODEX_CLEANUP_FAILED'); return count;
   }
   private async startOnce(): Promise<Pick<CodexOwnedHost, 'stdin' | 'stdout' | 'stderr'>> {
-    codexLog('host.start.requested', this.fields()); this.process.spawning();
+    codexLog('host.start.requested', this.fields());
     try {
+      this.process.spawning();
       const identity = await bounded(this.input.owner.prepare({ binding: this.binding, processRegistrationId: this.process.id }), this.spawnTimeout()); if (!validIdentity(identity, this.process.id)) throw new CodexProcessHostFault('CODEX_CONFINEMENT_UNVERIFIED'); this.identity = Object.freeze({ ...identity });
       await this.input.credentials.reserve(); await this.input.credentials.activate(identity.processRegistrationId, identity.cgroupIdentityDigest);
       const host = await bounded(this.input.owner.spawn(identity), this.spawnTimeout()); if (!validHost(host, identity)) throw new CodexProcessHostFault('CODEX_CONFINEMENT_UNVERIFIED');
@@ -77,18 +79,22 @@ export class CodexProcessHost {
   private async monitor(host: CodexOwnedHost): Promise<void> {
     let exitClass: 'zero' | 'nonzero' | 'signal'; try { ({ exitClass } = await host.closed); } catch { // observability-exempt: A rejected close observation is safely classified as signal; external enumeration remains authoritative.
       exitClass = 'signal'; }
-    this.process.exited(exitClass); codexLog('host.exited', { ...this.fields(), exitClass });
+    try { this.process.exited(exitClass); } catch { // observability-exempt: External exit remains known, but the logical registry refusal is retained as a closed cleanup failure.
+      this.logicalFailure = true; this.markLogicalFailed('PROCESS_SIGNALLED'); } codexLog('host.exited', { ...this.fields(), exitClass });
     if (!this.expectedExit) { codexLog('host.failed', { ...this.fields(), safeCode: 'CODEX_HOST_EXITED' }); try { await this.onFault?.('CODEX_HOST_EXITED'); } catch { // observability-exempt: The attempt owner already received the closed fault and cleanup remains mandatory.
         return; } }
   }
   private async failStart(code: CodexSafeCode): Promise<CodexProcessHostFault> {
-    this.process.failed('PROCESS_SPAWN_FAILED', 'CodexProcessHostFault'); codexLog('host.failed', { ...this.fields(), safeCode: code }); let cleanupFailed = false;
+    this.markLogicalFailed('PROCESS_SPAWN_FAILED'); codexLog('host.failed', { ...this.fields(), safeCode: code }); let cleanupFailed = false;
     try { await this.input.credentials.revoke(); } catch { /* observability-exempt: Credential revocation emitted its closed failure; process cleanup continues. */ cleanupFailed = true; }
     try { this.expectedExit = true; await bounded(this.input.owner.terminate(this.ownerIdentity()), this.cleanupTimeout()); const residuals = await bounded(this.input.owner.enumerateResiduals(this.ownerIdentity()), this.cleanupTimeout()); if (residuals !== 0) cleanupFailed = true; }
     catch { // observability-exempt: Start-failure cleanup errors normalize to CODEX_CLEANUP_FAILED without logging identities or raw errors.
       cleanupFailed = true; }
-    if (cleanupFailed) return new CodexProcessHostFault('CODEX_CLEANUP_FAILED'); this.process.cleanup(); this.cleaned = true; return new CodexProcessHostFault(code);
+    if (!cleanupFailed) { try { this.process.cleanup(); this.cleaned = true; } catch { // observability-exempt: External cleanup succeeded but logical cleanup refusal must remain a closed cleanup failure.
+        cleanupFailed = true; this.logicalFailure = true; this.markLogicalFailed('PROCESS_SIGNALLED'); } } if (cleanupFailed) return new CodexProcessHostFault('CODEX_CLEANUP_FAILED'); return new CodexProcessHostFault(code);
   }
+  private markLogicalFailed(code: 'PROCESS_SIGNALLED' | 'PROCESS_SPAWN_FAILED'): void { try { this.process.failed(code, 'CodexProcessHostFault'); } catch { // observability-exempt: The adapter safe code remains authoritative when the logical registry refuses its failure transition.
+      return; } }
   private ownerIdentity(): { readonly processRegistrationId: string; readonly identity?: CodexProcessIdentityV1 } { return { processRegistrationId: this.process.id, ...(this.identity ? { identity: this.identity } : {}) }; }
   private fields(): { attemptId: string; operationId: string; processId: string } { return { attemptId: this.input.attempt.attemptId, operationId: this.input.operation.id, processId: this.process.id }; }
   private spawnTimeout(): number { return this.input.spawnTimeoutMs ?? this.input.attempt.deadlines.spawnMs; } private cleanupTimeout(): number { return this.input.cleanupTimeoutMs ?? this.input.attempt.deadlines.cleanupMs; }
