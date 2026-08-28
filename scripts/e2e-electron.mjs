@@ -388,9 +388,18 @@ async function exerciseElectronAgents(page, electronApplication, admissionId) {
     }
     await agents.getByRole('button', { name: 'Save immutable revision' }).click();
     await agents.locator('section').filter({ hasText: 'Role Revisions' }).locator('li').filter({ hasText: /implementer · [0-9a-f-]{36}/u }).waitFor();
+    await waitForEnabled(agents.getByRole('button', { name: 'Confirm and start exact attempt' }));
     await agents.getByLabel('Task admission ID').fill(admissionId);
+    const roleOption = agents.getByLabel('Role revision').locator('option').filter({ hasText: /^implementer ·/u }).first(); const roleRevisionId = await roleOption.getAttribute('value'); assert.ok(roleRevisionId); await agents.getByLabel('Role revision').selectOption(roleRevisionId);
+    await agents.getByLabel('Exact adapter and version').fill('kogg.fixture@1.0.0'); await agents.getByLabel('Provider', { exact: true }).fill('kogg.fixture'); await agents.getByLabel('Model', { exact: true }).fill('fixture.echo'); await agents.getByLabel('Deadline policy').fill('interactive-v1'); assert.equal(await agents.locator('form[data-start]').evaluate(form => form.checkValidity()), true);
     await agents.getByRole('button', { name: 'Confirm and start exact attempt' }).click();
     await agents.getByText(/cleaned · AGENT_OK.*deadline policy interactive-v1.*activity 1.*usage complete\/provider-cumulative.*resources 0/iu).waitFor({ timeout: 15_000 });
+}
+
+async function waitForEnabled(locator, timeout = 30_000) {
+    const deadline = Date.now() + timeout;
+    while (Date.now() < deadline) { if (await locator.isEnabled().catch(() => false)) return; await new Promise(resolve => setTimeout(resolve, 50)); }
+    throw new Error('Timed out waiting for enabled control');
 }
 
 async function exerciseElectronWorkflowEditor(page, electronApplication) {

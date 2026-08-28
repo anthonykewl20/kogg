@@ -1,6 +1,7 @@
-import { verify } from 'node:crypto'; import { existsSync } from 'node:fs'; import { lstat, readFile } from 'node:fs/promises'; import path from 'node:path';
+import { verify } from 'node:crypto'; import { lstat, readFile } from 'node:fs/promises'; import path from 'node:path';
 import { BackendApplicationContribution } from '@theia/core/lib/node'; import { injectable, unmanaged } from '@theia/core/shared/inversify';
 import type { ClaudeCommercialUseApprovalV1, ClaudeReleaseProjection } from '../common/claude-protocol'; import { claudeLog } from './claude-logger';
+import { claudeSourceMapDiagnostics } from './claude-source-map-diagnostics';
 // Logs through the closed [kogg:claude:artifact] claudeLog schema.
 // diagnostic-coverage: claude.artifact, claude.legal, claude.settings, claude.credentials, claude.processes, claude.cleanup, claude.recovery, claude.source-maps
 const FIELDS = ['schema','packageName','packageVersion','npmIntegritySha512','tarballSha1','approvedProduct','approvedUse','approverRef','decidedAt','expiresAt','signingKeyId','signature'] as const; const SAFE = /^[a-z0-9][a-z0-9._:-]{0,127}$/u;
@@ -9,7 +10,7 @@ export class ClaudeArtifactRegistry implements BackendApplicationContribution {
   private started: Promise<void> | undefined; private value: ClaudeReleaseProjection = blocked();
   constructor(@unmanaged() private readonly assetsRoot = path.resolve(__dirname, '../../assets'), @unmanaged() private readonly now = () => Date.now()) {}
   onStart(): Promise<void> { return this.started ??= this.verifyApproval(); }
-  projection(): ClaudeReleaseProjection { return { ...this.value, sourceMapsPresent: existsSync(`${__filename}.map`) }; }
+  projection(): ClaudeReleaseProjection { return { ...this.value, sourceMapsPresent: claudeSourceMapDiagnostics().missingCount === 0 }; }
   private async verifyApproval(): Promise<void> { try { await trustedDirectory(this.assetsRoot); const approval = await bounded(path.join(this.assetsRoot, 'claude-commercial-use-approval-v1.json'), 16_384); const key = await bounded(path.join(this.assetsRoot, 'claude-commercial-approval-public-key.pem'), 16_384); const record = parse(approval, this.now()); const unsigned = Object.fromEntries(FIELDS.filter(field => field !== 'signature').map(field => [field, record[field]])); let valid = false; try { valid = verify(null, Buffer.from(canonical(unsigned)), key, Buffer.from(record.signature, 'base64')); } catch { /* observability-exempt: outer legal.verify.failure classifies invalid signature material without echoing it. */ valid = false; } if (!valid) throw new Error('invalid'); this.value = { ...blocked(), legalApproved: true, safeCode: 'CLAUDE_ARTIFACT_MISMATCH' }; claudeLog('legal.verify.success', { signingKeyId: record.signingKeyId }); } catch { /* observability-exempt: legal.verify.failure is the sanitized terminal event for absent or invalid approval input. */ this.value = blocked(); claudeLog('legal.verify.failure', { safeCode: 'CLAUDE_LEGAL_APPROVAL_REQUIRED' }); } }
 }
 function blocked(): ClaudeReleaseProjection { return { legalApproved: false, artifactVerified: false, confinementVerified: false, credentialBrokerReady: false, processCount: 0, residualCount: 0, recoveryComplete: true, sourceMapsPresent: true, safeCode: 'CLAUDE_LEGAL_APPROVAL_REQUIRED' }; }

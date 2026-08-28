@@ -1,6 +1,5 @@
 import { createHash, verify } from 'node:crypto';
 import { spawn } from 'node:child_process';
-import { existsSync } from 'node:fs';
 import { lstat, readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { BackendApplicationContribution } from '@theia/core/lib/node';
@@ -10,6 +9,7 @@ import type { CodexReleaseProjection, CodexSafeCode, QualifiedCodexReleaseV1 } f
 import { parseAcceptedCodexMethods, validateCodexSchemaBundle } from './codex-accepted-methods';
 import { compileCodexFrameSchema } from './codex-generated-schema';
 import { codexLog } from './codex-logger';
+import { codexSourceMapDiagnostics } from './codex-source-map-diagnostics';
 
 // Logs through the closed [kogg:agents:codex-release] schema in codex-logger.
 // diagnostic-coverage: codex.release, codex.protocol, codex.processes, codex.cleanup, codex.recovery, codex.source-maps
@@ -25,7 +25,7 @@ export class CodexReleaseRegistry implements BackendApplicationContribution {
     @unmanaged() private readonly runtime: { readonly platform: NodeJS.Platform; readonly arch: string } = { platform: process.platform, arch: process.arch },
     @unmanaged() private readonly versionTimeoutMs = 8_000) { this.projectionValue = unqualified(platformCode(runtime)); }
   onStart(): Promise<void> { return this.startup ??= this.verifyBundle(); }
-  projection(): CodexReleaseProjection { return { ...this.projectionValue, sourceMapsPresent: existsSync(`${__filename}.map`) }; }
+  projection(): CodexReleaseProjection { return { ...this.projectionValue, sourceMapsPresent: codexSourceMapDiagnostics().missingCount === 0 }; }
 
   private async verifyBundle(): Promise<void> {
     codexLog('release.verification.started', { adapterVersion: ADAPTER_VERSION });
