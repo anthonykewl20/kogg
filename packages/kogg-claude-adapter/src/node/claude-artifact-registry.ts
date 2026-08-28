@@ -11,7 +11,7 @@ const SAFE = /^[a-z0-9][a-z0-9._:-]{0,127}$/u; const SHA256 = /^[0-9a-f]{64}$/u;
 const MAX_ARTIFACT_FILES = 64; const MAX_ARTIFACT_FILE_BYTES = 128 * 1024 * 1024; const MAX_ARTIFACT_TOTAL_BYTES = 512 * 1024 * 1024;
 const APPROVED_IDENTITY = Object.freeze({ npmIntegritySha512: 'FtR0HoHHNqeqJWjZN8qLUAzZVFUI9ztXYNPPwv98Ecmv9qq2QTauI8IzkY26CC0mleWAqb9RQEW2C0OtiUliug==', tarballSha1: '0009206e79ee0ae25f68ebb526584031cb5db048' });
 interface ClaudeArtifactIdentity { readonly npmIntegritySha512: string; readonly tarballSha1: string; }
-export interface AttestedClaudeArtifactV1 { readonly manifest: ClaudeArtifactManifestV1; readonly root: string; readonly files: Readonly<Record<string, string>>; }
+export interface AttestedClaudeArtifactV1 { readonly manifest: ClaudeArtifactManifestV1; readonly manifestDigest: string; readonly approvalDigest: string; readonly root: string; readonly files: Readonly<Record<string, string>>; }
 @injectable()
 export class ClaudeArtifactRegistry implements BackendApplicationContribution {
   private started: Promise<void> | undefined; private value: ClaudeReleaseProjection = blocked(); private approvalValue: ClaudeCommercialUseApprovalV1 | undefined; private artifactValue: AttestedClaudeArtifactV1 | undefined; private readonly artifactRoot: string;
@@ -30,7 +30,7 @@ export class ClaudeArtifactRegistry implements BackendApplicationContribution {
     claudeLog('artifact.verify.started', { signingKeyId: 'kogg-claude-artifact-v1' });
     try {
       const approval = this.qualifiedApproval(); const manifestBytes = await bounded(path.join(this.assetsRoot, 'claude-artifact-manifest-v1.json'), 65_536); const keyBytes = await bounded(path.join(this.assetsRoot, 'claude-artifact-public-key.pem'), 16_384); const manifest = parseArtifactManifest(manifestBytes, approval, this.now()); const unsigned = Object.fromEntries(ARTIFACT_FIELDS.filter(field => field !== 'signature').map(field => [field, manifest[field]])); if (!validSignature(keyBytes, unsigned, manifest.signature)) throw new Error('invalid');
-      const files = await attestFiles(this.artifactRoot, manifest); const frozenManifest = Object.freeze({ ...manifest, fileDigests: Object.freeze({ ...manifest.fileDigests }) }); this.artifactValue = Object.freeze({ manifest: frozenManifest, root: this.artifactRoot, files: Object.freeze(files) });
+      const files = await attestFiles(this.artifactRoot, manifest); const frozenManifest = Object.freeze({ ...manifest, fileDigests: Object.freeze({ ...manifest.fileDigests }) }); this.artifactValue = Object.freeze({ manifest: frozenManifest, manifestDigest: digestCanonical(manifest), approvalDigest: digestCanonical(approval), root: this.artifactRoot, files: Object.freeze(files) });
       // The signed bytes are retained, but artifactVerified stays false until the bundled CLI version probe runs inside a qualified empty Linux execution scope.
       claudeLog('artifact.verify.completed', { signingKeyId: manifest.signingKeyId, fileCount: Object.keys(files).length });
     } catch { /* observability-exempt: artifact.verify.failed is the sanitized terminal event for absent, malformed, or mismatched commercial artifact bytes. */ this.artifactValue = undefined; claudeLog('artifact.verify.failed', { safeCode: 'CLAUDE_ARTIFACT_MISMATCH' }); }
@@ -83,3 +83,4 @@ function validSignature(keyBytes: Buffer, unsigned: Record<string, unknown>, sig
 function timestamp(value: string): number { if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/u.test(value)) throw new Error('invalid'); const parsed = Date.parse(value); if (!Number.isFinite(parsed) || new Date(parsed).toISOString() !== value) throw new Error('invalid'); return parsed; }
 function decodeSignature(value: string): Buffer { if (!/^[A-Za-z0-9+/]+={0,2}$/u.test(value)) throw new Error('invalid'); const decoded = Buffer.from(value, 'base64'); if (decoded.length !== 64 || decoded.toString('base64') !== value) throw new Error('invalid'); return decoded; }
 function canonical(value: unknown): string { if (Array.isArray(value)) return `[${value.map(canonical).join(',')}]`; if (value && typeof value === 'object') return `{${Object.keys(value).sort().map(key => `${JSON.stringify(key)}:${canonical((value as Record<string, unknown>)[key])}`).join(',')}}`; return JSON.stringify(value); }
+function digestCanonical(value: unknown): string { return createHash('sha256').update(canonical(value)).digest('hex'); }

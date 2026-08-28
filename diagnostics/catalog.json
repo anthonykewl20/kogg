@@ -61,6 +61,7 @@
     { "id": "agents.source-maps", "owner": "kogg-agents", "description": "Agent frontend, backend, Electron, and adapter-host bundles retain source maps and debugger reachability." },
     { "id": "claude.artifact", "owner": "kogg-claude-adapter", "description": "The exact signed Claude package, files, types, and bundled CLI are verified." },
     { "id": "claude.cleanup", "owner": "kogg-claude-adapter", "description": "Claude interruption, close, escalation, credential revocation, and zero-member cleanup are complete." },
+    { "id": "claude.confinement", "owner": "kogg-claude-adapter", "description": "The exact Claude runtime is bound to a qualified Linux execution profile with enforced isolation." },
     { "id": "claude.credentials", "owner": "kogg-claude-adapter", "description": "Claude broker grants are scoped, bound, revocable, and egress constrained." },
     { "id": "claude.legal", "owner": "kogg-claude-adapter", "description": "Commercial-use approval is exact, signed, current, and repository controlled." },
     { "id": "claude.processes", "owner": "kogg-claude-adapter", "description": "Every Claude process is registered and externally accounted with no residual descendants." },
