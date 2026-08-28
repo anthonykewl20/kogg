@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import type { EditableWorkflowEdgeV1, EditableWorkflowGraphV1, EditableWorkflowNodeV1, WorkflowAuthorityEffect, WorkflowNodeConfigurationV1, WorkflowSafeCode } from './workflow-protocol';
+import type { EditableWorkflowEdgeV1, EditableWorkflowGraphV1, EditableWorkflowNodeV1, WorkflowAuthorityEffect, WorkflowGroupV1, WorkflowNodeConfigurationV1, WorkflowSafeCode } from './workflow-protocol';
 
 // observability-exempt: Pure canonical decoding and hashing performs no I/O and retains no content.
 // diagnostic-coverage: workflow.schema, workflow.graph, workflow.anchors, workflow.authority
@@ -15,12 +15,20 @@ const SEMVER = /^(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)(?:-[0-9
 export class WorkflowValidationError extends Error { constructor(readonly code: WorkflowSafeCode) { super(code); } }
 
 export function decodeGraph(input: unknown): EditableWorkflowGraphV1 {
-  const value = record(input, ['schemaVersion','projectId','nodes','edges']);
+  const inputKeys = input && typeof input === 'object' && !Array.isArray(input) ? Object.keys(input as Record<string, unknown>) : [];
+  const legacy = inputKeys.length === 4 && !inputKeys.includes('groups');
+  const value = record(input, legacy ? ['schemaVersion','projectId','nodes','edges'] : ['schemaVersion','projectId','nodes','edges','groups']);
   if (value.schemaVersion !== '1' || typeof value.projectId !== 'string' || !UUID.test(value.projectId) || !Array.isArray(value.nodes) || !Array.isArray(value.edges)) fail('WORKFLOW_SCHEMA_INVALID');
   if (value.nodes.length < 1 || value.nodes.length > 256 || value.edges.length > 1024) fail('WORKFLOW_BOUND_EXCEEDED');
   const nodes = value.nodes.map(decodeNode).sort((a, b) => a.nodeId.localeCompare(b.nodeId));
   const edges = value.edges.map(decodeEdge).sort((a, b) => a.edgeId.localeCompare(b.edgeId));
-  return { schemaVersion: '1', projectId: value.projectId, nodes, edges };
+  if (legacy) return { schemaVersion: '1', projectId: value.projectId, nodes, edges };
+  if (!Array.isArray(value.groups) || value.groups.length > 64) fail('WORKFLOW_BOUND_EXCEEDED');
+  const nodeIds = new Set(nodes.map(node => node.nodeId)); const members = new Set<string>();
+  const groups = value.groups.map(decodeGroup).sort((a, b) => a.groupId.localeCompare(b.groupId));
+  if (new Set(groups.map(group => group.groupId)).size !== groups.length) fail('WORKFLOW_GRAPH_INVALID');
+  for (const group of groups) for (const member of group.memberNodeIds) { if (!nodeIds.has(member) || members.has(member)) fail('WORKFLOW_GRAPH_INVALID'); members.add(member); }
+  return { schemaVersion: '1', projectId: value.projectId, nodes, edges, groups };
 }
 
 export function workflowDigest(domain: 'template' | 'catalog' | 'compiled-plan' | 'trust-spine' | 'run-snapshot' | 'scheduler-event' | 'owner-identity' | 'node-configuration' | 'executor-artifact', value: unknown): string {
@@ -70,6 +78,15 @@ function decodeEdge(input: unknown): EditableWorkflowEdgeV1 {
   const value = record(input, ['edgeId','sourceNodeId','sourcePort','targetNodeId','targetPort']);
   if (typeof value.edgeId !== 'string' || !UUID.test(value.edgeId) || typeof value.sourceNodeId !== 'string' || !UUID.test(value.sourceNodeId) || typeof value.targetNodeId !== 'string' || !UUID.test(value.targetNodeId) || typeof value.sourcePort !== 'string' || !OUTCOMES.has(value.sourcePort) || value.targetPort !== 'in') fail('WORKFLOW_PORT_INVALID');
   return value as unknown as EditableWorkflowEdgeV1;
+}
+
+function decodeGroup(input: unknown): WorkflowGroupV1 {
+  const value = record(input, ['groupId','memberNodeIds','displayOrder']);
+  if (typeof value.groupId !== 'string' || !UUID.test(value.groupId) || !Array.isArray(value.memberNodeIds) || !Array.isArray(value.displayOrder) || value.memberNodeIds.length < 2 || value.memberNodeIds.length > 64) fail('WORKFLOW_GRAPH_INVALID');
+  const memberNodeIds = value.memberNodeIds.map(id => { if (typeof id !== 'string' || !UUID.test(id)) fail('WORKFLOW_GRAPH_INVALID'); return id; });
+  const displayOrder = value.displayOrder.map(id => { if (typeof id !== 'string' || !UUID.test(id)) fail('WORKFLOW_GRAPH_INVALID'); return id; });
+  if (new Set(memberNodeIds).size !== memberNodeIds.length || new Set(displayOrder).size !== displayOrder.length || [...memberNodeIds].sort().join(',') !== [...displayOrder].sort().join(',')) fail('WORKFLOW_GRAPH_INVALID');
+  return { groupId: value.groupId, memberNodeIds: [...memberNodeIds].sort(), displayOrder };
 }
 
 function record(input: unknown, keys: readonly string[]): Record<string, unknown> {
