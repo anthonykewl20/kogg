@@ -56,6 +56,10 @@ test('persists the governed draft, freeze, review, approval, revocation, conflic
     assert.equal(authoritySnapshot.approvalDigest.startsWith('sha256:'), true);
     assert.equal(authoritySnapshot.runId, runId);
     assert.deepEqual(await registry.resolveAdmission(admitted.admission!.taskAdmissionId), admitted.admission);
+    assert.deepEqual(await registry.listAdmissions(PROJECT), [{ taskAdmissionId: admitted.admission!.taskAdmissionId, taskId,
+      projectId: PROJECT, repositoryId: REPOSITORY, runId, authorizedAt: admitted.admission!.authorizedAt, expiresAt: admitted.admission!.expiresAt }]);
+    assert.deepEqual(await registry.listAdmissions('11111111-1111-4111-8111-111111111199'), []);
+    await assert.rejects(registry.listAdmissions('invalid-project-id'));
     await assert.rejects(registry.resolveAdmission({ ...admitted.admission!, taskRevision: '1' }), /ADMISSION_NOT_AUTHORIZED/u);
     await assert.rejects(registry.resolveAdmission({ ...admitted.admission!, taskRevisionDigest: `sha256:${'0'.repeat(64)}` }), /ADMISSION_NOT_AUTHORIZED/u);
     await assert.rejects(registry.resolveAdmission({ ...admitted.admission!, approvalDigest: `sha256:${'0'.repeat(64)}` }), /ADMISSION_NOT_AUTHORIZED/u);
@@ -64,6 +68,7 @@ test('persists the governed draft, freeze, review, approval, revocation, conflic
     const reopened = new TaskRegistry(authority, ALLOW_PLANNING);
     await reopened.onStart();
     assert.deepEqual(await reopened.resolveAdmission(admitted.admission!.taskAdmissionId), admitted.admission);
+    assert.equal((await reopened.listAdmissions(PROJECT))[0]?.taskAdmissionId, admitted.admission!.taskAdmissionId);
     const revoked = await reopened.revoke(expectation(admitted.projection!, taskId));
     assert.equal(revoked.projection?.currentApproval, undefined);
 

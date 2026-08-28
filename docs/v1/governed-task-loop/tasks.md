@@ -453,6 +453,7 @@ interface TaskService {
   create(input: CreateTaskInput): Promise<MutationResult>;
   get(taskId: UUID): Promise<TaskProjection>;
   list(input: MetadataPageRequest): Promise<MetadataPage<TaskSummary>>;
+  listAdmissions(projectId: UUID): Promise<MetadataPage<TaskAdmissionSummary>>;
   edit(input: EditDraftInput & MutationPrecondition): Promise<MutationResult>;
   createSuccessorDraft(input: SuccessorInput & MutationPrecondition): Promise<MutationResult>;
   freeze(input: FreezeInput & MutationPrecondition): Promise<MutationResult>;
@@ -472,6 +473,11 @@ history endpoints are metadata-only. `readSpecification` requires an active task
 view session and returns exactly one requested revision. Pages contain at most 100
 items and cursors are opaque, signed installation-local values. Search is limited
 to opaque task ID and non-content lifecycle metadata; V1 has no full-text index.
+Admission discovery is also project-scoped and metadata-only: it exposes opaque
+task/admission/run/repository identifiers and authorization/expiry times needed
+to select an exact governed-run input, never task content or approval/specification
+digests. Run admission re-resolves the full authority snapshot and can refuse a
+listed admission that is stale, revoked, or otherwise no longer current.
 
 Every mutation returns exactly one of `completed`, `refused`, `conflict`, or
 `failed`. It includes safe IDs/revisions and a stable code, never submitted content,

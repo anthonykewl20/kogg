@@ -120,6 +120,7 @@ try {
 
     if (process.env.KOGG_E2E_WORKFLOW_ONLY === '1') {
         await exerciseProjects(page);
+        await createWorkflowAdmissionFixture(page);
         await exerciseWorkflowEditor(page);
         process.stdout.write('Kogg browser workflow-editor E2E passed.\n');
         await browser.close(); browser = undefined;
@@ -428,7 +429,13 @@ async function openCommand(page, label) {
         option = page.locator('[role="option"]:visible').filter({ hasText: label }).first();
         await option.waitFor();
     }
-    await option.click();
+    await option.click({ timeout: 2_000 }).catch(async () => {
+        // The virtualized command row can be replaced between resolution and
+        // click while the palette filters. A closed palette means the command
+        // already activated; otherwise Enter activates the focused exact match.
+        if (!await input.isVisible().catch(() => false)) return;
+        await input.press('Enter');
+    });
 }
 
 async function clearNotifications(page) {
@@ -724,6 +731,19 @@ async function exerciseTasks(page) {
     assert.equal(logs.join('\n').includes(canary), false);
 }
 
+async function createWorkflowAdmissionFixture(page) {
+    const tasks = await ensureTasksWidget(page);
+    await tasks.getByLabel('Initial specification').fill('Authorize the exact workflow UI admission fixture.');
+    await tasks.getByRole('button', { name: 'Create task' }).click();
+    await tasks.getByText(/Revision 1 · active · draft/iu).waitFor({ timeout: 10_000 });
+    await tasks.getByRole('button', { name: 'Freeze exact revision' }).click();
+    await tasks.getByRole('button', { name: 'Review for approval' }).click();
+    await tasks.getByRole('button', { name: 'Approve this exact revision' }).click();
+    await tasks.getByLabel('Existing run ID').fill('47474747-4747-4747-8747-474747474747');
+    await tasks.getByRole('button', { name: 'Authorize exact task admission' }).click();
+    await tasks.locator('[data-admission-id]').waitFor({ timeout: 10_000 });
+}
+
 function repositorySnapshot(repository) {
     const refs = spawnSync('git', ['-C', repository, 'for-each-ref', '--format=%(refname):%(objectname)'], { encoding: 'utf8' });
     const status = spawnSync('git', ['-C', repository, 'status', '--porcelain=v2', '--branch'], { encoding: 'utf8' });
@@ -902,6 +922,12 @@ async function exerciseWorkflowEditor(page) {
     await widget.getByText('Workflow version 1 saved immutably.').waitFor({ timeout: 10_000 });
     await widget.getByRole('button', { name: 'Compile current version' }).click();
     await widget.getByText(/Compiled plan [0-9a-f]{8} with 9 mandatory anchors/u).waitFor({ timeout: 10_000 });
+    const admissionChoices = widget.getByLabel('Task admission').locator('option');
+    if (await admissionChoices.count() > 1) {
+        assert.match(await admissionChoices.nth(1).innerText(), /Task [0-9a-f]{8} · run [0-9a-f]{8}/u);
+        await widget.getByRole('button', { name: 'Start governed workflow' }).click();
+        await widget.getByText(/Workflow operation failed safely: WORKFLOW_AUTHORITY_EXPANSION/u).waitFor({ timeout: 10_000 });
+    }
     await page.reload({ waitUntil: 'domcontentloaded' });
     await page.locator('body.kogg-application').waitFor({ timeout: 20_000 });
     widget = page.locator('.kogg-workflow-editor-widget:visible').filter({ hasText: 'Workflow version 1 is current.' }).first();

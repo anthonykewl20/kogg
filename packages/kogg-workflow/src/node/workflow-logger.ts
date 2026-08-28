@@ -12,6 +12,9 @@ type Fields = {
   'template.list.requested': { projectId: string };
   'template.list.completed': { projectId: string; versionCount: number };
   'template.list.refused': { projectId: string; safeCode: WorkflowSafeCode };
+  'plan.list.requested': { projectId: string };
+  'plan.list.completed': { projectId: string; planCount: number };
+  'plan.list.refused': { projectId: string; safeCode: WorkflowSafeCode };
   'compile.started': { requestId: string; versionId: string };
   'compile.completed': { requestId: string; versionId: string; planId: string };
   'compile.refused': { requestId: string; versionId: string; safeCode: WorkflowSafeCode };
@@ -51,6 +54,9 @@ export function workflowLog<K extends keyof Fields>(event: K, fields: Fields[K])
   else if (event === 'template.list.requested') console.info('[kogg:workflow:editor] template.list.requested', fields);
   else if (event === 'template.list.completed') console.info('[kogg:workflow:editor] template.list.completed', fields);
   else if (event === 'template.list.refused') console.warn('[kogg:workflow:editor] template.list.refused', fields);
+  else if (event === 'plan.list.requested') console.info('[kogg:workflow:editor] plan.list.requested', fields);
+  else if (event === 'plan.list.completed') console.info('[kogg:workflow:editor] plan.list.completed', fields);
+  else if (event === 'plan.list.refused') console.warn('[kogg:workflow:editor] plan.list.refused', fields);
   else if (event === 'compile.started') console.info('[kogg:workflow:compiler] compile.started', fields);
   else if (event === 'compile.completed') console.info('[kogg:workflow:compiler] compile.completed', fields);
   else if (event === 'compile.refused') console.warn('[kogg:workflow:compiler] compile.refused', fields);

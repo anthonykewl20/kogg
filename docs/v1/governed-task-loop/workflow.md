@@ -555,6 +555,13 @@ announcements except approval, failure, and cancellation, which are assertive
 but deduplicated. Reduced motion disables animated edges; zoom, high contrast,
 non-color state, and virtualization preserve semantic order.
 
+Starting selects project-scoped metadata projections for one immutable compiled
+plan and one durable task admission. The UI never reconstructs either authority
+snapshot and never treats presence in a selector as authorization: the backend
+revalidates the plan, task admission, current interaction mode, executor health,
+and every external grant at admission time, then returns only a closed safe code
+on refusal.
+
 ### Conditions, parallelism, retries, and deadlines
 
 Conditions are data, not code:
