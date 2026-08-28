@@ -14,6 +14,7 @@ test('reports unfinished evidence capabilities explicitly instead of inferring h
   assert.equal(checks.find(check => check.id === 'kernel.suites')?.status, 'pass');
   assert.equal(checks.find(check => check.id === 'operations.ranex-owner')?.status, 'pass');
   assert.equal(checks.find(check => check.id === 'operations.check-owner')?.status, 'pass');
+  assert.deepEqual(checks.find(check => check.id === 'kernel.source-maps')?.details, { expectedCount: 13, presentCount: 13, missingCount: 0 });
   for (const id of ['kernel.checks', 'kernel.evidence', 'kernel.verdicts', 'kernel.cleanup', 'kernel.recovery']) {
     const check = checks.find(candidate => candidate.id === id); assert.equal(check?.status, 'fail'); assert.equal(check?.details?.safeCode, 'KERNEL_CAPABILITY_UNAVAILABLE');
   }
