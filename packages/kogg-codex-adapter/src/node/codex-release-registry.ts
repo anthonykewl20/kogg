@@ -6,9 +6,10 @@ import { BackendApplicationContribution } from '@theia/core/lib/node';
 import { inject, injectable, unmanaged } from '@theia/core/shared/inversify';
 import { KoggOperationRegistry, type OperationRegistryApi } from '@kogg/operations/lib/common/operations-protocol';
 import type { CodexReleaseProjection, CodexSafeCode, QualifiedCodexReleaseV1 } from '../common/codex-protocol';
-import { parseAcceptedCodexMethods, validateCodexSchemaBundle } from './codex-accepted-methods';
+import { parseAcceptedCodexMethods, validateCodexSchemaBundle, type AcceptedCodexMethods } from './codex-accepted-methods';
 import { compileCodexFrameSchema } from './codex-generated-schema';
 import { codexLog } from './codex-logger';
+import type { CodexFrameSchema } from './codex-protocol-core';
 import { codexSourceMapDiagnostics } from './codex-source-map-diagnostics';
 
 // Logs through the closed [kogg:agents:codex-release] schema in codex-logger.
@@ -17,15 +18,28 @@ const ADAPTER_VERSION = '1.0.0'; const MAX_MANIFEST_BYTES = 64 * 1024; const MAX
 const SHA256 = /^[0-9a-f]{64}$/u; const SYMBOLIC = /^[a-z0-9][a-z0-9._:-]{0,127}$/u; const SEMVER = /^(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)(?:-[0-9A-Za-z.-]+)?$/u; const COMMIT = /^[0-9a-f]{40}$/u; const DECIMAL = /^(?:0|[1-9][0-9]*)$/u;
 const FIELDS = ['manifestVersion', 'releaseId', 'codexVersion', 'codexCommit', 'target', 'binarySha256', 'binarySize', 'appServerSchemaVersion', 'appServerSchemaSha256', 'acceptedMethodsSha256', 'linuxHelperSha256', 'adapterVersion', 'qualificationProfileId', 'signedAt', 'signatureKeyId', 'signature'] as const;
 
+export interface QualifiedCodexRuntimeV1 {
+  readonly release: QualifiedCodexReleaseV1;
+  readonly binary: string;
+  readonly linuxHelper: string;
+  readonly acceptedMethods: AcceptedCodexMethods;
+  readonly frameSchema: CodexFrameSchema;
+}
+
 @injectable()
 export class CodexReleaseRegistry implements BackendApplicationContribution {
   private startup: Promise<void> | undefined; private projectionValue: CodexReleaseProjection;
+  private runtimeValue: QualifiedCodexRuntimeV1 | undefined;
   constructor(@inject(KoggOperationRegistry) private readonly operations: OperationRegistryApi,
     @unmanaged() private readonly bundleRoot = path.resolve(__dirname, '../../assets'),
     @unmanaged() private readonly runtime: { readonly platform: NodeJS.Platform; readonly arch: string } = { platform: process.platform, arch: process.arch },
     @unmanaged() private readonly versionTimeoutMs = 8_000) { this.projectionValue = unqualified(platformCode(runtime)); }
   onStart(): Promise<void> { return this.startup ??= this.verifyBundle(); }
   projection(): CodexReleaseProjection { return { ...this.projectionValue, sourceMapsPresent: codexSourceMapDiagnostics().missingCount === 0 }; }
+  qualifiedRuntime(): QualifiedCodexRuntimeV1 {
+    if (!this.runtimeValue) throw new ReleaseError(this.projectionValue.safeCode === 'CODEX_OK' ? 'CODEX_RELEASE_UNQUALIFIED' : this.projectionValue.safeCode);
+    return this.runtimeValue;
+  }
 
   private async verifyBundle(): Promise<void> {
     codexLog('release.verification.started', { adapterVersion: ADAPTER_VERSION });
@@ -45,10 +59,12 @@ export class CodexReleaseRegistry implements BackendApplicationContribution {
       await exactAsset(binary, manifest.binarySha256, Number(manifest.binarySize), MAX_BINARY_BYTES, true, 'CODEX_BINARY_MISMATCH');
       const schema = await exactAsset(path.join(releaseRoot, 'app-server-schema-v2.json'), manifest.appServerSchemaSha256, undefined, MAX_SCHEMA_BYTES, false, 'CODEX_SCHEMA_MISMATCH');
       const acceptedMethods = await exactAsset(path.join(releaseRoot, 'accepted-methods.json'), manifest.acceptedMethodsSha256, undefined, MAX_METHOD_BYTES, false, 'CODEX_SCHEMA_MISMATCH');
-      try { const accepted = parseAcceptedCodexMethods(acceptedMethods); validateCodexSchemaBundle(schema, accepted); compileCodexFrameSchema(schema, accepted); } catch { // observability-exempt: The outer release failure emits CODEX_SCHEMA_MISMATCH without exposing signed asset content.
+      let accepted: AcceptedCodexMethods; let frameSchema: CodexFrameSchema;
+      try { accepted = parseAcceptedCodexMethods(acceptedMethods); validateCodexSchemaBundle(schema, accepted); frameSchema = compileCodexFrameSchema(schema, accepted); } catch { // observability-exempt: The outer release failure emits CODEX_SCHEMA_MISMATCH without exposing signed asset content.
         throw new ReleaseError('CODEX_SCHEMA_MISMATCH'); }
-      await exactAsset(path.join(releaseRoot, 'linux-helper'), manifest.linuxHelperSha256, undefined, MAX_HELPER_BYTES, true, 'CODEX_BINARY_MISMATCH');
+      const linuxHelper = path.join(releaseRoot, 'linux-helper'); await exactAsset(linuxHelper, manifest.linuxHelperSha256, undefined, MAX_HELPER_BYTES, true, 'CODEX_BINARY_MISMATCH');
       await this.inspectVersion(binary, manifest.codexVersion);
+      this.runtimeValue = Object.freeze({ release: Object.freeze({ ...manifest }), binary, linuxHelper, acceptedMethods: accepted, frameSchema });
       this.projectionValue = { qualified: true, safeCode: 'CODEX_OK', adapterVersion: ADAPTER_VERSION, target: manifest.target, releasePresent: true, assetsVerified: true, protocolVerified: true, confinementVerified: false, credentialBrokerReady: false, sourceMapsPresent: true };
       codexLog('release.verification.completed', { releaseId: manifest.releaseId, target: manifest.target, adapterVersion: ADAPTER_VERSION });
     } catch (error) { // observability-exempt: fail emits the single closed release-verification failure for this classified boundary.
@@ -71,7 +87,7 @@ export class CodexReleaseRegistry implements BackendApplicationContribution {
       operation.fail('PROCESS_READINESS_FAILED', error instanceof Error ? error.name : 'UnknownError'); codexLog('process.failed', { operationId: operation.id, processId: processLease.id, safeCode: error instanceof ReleaseError ? error.code : 'CODEX_PROCESS_START_FAILED' }); throw error;
     }
   }
-  private fail(code: CodexSafeCode): void { this.projectionValue = unqualified(code); codexLog('release.verification.failed', { adapterVersion: ADAPTER_VERSION, safeCode: code }); }
+  private fail(code: CodexSafeCode): void { this.runtimeValue = undefined; this.projectionValue = unqualified(code); codexLog('release.verification.failed', { adapterVersion: ADAPTER_VERSION, safeCode: code }); }
 }
 
 class ReleaseError extends Error { constructor(readonly code: CodexSafeCode) { super(code); } }
