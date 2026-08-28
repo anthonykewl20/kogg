@@ -12,6 +12,7 @@ import { captureSafeFailureArtifacts } from './e2e-artifact-manager.mjs';
 import { HarnessProcessRegistry } from './e2e-process-registry.mjs';
 import { HarnessRunManifest } from './e2e-run-manifest.mjs';
 import { discover, platformCapabilities, selectedScenario } from './e2e-readiness.mjs';
+import { FAILED_VERIFICATION, verifyHarnessEvidence } from './e2e-verifier.mjs';
 
 const require = createRequire(import.meta.url);
 const keytar = require('keytar');
@@ -222,19 +223,21 @@ try {
 }
 
 async function settleRun(scenarioError) {
-    let cleanupError; let artifactError; let artifacts = [];
-    const state = await run.read();
+    let cleanupError; let artifactError; let artifacts = []; let verification = FAILED_VERIFICATION;
+    const state = await run.read(); if (['completed','failed'].includes(state.state)) { if (scenarioError) throw scenarioError; return; }
+    if (!scenarioError) { try { verification = await verifyHarnessEvidence({ root, repository: workspace, runId: run.runId, runtime: run.runtime, platform: run.platform, profile: state.scenarioId === 'portable-surface' ? 'electron-portable' : 'electron-baseline', logger: line => logs.push(line) }); } catch (error) { scenarioError = error; } }
     if (state.state === 'active' && state.scenarioState === 'active') { try { if (scenarioError) await run.scenarioFailed(); else await run.scenarioCompleted(); } catch (error) { cleanupError = error; } }
     await run.cleaning(processes.manifest()).catch(error => { cleanupError = error; });
     if (application) { const closed = await Promise.race([application.close().then(() => true, () => false), new Promise(resolve => setTimeout(() => resolve(false), 10_000))]); if (!closed) { cleanupError ??= new Error('E2E_APPLICATION_CLOSE_TIMEOUT'); application.process().kill(); } application = undefined; }
     await processes.cleanup().catch(error => { cleanupError ??= error; }); await keytar.deletePassword(credentialService, 'openai:default').catch(error => { cleanupError ??= error; });
     if (scenarioError || cleanupError) { try { ({ artifacts } = await captureSafeFailureArtifacts({ root: results, runtime: 'electron', runId: run.runId, lifecycleLines: logs, error: scenarioError ?? cleanupError, logger: line => logs.push(line) })); } catch (error) { artifactError = error; } }
     const fixtures = processes.manifest(); const residualCount = fixtures.filter(value => value.state === 'residual').length; const failure = artifactError ?? cleanupError ?? scenarioError;
-    if (failure) await run.failed({ fixtures, artifacts, residualCount, safeCode: artifactError ? 'E2E_ARTIFACT_UNSAFE' : cleanupError ? 'E2E_PROCESS_RESIDUAL' : 'E2E_SCENARIO_FAILED', errorType: safeErrorType(failure) }); else await run.completed({ fixtures, artifacts, residualCount });
+    if (failure) await run.failed({ fixtures, artifacts, residualCount, verification, safeCode: artifactError ? 'E2E_ARTIFACT_UNSAFE' : cleanupError ? 'E2E_PROCESS_RESIDUAL' : safeScenarioCode(scenarioError), errorType: safeErrorType(failure) }); else await run.completed({ fixtures, artifacts, residualCount, verification });
     if (!cleanupError) await rm(temporary, { recursive: true, force: true }); if (!failure && completionMessage) process.stdout.write(`${completionMessage}\n`);
     if (failure) { const safe = new Error(artifactError ? 'E2E_ARTIFACT_UNSAFE' : cleanupError ? 'E2E_PROCESS_RESIDUAL' : 'E2E_SCENARIO_FAILED'); safe.stack = safe.message; throw safe; }
 }
 function safeErrorType(error) { return error?.name === 'AssertionError' ? 'AssertionError' : error?.name === 'TimeoutError' ? 'TimeoutError' : 'Error'; }
+function safeScenarioCode(error) { return ['E2E_ORACLE_MISMATCH','E2E_SOURCE_MAP_MISSING'].includes(error?.message) ? error.message : 'E2E_SCENARIO_FAILED'; }
 
 async function openCommand(page, label, electronApplication, query = label, optionTimeout = 30_000) {
     const input = page.getByRole('textbox', { name: 'Type to narrow down results.' });
