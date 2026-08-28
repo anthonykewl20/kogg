@@ -26,13 +26,13 @@ export class HarnessRunManifest {
     async scenarioCompleted() { this.#scenarioTerminal('completed'); await this.#write(); this.#log('step.completed', { scenarioId: this.value.scenarioId, stepId: 'visible-journey' }); this.#log('scenario.completed', { scenarioId: this.value.scenarioId }); }
     async scenarioFailed() { this.#scenarioTerminal('failed'); await this.#write(); this.#log('step.failed', { scenarioId: this.value.scenarioId, stepId: 'visible-journey', safeCode: 'E2E_STEP_FAILED' }); this.#log('scenario.failed', { scenarioId: this.value.scenarioId, safeCode: 'E2E_STEP_FAILED' }); }
     async cleaning(fixtures) { const patch = { fixtures: validateFixtures(fixtures) }; if (this.value.state === 'cleaning') { this.value = { ...this.value, ...patch }; await this.#write(); return; } if (this.value.state === 'active' && !['completed','failed'].includes(this.value.scenarioState)) throw new Error('E2E_MANIFEST_SCENARIO_INCOMPLETE'); await this.#transition('cleaning', patch); this.#log('residual-check.started'); }
-    async completed({ fixtures, artifacts = [], residualCount = 0 }) {
-        const final = finalFields(fixtures, artifacts, residualCount); if (this.value.scenarioState !== 'completed' || this.value.steps?.some(step => step.state !== 'passed') || final.harnessChecks.some(check => check.status !== 'pass')) throw new Error('E2E_MANIFEST_SUCCESS_REFUSED');
+    async completed({ fixtures, artifacts = [], residualCount = 0, verification }) {
+        const final = finalFields(fixtures, artifacts, residualCount, verification); if (this.value.scenarioState !== 'completed' || this.value.steps?.some(step => step.state !== 'passed') || final.harnessChecks.some(check => check.status !== 'pass')) throw new Error('E2E_MANIFEST_SUCCESS_REFUSED');
         await this.#transition('completed', final); this.#log('residual-check.completed', { residualCount }); this.#log('run.completed');
     }
-    async failed({ fixtures, artifacts = [], residualCount = 0, safeCode = 'E2E_SCENARIO_FAILED', errorType = 'Error' }) {
+    async failed({ fixtures, artifacts = [], residualCount = 0, verification = { oracle: 'fail', sourceMap: 'fail', mappedCount: 0 }, safeCode = 'E2E_SCENARIO_FAILED', errorType = 'Error' }) {
         if (!SAFE.test(safeCode) || !['Error','AssertionError','TimeoutError'].includes(errorType)) throw new Error('E2E_MANIFEST_INVALID');
-        const final = finalFields(fixtures, artifacts, residualCount); if (safeCode === 'E2E_ARTIFACT_UNSAFE') final.harnessChecks.find(check => check.id === 'e2e.artifacts').status = 'fail'; if (safeCode === 'E2E_PROCESS_RESIDUAL') final.harnessChecks.find(check => check.id === 'e2e.processes').status = 'fail';
+        const final = finalFields(fixtures, artifacts, residualCount, verification); if (safeCode === 'E2E_ARTIFACT_UNSAFE') final.harnessChecks.find(check => check.id === 'e2e.artifacts').status = 'fail'; if (safeCode === 'E2E_PROCESS_RESIDUAL') final.harnessChecks.find(check => check.id === 'e2e.processes').status = 'fail';
         await this.#transition('failed', { ...final, safeCode, errorType }); this.#log('residual-check.failed', { residualCount, safeCode }); this.#log('run.failed', { safeCode, errorType });
     }
     async read() { return JSON.parse(await readFile(path.join(this.directory, 'manifest.json'), 'utf8')); }
@@ -49,14 +49,16 @@ export class HarnessRunManifest {
     #log(name, fields = {}) { this.logger(`[kogg:e2e:harness] ${name} ${JSON.stringify({ runId: this.value.runId, platform: this.value.platform, runtime: this.value.runtime, ...fields })}`); }
 }
 
-function finalFields(fixtures, artifacts, residualCount) {
+function finalFields(fixtures, artifacts, residualCount, verification) {
     const validatedFixtures = validateFixtures(fixtures); const validatedArtifacts = validateArtifacts(artifacts);
-    if (!Number.isSafeInteger(residualCount) || residualCount < 0) throw new Error('E2E_MANIFEST_INVALID');
+    if (!Number.isSafeInteger(residualCount) || residualCount < 0 || !verification || Object.keys(verification).sort().join(',') !== 'mappedCount,oracle,sourceMap' || !['pass','fail'].includes(verification.oracle) || !['pass','fail'].includes(verification.sourceMap) || !Number.isSafeInteger(verification.mappedCount) || verification.mappedCount < 0 || verification.sourceMap === 'pass' && verification.mappedCount < 1) throw new Error('E2E_MANIFEST_INVALID');
     const fixturePass = validatedFixtures.every(value => value.state === 'cleaned'); const artifactPass = validatedArtifacts.every(value => value.status === 'retained' || value.status === 'refused');
     return { fixtures: validatedFixtures, artifacts: validatedArtifacts, residualCount, harnessChecks: [
         { id: 'e2e.fixtures', status: fixturePass ? 'pass' : 'fail', count: validatedFixtures.length },
         { id: 'e2e.processes', status: residualCount === 0 && fixturePass ? 'pass' : 'fail', residualCount },
-        { id: 'e2e.artifacts', status: artifactPass ? 'pass' : 'fail', count: validatedArtifacts.length }
+        { id: 'e2e.artifacts', status: artifactPass ? 'pass' : 'fail', count: validatedArtifacts.length },
+        { id: 'e2e.oracle', status: verification.oracle },
+        { id: 'e2e.source-map', status: verification.sourceMap, mappedCount: verification.mappedCount }
     ] };
 }
 function validateFixtures(values) {
