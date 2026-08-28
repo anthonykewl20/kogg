@@ -2,6 +2,8 @@ import { BackendApplicationContribution } from '@theia/core/lib/node';
 import { inject, injectable, optional } from '@theia/core/shared/inversify';
 import type { AgentAdapterFactory, AgentAdapterSession } from '@kogg/agents/lib/common/agents-protocol';
 import type { CodexSafeCode } from '../common/codex-protocol';
+import type { GovernedCodexAttemptV1 } from '../common/codex-protocol';
+import { CodexAttemptAuthorityFault, CodexAttemptAuthorityRegistry } from './codex-attempt-authority';
 import { codexLog } from './codex-logger';
 import { CodexReleaseRegistry, type QualifiedCodexRuntimeV1 } from './codex-release-registry';
 
@@ -14,7 +16,7 @@ export interface QualifiedCodexRuntimeProjection {
 }
 export interface QualifiedCodexRuntimeAuthority {
   qualify(runtime: QualifiedCodexRuntimeV1): Promise<QualifiedCodexRuntimeProjection>;
-  create(input: Parameters<AgentAdapterFactory['create']>[0] & { readonly runtime: QualifiedCodexRuntimeV1 }): AgentAdapterSession;
+  create(input: Omit<Parameters<AgentAdapterFactory['create']>[0], 'binding'> & { readonly runtime: QualifiedCodexRuntimeV1; readonly attempt: GovernedCodexAttemptV1 }): AgentAdapterSession;
 }
 export interface CodexRuntimeAuthorityProjection {
   readonly releaseId?: string; readonly target?: QualifiedCodexRuntimeV1['release']['target']; readonly qualificationProfileId?: string;
@@ -26,15 +28,17 @@ const BLOCKED: CodexRuntimeAuthorityProjection = { confinementVerified: false, c
 export class CodexRuntimeAuthorityRegistry implements BackendApplicationContribution {
   private startup: Promise<void> | undefined; private value: CodexRuntimeAuthorityProjection = BLOCKED;
   constructor(@inject(CodexReleaseRegistry) private readonly releases: CodexReleaseRegistry,
+    @inject(CodexAttemptAuthorityRegistry) private readonly attempts: CodexAttemptAuthorityRegistry,
     @inject(QualifiedCodexRuntimeAuthority) @optional() private readonly authority?: QualifiedCodexRuntimeAuthority) {}
   onStart(): Promise<void> { return this.startup ??= this.qualify(); }
   projection(): CodexRuntimeAuthorityProjection { return this.value; }
+  attemptProjection() { return this.attempts.projection(); }
   create(input: Parameters<AgentAdapterFactory['create']>[0]): AgentAdapterSession {
     if (!this.authority || !this.value.ownerReady || !this.value.confinementVerified || !this.value.credentialBrokerReady) throw new CodexRuntimeAuthorityFault(this.value.safeCode);
     const runtime = this.releases.qualifiedRuntime(); codexLog('session.create.requested', { attemptId: input.binding.attemptId, releaseId: runtime.release.releaseId });
-    try { const session = this.authority.create({ ...input, runtime }); validateSession(session); codexLog('session.create.completed', { attemptId: input.binding.attemptId, releaseId: runtime.release.releaseId, resourceId: session.resourceId }); return session; }
-    catch { // observability-exempt: The closed creation failure discards authority errors and never logs the attempt payload, runtime paths, or credential lease.
-      codexLog('session.create.failed', { attemptId: input.binding.attemptId, releaseId: runtime.release.releaseId, safeCode: 'CODEX_INTERNAL_FAILURE' }); throw new CodexRuntimeAuthorityFault('CODEX_INTERNAL_FAILURE'); }
+    try { const attempt = this.attempts.authorize({ binding: input.binding, runtime, authority: this.value }); const { binding: _binding, ...ownerInput } = input; const session = this.authority.create({ ...ownerInput, runtime, attempt }); validateSession(session); codexLog('session.create.completed', { attemptId: input.binding.attemptId, releaseId: runtime.release.releaseId, resourceId: session.resourceId }); return session; }
+    catch (error) { // observability-exempt: The closed creation failure discards authority errors and never logs the attempt payload, runtime paths, or credential lease.
+      const safeCode = error instanceof CodexRuntimeAuthorityFault || error instanceof CodexAttemptAuthorityFault ? error.code : 'CODEX_INTERNAL_FAILURE'; codexLog('session.create.failed', { attemptId: input.binding.attemptId, releaseId: runtime.release.releaseId, safeCode }); throw new CodexRuntimeAuthorityFault(safeCode); }
   }
   private async qualify(): Promise<void> {
     await this.releases.onStart(); let runtime: QualifiedCodexRuntimeV1; try { runtime = this.releases.qualifiedRuntime(); }
