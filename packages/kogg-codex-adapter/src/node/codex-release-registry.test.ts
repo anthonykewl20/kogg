@@ -11,6 +11,7 @@ import { CodexAdapterFactory } from './codex-adapter-factory';
 import { CODEX_CHECKS, CodexDiagnosticContributor } from './codex-diagnostic-contributor';
 import { codexLog, codexLoggingDiagnostics } from './codex-logger';
 import { CodexReleaseRegistry } from './codex-release-registry';
+import { CodexRecoveryRegistry } from './codex-recovery-registry';
 
 // diagnostic-coverage: codex.release, codex.confinement, codex.protocol, codex.credentials, codex.processes, codex.cleanup, codex.recovery, codex.source-maps
 test('refuses unsupported platforms without bundle access, process start, or ambient fallback', async () => {
@@ -60,10 +61,10 @@ test('kills and confirms cleanup when the registered version subprocess exceeds 
 });
 
 test('registers Codex as disabled and reports all eight diagnostics without fallback', async () => {
-  const root = await mkdtemp(path.join(os.tmpdir(), 'kogg-codex-release-')); const release = new CodexReleaseRegistry({} as OperationRegistryApi, root, { platform: 'linux', arch: 'x64' }); const adapters = new AdapterRegistry(); const factory = new CodexAdapterFactory(adapters, release);
+  const root = await mkdtemp(path.join(os.tmpdir(), 'kogg-codex-release-')); const release = new CodexReleaseRegistry({} as OperationRegistryApi, root, { platform: 'linux', arch: 'x64' }); const recovery = new CodexRecoveryRegistry(); const adapters = new AdapterRegistry(); const factory = new CodexAdapterFactory(adapters, release, recovery);
   try {
-    await factory.onStart(); assert.equal(adapters.descriptors().length, 1); assert.equal(adapters.descriptors()[0]?.enabled, false); assert.throws(() => adapters.resolveExact({ adapterKey: 'codex-app-server', adapterVersion: '1.0.0', providerId: 'openai', modelId: 'gpt-5', requiredCapabilities: ['provider-turn'] }), error => error instanceof Error && error.message === 'ADAPTER_DISABLED');
-    const checks = await new CodexDiagnosticContributor(release).diagnose(); assert.deepEqual(checks.map(check => check.id), CODEX_CHECKS.map(check => check.id)); assert.equal(checks.find(check => check.id === 'codex.release')?.status, 'fail'); assert.equal(checks.find(check => check.id === 'codex.processes')?.status, 'pass'); assert.equal(checks.find(check => check.id === 'codex.cleanup')?.status, 'pass'); const sourceMaps = checks.find(check => check.id === 'codex.source-maps'); assert.equal(sourceMaps?.status, 'pass'); assert.equal(sourceMaps?.details?.expectedCount, 18); assert.equal(sourceMaps?.details?.missingCount, 0);
+    await factory.onStart(); assert.equal(adapters.descriptors().length, 1); assert.equal(adapters.descriptors()[0]?.enabled, false); assert.throws(() => adapters.resolveExact({ adapterKey: 'codex-app-server', adapterVersion: '1.0.0', providerId: 'openai', modelId: 'gpt-5', requiredCapabilities: ['provider-turn'] }), error => error instanceof Error && error.message === 'ADAPTER_DISABLED'); assert.throws(() => factory.create(), /CODEX_RECOVERY_REQUIRED/u);
+    const checks = await new CodexDiagnosticContributor(release, recovery).diagnose(); assert.deepEqual(checks.map(check => check.id), CODEX_CHECKS.map(check => check.id)); assert.equal(checks.find(check => check.id === 'codex.release')?.status, 'fail'); assert.equal(checks.find(check => check.id === 'codex.processes')?.status, 'fail'); assert.equal(checks.find(check => check.id === 'codex.cleanup')?.status, 'fail'); assert.equal(checks.find(check => check.id === 'codex.recovery')?.status, 'fail'); const sourceMaps = checks.find(check => check.id === 'codex.source-maps'); assert.equal(sourceMaps?.status, 'pass'); assert.equal(sourceMaps?.details?.expectedCount, 19); assert.equal(sourceMaps?.details?.missingCount, 0);
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 
