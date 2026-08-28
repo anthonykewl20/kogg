@@ -14,6 +14,10 @@ type EventFields = {
   'protocol.request.completed': { attemptId: string; requestClass: string };
   'protocol.request.failed': { attemptId: string; requestClass: string; safeCode: CodexSafeCode };
   'protocol.authority.denied': { attemptId: string; pendingCount: number };
+  'content.delivery.started': { attemptId: string; pendingCount: number };
+  'content.delivery.completed': { attemptId: string; pendingCount: number; deliveredCount: number };
+  'content.delivery.failed': { attemptId: string; pendingCount: number; safeCode: CodexSafeCode };
+  'content.closed': { attemptId: string; pendingCount: number };
   'diagnostics.failed': { errorType: string };
 };
 const ALLOWED: { [K in keyof EventFields]: readonly (keyof EventFields[K])[] } = {
@@ -23,6 +27,8 @@ const ALLOWED: { [K in keyof EventFields]: readonly (keyof EventFields[K])[] } =
   'protocol.phase.changed': ['phase'], 'protocol.frame.refused': ['safeCode'],
   'protocol.request.started': ['attemptId', 'requestClass'], 'protocol.request.completed': ['attemptId', 'requestClass'],
   'protocol.request.failed': ['attemptId', 'requestClass', 'safeCode'], 'protocol.authority.denied': ['attemptId', 'pendingCount'],
+  'content.delivery.started': ['attemptId', 'pendingCount'], 'content.delivery.completed': ['attemptId', 'pendingCount', 'deliveredCount'],
+  'content.delivery.failed': ['attemptId', 'pendingCount', 'safeCode'], 'content.closed': ['attemptId', 'pendingCount'],
   'diagnostics.failed': ['errorType']
 };
 let violationCount = 0;
@@ -41,7 +47,11 @@ export function codexLog<K extends keyof EventFields>(event: K, fields: EventFie
   else if (event === 'protocol.request.started') console.debug('[kogg:agents:codex-protocol] protocol.request.started', fields);
   else if (event === 'protocol.request.completed') console.info('[kogg:agents:codex-protocol] protocol.request.completed', fields);
   else if (event === 'protocol.authority.denied') console.info('[kogg:agents:codex-protocol] protocol.authority.denied', fields);
+  else if (event === 'content.delivery.started') console.debug('[kogg:agents:codex-content] content.delivery.started', fields);
+  else if (event === 'content.delivery.completed') console.debug('[kogg:agents:codex-content] content.delivery.completed', fields);
+  else if (event === 'content.delivery.failed') console.error('[kogg:agents:codex-content] content.delivery.failed', fields);
+  else if (event === 'content.closed') console.info('[kogg:agents:codex-content] content.closed', fields);
   else console.error('[kogg:agents:codex-release] diagnostics.failed', fields);
 }
 export function codexLoggingDiagnostics(): { readonly schemaCount: number; readonly violationCount: number } { return { schemaCount: Object.keys(ALLOWED).length, violationCount }; }
-function safeValue(event: keyof EventFields, key: string, value: unknown): boolean { return event === 'protocol.authority.denied' && key === 'pendingCount' ? typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 : typeof value === 'string' && value.length <= 128; }
+function safeValue(_event: keyof EventFields, key: string, value: unknown): boolean { return ['pendingCount','deliveredCount'].includes(key) ? typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 : typeof value === 'string' && value.length <= 128; }
