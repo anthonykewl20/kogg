@@ -8,6 +8,9 @@ type EventFields = {
   'authority.verification.started': { releaseId: string; target: string };
   'authority.verification.completed': { releaseId: string; target: string; qualificationProfileId: string };
   'authority.verification.failed': { releaseId: string; safeCode: CodexSafeCode };
+  'attempt.authorize.requested': { attemptId: string };
+  'attempt.authorize.completed': { attemptId: string; authorityDigest: string };
+  'attempt.authorize.failed': { attemptId: string; safeCode: CodexSafeCode };
   'session.create.requested': { attemptId: string; releaseId: string };
   'session.create.completed': { attemptId: string; releaseId: string; resourceId: string };
   'session.create.failed': { attemptId: string; releaseId: string; safeCode: CodexSafeCode };
@@ -58,6 +61,7 @@ const ALLOWED: { [K in keyof EventFields]: readonly (keyof EventFields[K])[] } =
   'release.verification.started': ['adapterVersion'], 'release.verification.completed': ['releaseId', 'target', 'adapterVersion'],
   'release.verification.failed': ['adapterVersion', 'safeCode'], 'process.start.requested': ['operationId', 'processId'],
   'authority.verification.started': ['releaseId', 'target'], 'authority.verification.completed': ['releaseId', 'target', 'qualificationProfileId'], 'authority.verification.failed': ['releaseId', 'safeCode'],
+  'attempt.authorize.requested': ['attemptId'], 'attempt.authorize.completed': ['attemptId', 'authorityDigest'], 'attempt.authorize.failed': ['attemptId', 'safeCode'],
   'session.create.requested': ['attemptId', 'releaseId'], 'session.create.completed': ['attemptId', 'releaseId', 'resourceId'], 'session.create.failed': ['attemptId', 'releaseId', 'safeCode'],
   'process.started': ['operationId', 'processId'], 'process.failed': ['operationId', 'processId', 'safeCode'],
   'protocol.phase.changed': ['phase'], 'protocol.frame.refused': ['safeCode'],
@@ -90,6 +94,9 @@ export function codexLog<K extends keyof EventFields>(event: K, fields: EventFie
   else if (event === 'authority.verification.started') console.info('[kogg:agents:codex-authority] authority.verification.started', fields);
   else if (event === 'authority.verification.completed') console.info('[kogg:agents:codex-authority] authority.verification.completed', fields);
   else if (event === 'authority.verification.failed') console.error('[kogg:agents:codex-authority] authority.verification.failed', fields);
+  else if (event === 'attempt.authorize.requested') console.debug('[kogg:agents:codex-authority] attempt.authorize.requested', fields);
+  else if (event === 'attempt.authorize.completed') console.info('[kogg:agents:codex-authority] attempt.authorize.completed', fields);
+  else if (event === 'attempt.authorize.failed') console.error('[kogg:agents:codex-authority] attempt.authorize.failed', fields);
   else if (event === 'session.create.requested') console.debug('[kogg:agents:codex-authority] session.create.requested', fields);
   else if (event === 'session.create.completed') console.info('[kogg:agents:codex-authority] session.create.completed', fields);
   else if (event === 'session.create.failed') console.error('[kogg:agents:codex-authority] session.create.failed', fields);
