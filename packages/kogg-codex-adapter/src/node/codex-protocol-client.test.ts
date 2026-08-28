@@ -1,8 +1,10 @@
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
+import { PassThrough } from 'node:stream';
 import test from 'node:test';
 import { CodexClientFault, CodexProtocolClient } from './codex-protocol-client';
 import type { CodexContentRouter, CodexFrameSchema, CodexSafeObservation, CodexValidatedFrame } from './codex-protocol-core';
+import { CodexStdioDrainer } from './codex-stdio-drainer';
 
 // diagnostic-coverage: codex.protocol, codex.cleanup, codex.source-maps
 class MemoryStdin extends EventEmitter { destroyed = false; writableLength = 0; readonly writes: Buffer[] = []; write(value: Uint8Array): boolean { this.writes.push(Buffer.from(value)); return true; } }
@@ -52,4 +54,10 @@ test('closes content input on cleanup or protocol failure and fails a stalled co
   let closed = 0; const cleanup = create({ accept: async () => true, closeInput: () => { closed++; }, drain: async () => true }); cleanup.client.beginCleanup(); assert.equal(closed, 1); await cleanup.client.drainContent(10); assert.equal(closed, 2);
   let faultClosed = 0; const invalid = create({ accept: async () => true, closeInput: () => { faultClosed++; } }); const pending = invalid.client.request('initialize', {}); await assert.rejects(invalid.client.push(line({ invalid: true }))); await assert.rejects(pending); assert.equal(faultClosed, 1);
   const stalled = create({ accept: async () => true, closeInput: () => undefined, drain: async () => false }); await assert.rejects(stalled.client.drainContent(10), fault('CODEX_CONTENT_BACKPRESSURE')); await assert.rejects(stalled.client.request('initialize', {}));
+});
+
+test('owns split stdout through the protocol client while stderr remains discard-only', async () => {
+  const value = create(); const stdout = new PassThrough(); const stderr = new PassThrough(); const faults: string[] = []; const draining = new CodexStdioDrainer(value.client, code => { faults.push(code); }).run(stdout, stderr);
+  const initialize = value.client.request('initialize', {}); const response = line({ id: 1, outcome: 'result', result: { privateValue: true } }); stdout.write(response.subarray(0, 4)); stdout.write(response.subarray(4)); assert.deepEqual(await initialize, { privateValue: true });
+  stdout.end(); stderr.end('private stderr must be discarded'); assert.deepEqual(await draining, { stderrBytes: 32, faulted: false }); assert.deepEqual(faults, []); assert.equal(JSON.stringify(value.observations).includes('privateValue'), false);
 });

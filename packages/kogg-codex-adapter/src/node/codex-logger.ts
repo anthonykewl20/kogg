@@ -24,6 +24,9 @@ type EventFields = {
   'host.start.completed': { attemptId: string; operationId: string; processId: string };
   'host.exited': { attemptId: string; operationId: string; processId: string; exitClass: string };
   'host.failed': { attemptId: string; operationId: string; processId: string; safeCode: CodexSafeCode };
+  'session.start.requested': { attemptId: string; operationId: string; processId: string };
+  'session.start.completed': { attemptId: string; operationId: string; processId: string };
+  'session.start.failed': { attemptId: string; operationId: string; processId: string; safeCode: CodexSafeCode };
   'cleanup.started': { attemptId: string; operationId: string; processId: string; resourceCount: number };
   'cleanup.completed': { attemptId: string; operationId: string; processId: string; resourceCount: number; residualCount: number };
   'cleanup.failed': { attemptId: string; operationId: string; processId: string; resourceCount: number; residualCount: number; safeCode: CodexSafeCode };
@@ -41,6 +44,7 @@ const ALLOWED: { [K in keyof EventFields]: readonly (keyof EventFields[K])[] } =
   'process.registered': ['attemptId', 'operationId', 'processId', 'ownerKind'], 'process.registration.failed': ['attemptId', 'operationId', 'safeCode'],
   'host.start.requested': ['attemptId', 'operationId', 'processId'], 'host.start.completed': ['attemptId', 'operationId', 'processId'],
   'host.exited': ['attemptId', 'operationId', 'processId', 'exitClass'], 'host.failed': ['attemptId', 'operationId', 'processId', 'safeCode'],
+  'session.start.requested': ['attemptId', 'operationId', 'processId'], 'session.start.completed': ['attemptId', 'operationId', 'processId'], 'session.start.failed': ['attemptId', 'operationId', 'processId', 'safeCode'],
   'cleanup.started': ['attemptId', 'operationId', 'processId', 'resourceCount'], 'cleanup.completed': ['attemptId', 'operationId', 'processId', 'resourceCount', 'residualCount'],
   'cleanup.failed': ['attemptId', 'operationId', 'processId', 'resourceCount', 'residualCount', 'safeCode'],
   'diagnostics.failed': ['errorType']
@@ -71,6 +75,9 @@ export function codexLog<K extends keyof EventFields>(event: K, fields: EventFie
   else if (event === 'host.start.completed') console.info('[kogg:agents:codex-supervision] host.start.completed', fields);
   else if (event === 'host.exited') console.info('[kogg:agents:codex-supervision] host.exited', fields);
   else if (event === 'host.failed') console.error('[kogg:agents:codex-supervision] host.failed', fields);
+  else if (event === 'session.start.requested') console.debug('[kogg:agents:codex-supervision] session.start.requested', fields);
+  else if (event === 'session.start.completed') console.info('[kogg:agents:codex-supervision] session.start.completed', fields);
+  else if (event === 'session.start.failed') console.error('[kogg:agents:codex-supervision] session.start.failed', fields);
   else if (event === 'cleanup.started') console.info('[kogg:agents:codex-supervision] cleanup.started', fields);
   else if (event === 'cleanup.completed') console.info('[kogg:agents:codex-supervision] cleanup.completed', fields);
   else if (event === 'cleanup.failed') console.error('[kogg:agents:codex-supervision] cleanup.failed', fields);

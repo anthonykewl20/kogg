@@ -33,6 +33,7 @@ export class CodexProtocolClient implements CodexPrivateFrameConsumer {
   }
 
   phase(): ReturnType<CodexProtocolCore['phase']> { return this.core.phase(); }
+  faulted(): boolean { return this.failed; }
   outstanding(): { readonly client: number; readonly server: number } { return this.core.outstanding(); }
 
   async request(requestClass: CodexRequestClass, params: Readonly<Record<string, unknown>>): Promise<unknown> {
@@ -65,7 +66,8 @@ export class CodexProtocolClient implements CodexPrivateFrameConsumer {
     try { this.core.end(); if (this.pending.size || this.authorityRequests.length) throw new CodexClientFault('CODEX_TRANSPORT_LOST'); }
     catch (error) { this.fail(codeOf(error)); throw error; }
   }
-  beginCleanup(): void { this.guard(); this.core.beginCleanup(); this.input.content.closeInput?.(); }
+  closeContentInput(): void { this.input.content.closeInput?.(); }
+  beginCleanup(): void { this.closeContentInput(); if (!this.failed) this.core.beginCleanup(); }
   async drainContent(timeoutMs = 10_000): Promise<void> { this.input.content.closeInput?.(); if (this.input.content.drain && !await this.input.content.drain(timeoutMs)) { const error = new CodexClientFault('CODEX_CONTENT_BACKPRESSURE'); this.fail(error.code); throw error; } }
 
   accept(frame: CodexValidatedFrame): void {
