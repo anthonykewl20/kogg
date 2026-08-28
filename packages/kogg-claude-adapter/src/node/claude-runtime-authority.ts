@@ -1,17 +1,18 @@
 import { BackendApplicationContribution } from '@theia/core/lib/node';
 import { inject, injectable, optional } from '@theia/core/shared/inversify';
 import type { AgentAdapterFactory, AgentAdapterSession } from '@kogg/agents/lib/common/agents-protocol';
-import type { ClaudeCommercialUseApprovalV1, ClaudeSafeCode } from '../common/claude-protocol';
+import type { ClaudeCommercialUseApprovalV1, ClaudeSafeCode, GovernedClaudeAttemptV1 } from '../common/claude-protocol';
 import { ClaudeArtifactRegistry, type AttestedClaudeArtifactV1 } from './claude-artifact-registry';
+import { ClaudeAttemptAuthorityRegistry } from './claude-attempt-authority';
 import { claudeLog } from './claude-logger';
 
 // The optional owner is the only boundary allowed to probe or execute the attested commercial runtime. Its projection contains identities and booleans only.
-// diagnostic-coverage: claude.artifact, claude.confinement, claude.settings, claude.protocol, claude.credentials, claude.processes, claude.cleanup, claude.recovery, claude.source-maps
+// diagnostic-coverage: claude.artifact, claude.authority, claude.confinement, claude.settings, claude.protocol, claude.credentials, claude.processes, claude.cleanup, claude.recovery, claude.source-maps
 export const QualifiedClaudeRuntimeAuthority = Symbol('QualifiedClaudeRuntimeAuthority');
 export interface QualifiedClaudeRuntimeProjection { readonly artifactManifestDigest: string; readonly legalApprovalDigest: string; readonly bundledCliVersion: string; readonly executionProfileDigest: string; readonly artifactVerified: boolean; readonly confinementVerified: boolean; readonly credentialBrokerReady: boolean; }
 export interface QualifiedClaudeRuntimeAuthority {
   qualify(input: { readonly artifact: AttestedClaudeArtifactV1; readonly approval: ClaudeCommercialUseApprovalV1 }): Promise<QualifiedClaudeRuntimeProjection>;
-  create(input: Parameters<AgentAdapterFactory['create']>[0] & { readonly artifact: AttestedClaudeArtifactV1; readonly approval: ClaudeCommercialUseApprovalV1 }): AgentAdapterSession;
+  create(input: Parameters<AgentAdapterFactory['create']>[0] & { readonly artifact: AttestedClaudeArtifactV1; readonly approval: ClaudeCommercialUseApprovalV1; readonly attempt: GovernedClaudeAttemptV1 }): AgentAdapterSession;
 }
 export interface ClaudeRuntimeAuthorityProjection extends Partial<QualifiedClaudeRuntimeProjection> { readonly ownerReady: boolean; readonly safeCode: ClaudeSafeCode; }
 const SHA256 = /^[0-9a-f]{64}$/u; const BLOCKED: ClaudeRuntimeAuthorityProjection = { ownerReady: false, artifactVerified: false, confinementVerified: false, credentialBrokerReady: false, safeCode: 'CLAUDE_ARTIFACT_MISMATCH' };
@@ -19,13 +20,13 @@ const SHA256 = /^[0-9a-f]{64}$/u; const BLOCKED: ClaudeRuntimeAuthorityProjectio
 @injectable()
 export class ClaudeRuntimeAuthorityRegistry implements BackendApplicationContribution {
   private startup: Promise<void> | undefined; private value: ClaudeRuntimeAuthorityProjection = BLOCKED;
-  constructor(@inject(ClaudeArtifactRegistry) private readonly artifacts: ClaudeArtifactRegistry, @inject(QualifiedClaudeRuntimeAuthority) @optional() private readonly authority?: QualifiedClaudeRuntimeAuthority) {}
+  constructor(@inject(ClaudeArtifactRegistry) private readonly artifacts: ClaudeArtifactRegistry, @inject(ClaudeAttemptAuthorityRegistry) private readonly attempts: ClaudeAttemptAuthorityRegistry, @inject(QualifiedClaudeRuntimeAuthority) @optional() private readonly authority?: QualifiedClaudeRuntimeAuthority) {}
   onStart(): Promise<void> { return this.startup ??= this.qualify(); }
   projection(): ClaudeRuntimeAuthorityProjection { return this.value; }
   create(input: Parameters<AgentAdapterFactory['create']>[0]): AgentAdapterSession {
     if (!this.authority || !ready(this.value)) throw new ClaudeRuntimeAuthorityFault(this.value.safeCode);
-    const artifact = this.artifacts.attestedArtifact(); const approval = this.artifacts.qualifiedApproval(); claudeLog('session.create.requested', { attemptId: input.binding.attemptId, artifactManifestDigest: artifact.manifestDigest });
-    try { const session = this.authority.create({ ...input, artifact, approval }); validateSession(session); claudeLog('session.create.completed', { attemptId: input.binding.attemptId, resourceId: session.resourceId }); return session; }
+    const artifact = this.artifacts.attestedArtifact(); const approval = this.artifacts.qualifiedApproval(); const attempt = this.attempts.authorize({ binding: input.binding, artifact, runtime: this.value }); claudeLog('session.create.requested', { attemptId: input.binding.attemptId, artifactManifestDigest: artifact.manifestDigest });
+    try { const session = this.authority.create({ ...input, artifact, approval, attempt }); validateSession(session); claudeLog('session.create.completed', { attemptId: input.binding.attemptId, resourceId: session.resourceId }); return session; }
     catch { /* observability-exempt: closed session creation failure discards owner errors and never logs attempt content, paths, credentials, or commercial runtime data. */ claudeLog('session.create.failed', { attemptId: input.binding.attemptId, safeCode: 'CLAUDE_INTERNAL' }); throw new ClaudeRuntimeAuthorityFault('CLAUDE_INTERNAL'); }
   }
   private async qualify(): Promise<void> {
