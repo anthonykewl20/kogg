@@ -7,7 +7,7 @@ import { codexLog } from './codex-logger';
 // Stdout is schema-owned protocol input; stderr is byte-counted and discarded. Neither stream content enters logs or errors.
 // diagnostic-coverage: codex.protocol, codex.processes, codex.cleanup, codex.source-maps
 const MAX_STDERR_BYTES = 64 * 1024 * 1024;
-type StdioFault = Extract<CodexSafeCode, 'CODEX_PROTOCOL_VIOLATION' | 'CODEX_PROTOCOL_UNSUPPORTED' | 'CODEX_FRAME_TOO_LARGE' | 'CODEX_QUEUE_OVERFLOW' | 'CODEX_CONTENT_BACKPRESSURE' | 'CODEX_STDERR_LIMIT' | 'CODEX_TRANSPORT_LOST'>;
+type StdioFault = Extract<CodexSafeCode, 'CODEX_PROTOCOL_VIOLATION' | 'CODEX_PROTOCOL_UNSUPPORTED' | 'CODEX_FRAME_TOO_LARGE' | 'CODEX_QUEUE_OVERFLOW' | 'CODEX_CONTENT_BACKPRESSURE' | 'CODEX_STDERR_LIMIT' | 'CODEX_TRANSPORT_LOST' | 'CODEX_AUTHORITY_REQUESTED'>;
 export interface CodexStdoutConsumer { push(chunk: Uint8Array): Promise<void>; end(): void; }
 export class CodexStdioDrainer {
   private failed = false; private stderrBytes = 0;
