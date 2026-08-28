@@ -41,7 +41,7 @@ export class CodexProcessHost {
       const host = await bounded(this.input.owner.spawn({ processRegistrationId: this.process.id }), this.spawnTimeout()); if (!validHost(host)) throw new CodexProcessHostFault('CODEX_CONFINEMENT_UNVERIFIED');
       this.process.started(host.pid); this.process.ready(); codexLog('host.start.completed', this.fields()); this.exitMonitor = this.monitor(host); return { stdin: host.stdin, stdout: host.stdout, stderr: host.stderr };
     } catch (error) { // observability-exempt: failStart emits the closed code and performs mandatory termination/enumeration without exposing spawn details.
-      throw await this.failStart(error instanceof CodexProcessHostFault ? error.code : 'CODEX_PROCESS_START_FAILED');
+      const code = error instanceof HostTimeout ? 'CODEX_SPAWN_TIMEOUT' : error instanceof CodexProcessHostFault ? error.code : 'CODEX_PROCESS_START_FAILED'; if (error instanceof HostTimeout) codexLog('timeout.expired', { attemptId: this.input.attemptId, deadlineClass: 'spawn', generation: 1, configuredMs: this.spawnTimeout() }); throw await this.failStart(code);
     }
   }
   async terminateOwnedHost(): Promise<void> { this.expectedExit = true; await bounded(this.input.owner.terminate(this.process.id), this.cleanupTimeout()); if (this.exitMonitor) await bounded(this.exitMonitor, this.cleanupTimeout()); }
