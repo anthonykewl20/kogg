@@ -64,6 +64,7 @@ export class WorkflowCompiler {
     }
     for (const node of graph.nodes) { const count = incoming.get(node.nodeId) ?? 0; if (count > 1 && node.kind !== 'control.join' && node.kind !== 'control.finally') throw new WorkflowValidationError('WORKFLOW_JOIN_AMBIGUOUS'); if (node.kind === 'control.join' && count < 2) throw new WorkflowValidationError('WORKFLOW_JOIN_AMBIGUOUS'); }
     if (cycle(graph)) throw new WorkflowValidationError('WORKFLOW_CYCLE');
+    validateForkJoins(graph, outgoing);
     const roots = graph.nodes.filter(node => (incoming.get(node.nodeId) ?? 0) === 0); if (roots.length !== 1) throw new WorkflowValidationError('WORKFLOW_UNREACHABLE');
     const queue = [roots[0]!.nodeId]; const visited = new Set<string>();
     while (queue.length) { const id = queue.shift()!; if (visited.has(id)) continue; visited.add(id); for (const target of outgoing.get(id) ?? []) queue.push(target); }
@@ -73,4 +74,19 @@ export class WorkflowCompiler {
 }
 
 function cycle(graph: EditableWorkflowGraphV1): boolean { const degree = new Map(graph.nodes.map(node => [node.nodeId, 0])); const edges = new Map(graph.nodes.map(node => [node.nodeId, [] as string[]])); for (const edge of graph.edges) { degree.set(edge.targetNodeId, (degree.get(edge.targetNodeId) ?? 0) + 1); edges.get(edge.sourceNodeId)?.push(edge.targetNodeId); } const queue = [...degree].filter(([, value]) => value === 0).map(([id]) => id); let count = 0; while (queue.length) { const id = queue.shift()!; count++; for (const target of edges.get(id) ?? []) { const next = (degree.get(target) ?? 0) - 1; degree.set(target, next); if (next === 0) queue.push(target); } } return count !== graph.nodes.length; }
+function validateForkJoins(graph: EditableWorkflowGraphV1, outgoing: ReadonlyMap<string, readonly string[]>): void {
+  const joins = graph.nodes.filter(node => node.kind === 'control.join'); const matched = new Set<string>();
+  for (const fork of graph.nodes.filter(node => node.kind === 'control.parallel' || (node.kind === 'control.condition' && graph.edges.some(edge => edge.sourceNodeId === node.nodeId && (edge.sourcePort === 'true' || edge.sourcePort === 'false'))))) {
+    const branchEdges = graph.edges.filter(edge => edge.sourceNodeId === fork.nodeId && (fork.kind === 'control.parallel' ? edge.sourcePort === 'success' : edge.sourcePort === 'true' || edge.sourcePort === 'false'));
+    const branches = branchEdges.map(edge => edge.targetNodeId);
+    const portCounts = new Map<string, number>(); for (const edge of graph.edges.filter(edge => edge.sourceNodeId === fork.nodeId)) portCounts.set(edge.sourcePort, (portCounts.get(edge.sourcePort) ?? 0) + 1);
+    const invalidCondition = fork.kind === 'control.condition' && (branches.length !== 2 || !branchEdges.some(edge => edge.sourcePort === 'true') || !branchEdges.some(edge => edge.sourcePort === 'false'));
+    if (invalidCondition || (fork.kind === 'control.parallel' && (branches.length < 2 || branches.length > 8)) || [...portCounts].some(([port, value]) => !(fork.kind === 'control.parallel' && port === 'success') && value > 1)) throw new WorkflowValidationError('WORKFLOW_JOIN_AMBIGUOUS');
+    const candidates = joins.filter(join => branches.every(branch => reachable(branch, join.nodeId, outgoing)));
+    const nearest = candidates.filter(candidate => !candidates.some(other => other.nodeId !== candidate.nodeId && reachable(other.nodeId, candidate.nodeId, outgoing)));
+    if (nearest.length !== 1 || matched.has(nearest[0]!.nodeId)) throw new WorkflowValidationError('WORKFLOW_JOIN_AMBIGUOUS'); matched.add(nearest[0]!.nodeId);
+  }
+  if (matched.size !== joins.length) throw new WorkflowValidationError('WORKFLOW_JOIN_AMBIGUOUS');
+}
+function reachable(source: string, target: string, outgoing: ReadonlyMap<string, readonly string[]>): boolean { const queue = [source]; const visited = new Set<string>(); while (queue.length) { const id = queue.shift()!; if (id === target) return true; if (visited.has(id)) continue; visited.add(id); queue.push(...(outgoing.get(id) ?? [])); } return false; }
 function count(input: unknown, key: string): number { if (!input || typeof input !== 'object') return 0; const value = (input as Record<string, unknown>)[key]; return Array.isArray(value) ? value.length : 0; }
