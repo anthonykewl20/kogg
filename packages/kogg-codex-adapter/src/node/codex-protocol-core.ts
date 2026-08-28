@@ -19,7 +19,7 @@ export type CodexSafeObservation =
   | { readonly kind: 'notification'; readonly lifecycle: 'turn-started' | 'activity' | 'turn-completed' }
   | { readonly kind: 'server-request'; readonly lifecycle: 'authority-request' };
 export interface CodexFrameSchema { validate(frame: Readonly<Record<string, unknown>>, expectedRequestMethod?: string): CodexValidatedFrame | undefined; }
-export interface CodexContentRouter { accept(content: unknown, byteCount: number): Promise<boolean>; }
+export interface CodexContentRouter { accept(content: unknown, byteCount: number): Promise<boolean>; closeInput?(): void; drain?(timeoutMs?: number): Promise<boolean>; }
 export interface CodexPrivateFrameConsumer { accept(frame: CodexValidatedFrame): void; }
 
 export class CodexProtocolFault extends Error { constructor(readonly code: Extract<CodexSafeCode, 'CODEX_PROTOCOL_VIOLATION' | 'CODEX_PROTOCOL_UNSUPPORTED' | 'CODEX_FRAME_TOO_LARGE' | 'CODEX_QUEUE_OVERFLOW' | 'CODEX_STDIN_BACKPRESSURE' | 'CODEX_STDERR_LIMIT' | 'CODEX_CONTENT_BACKPRESSURE' | 'CODEX_TRANSPORT_LOST'>) { super(code); } }

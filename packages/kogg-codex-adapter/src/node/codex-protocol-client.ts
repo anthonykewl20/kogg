@@ -65,7 +65,8 @@ export class CodexProtocolClient implements CodexPrivateFrameConsumer {
     try { this.core.end(); if (this.pending.size || this.authorityRequests.length) throw new CodexClientFault('CODEX_TRANSPORT_LOST'); }
     catch (error) { this.fail(codeOf(error)); throw error; }
   }
-  beginCleanup(): void { this.guard(); this.core.beginCleanup(); }
+  beginCleanup(): void { this.guard(); this.core.beginCleanup(); this.input.content.closeInput?.(); }
+  async drainContent(timeoutMs = 10_000): Promise<void> { this.input.content.closeInput?.(); if (this.input.content.drain && !await this.input.content.drain(timeoutMs)) { const error = new CodexClientFault('CODEX_CONTENT_BACKPRESSURE'); this.fail(error.code); throw error; } }
 
   accept(frame: CodexValidatedFrame): void {
     if (frame.kind === 'server-request') { this.authorityRequests.push(frame.id); return; }
@@ -77,6 +78,7 @@ export class CodexProtocolClient implements CodexPrivateFrameConsumer {
   private guard(): void { if (this.failed) throw new CodexClientFault('CODEX_PROTOCOL_VIOLATION'); }
   private fail(code: CodexSafeCode): void {
     if (this.failed) return; this.failed = true;
+    this.input.content.closeInput?.();
     for (const pending of this.pending.values()) { codexLog('protocol.request.failed', { attemptId: this.input.attemptId, requestClass: pending.requestClass, safeCode: code }); pending.reject(new CodexClientFault(code)); }
     this.pending.clear(); this.authorityRequests.length = 0;
   }

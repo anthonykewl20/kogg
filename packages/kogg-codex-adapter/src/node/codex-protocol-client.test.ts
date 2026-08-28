@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
 import test from 'node:test';
 import { CodexClientFault, CodexProtocolClient } from './codex-protocol-client';
-import type { CodexFrameSchema, CodexSafeObservation, CodexValidatedFrame } from './codex-protocol-core';
+import type { CodexContentRouter, CodexFrameSchema, CodexSafeObservation, CodexValidatedFrame } from './codex-protocol-core';
 
 // diagnostic-coverage: codex.protocol, codex.cleanup, codex.source-maps
 class MemoryStdin extends EventEmitter { destroyed = false; writableLength = 0; readonly writes: Buffer[] = []; write(value: Uint8Array): boolean { this.writes.push(Buffer.from(value)); return true; } }
@@ -17,9 +17,9 @@ const schema: CodexFrameSchema = { validate(frame) {
 } };
 const line = (value: unknown): Buffer => Buffer.from(`${JSON.stringify(value)}\n`);
 const fault = (code: string) => (error: unknown): boolean => error instanceof CodexClientFault && error.code === code;
-function create(): { client: CodexProtocolClient; stdin: MemoryStdin; observations: Array<{ sequence: number; observation: CodexSafeObservation }> } {
+function create(content: CodexContentRouter = { accept: async () => true }): { client: CodexProtocolClient; stdin: MemoryStdin; observations: Array<{ sequence: number; observation: CodexSafeObservation }> } {
   const stdin = new MemoryStdin(); const observations: Array<{ sequence: number; observation: CodexSafeObservation }> = [];
-  const client = new CodexProtocolClient({ attemptId: 'attempt-1', schema, acceptedInboundMethods: accepted, stdin: stdin as never, content: { accept: async () => true }, authorityDenial: id => ({ id, error: { code: -32600, message: 'Denied by Kogg policy' } }), onObservation: (sequence, observation) => observations.push({ sequence, observation }) });
+  const client = new CodexProtocolClient({ attemptId: 'attempt-1', schema, acceptedInboundMethods: accepted, stdin: stdin as never, content, authorityDenial: id => ({ id, error: { code: -32600, message: 'Denied by Kogg policy' } }), onObservation: (sequence, observation) => observations.push({ sequence, observation }) });
   return { client, stdin, observations };
 }
 
@@ -46,4 +46,10 @@ test('classifies request refusal and rejects every waiter after a protocol fault
   finally { console.error = original; }
   const requestError = create(); const first = requestError.client.request('initialize', {}); await requestError.client.push(line({ id: 1, outcome: 'result', result: {} })); await first; await requestError.client.initialized(); const thread = requestError.client.request('thread/start', {}); await requestError.client.push(line({ id: 2, outcome: 'result', result: {} })); await thread; const turn = requestError.client.request('turn/start', {}); await requestError.client.push(line({ id: 3, outcome: 'result', result: {} })); await turn; await requestError.client.push(line({ method: 'turn/started', lifecycle: 'turn-started' })); const interrupt = requestError.client.request('turn/interrupt', {}); await requestError.client.push(line({ id: 4, outcome: 'error' })); await assert.rejects(interrupt, fault('CODEX_PROVIDER_REFUSED'));
   const brokenNotification = create(); const ready = brokenNotification.client.request('initialize', {}); await brokenNotification.client.push(line({ id: 1, outcome: 'result', result: {} })); await ready; brokenNotification.stdin.destroyed = true; await assert.rejects(brokenNotification.client.initialized()); await assert.rejects(brokenNotification.client.request('thread/start', {}));
+});
+
+test('closes content input on cleanup or protocol failure and fails a stalled content drain closed', async () => {
+  let closed = 0; const cleanup = create({ accept: async () => true, closeInput: () => { closed++; }, drain: async () => true }); cleanup.client.beginCleanup(); assert.equal(closed, 1); await cleanup.client.drainContent(10); assert.equal(closed, 2);
+  let faultClosed = 0; const invalid = create({ accept: async () => true, closeInput: () => { faultClosed++; } }); const pending = invalid.client.request('initialize', {}); await assert.rejects(invalid.client.push(line({ invalid: true }))); await assert.rejects(pending); assert.equal(faultClosed, 1);
+  const stalled = create({ accept: async () => true, closeInput: () => undefined, drain: async () => false }); await assert.rejects(stalled.client.drainContent(10), fault('CODEX_CONTENT_BACKPRESSURE')); await assert.rejects(stalled.client.request('initialize', {}));
 });
