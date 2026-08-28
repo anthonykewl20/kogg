@@ -35,9 +35,9 @@ test('correlates private results while exposing only sequenced safe lifecycle ob
   assert.equal(JSON.stringify(observations).includes('private'), false); assert.match(Buffer.concat(stdin.writes).toString(), /"method":"initialize"/u);
 });
 
-test('denies authority requests exactly once and settles the private server correlation', async () => {
-  const { client, stdin } = create(); const initialize = client.request('initialize', {}); await client.push(line({ id: 1, outcome: 'result', result: {} })); await initialize; await client.initialized(); const thread = client.request('thread/start', {}); await client.push(line({ id: 2, outcome: 'result', result: {} })); await thread; const turn = client.request('turn/start', {}); await client.push(line({ id: 3, outcome: 'result', result: {} })); await turn; await client.push(line({ method: 'turn/started', lifecycle: 'turn-started' }));
-  await client.push(line({ id: 91, method: 'item/approval', lifecycle: 'authority-request' })); assert.deepEqual(client.outstanding(), { client: 0, server: 0 });
+test('denies authority requests exactly once, settles the private correlation, and fails the turn closed', async () => {
+  const { client, stdin, observations } = create(); const initialize = client.request('initialize', {}); await client.push(line({ id: 1, outcome: 'result', result: {} })); await initialize; await client.initialized(); const thread = client.request('thread/start', {}); await client.push(line({ id: 2, outcome: 'result', result: {} })); await thread; const turn = client.request('turn/start', {}); await client.push(line({ id: 3, outcome: 'result', result: {} })); await turn; await client.push(line({ method: 'turn/started', lifecycle: 'turn-started' }));
+  await assert.rejects(client.push(Buffer.concat([line({ id: 91, method: 'item/approval', lifecycle: 'authority-request' }), line({ method: 'turn/completed', lifecycle: 'turn-completed' })])), fault('CODEX_AUTHORITY_REQUESTED')); assert.deepEqual(client.outstanding(), { client: 0, server: 0 }); assert.equal(client.faulted(), true); assert.equal(observations.some(value => value.observation.kind === 'notification' && value.observation.lifecycle === 'turn-completed'), false);
   const denials = stdin.writes.map(value => value.toString()).filter(value => value.includes('Denied by Kogg policy')); assert.equal(denials.length, 1); assert.match(denials[0]!, /"id":91/u);
 });
 

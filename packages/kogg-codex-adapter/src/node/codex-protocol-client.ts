@@ -54,11 +54,18 @@ export class CodexProtocolClient implements CodexPrivateFrameConsumer {
     this.guard();
     try {
       await this.core.push(chunk);
-      for (const observation of this.core.drain()) this.input.onObservation(++this.sequence, observation);
+      const observations = this.core.drain(); const authorityRequested = observations.some(observation => observation.kind === 'server-request');
       while (this.authorityRequests.length) {
         const requestId = this.authorityRequests.shift()!; await this.writer.send(this.input.authorityDenial(requestId)); this.core.resolveServerRequest(requestId);
         codexLog('protocol.authority.denied', { attemptId: this.input.attemptId, pendingCount: this.authorityRequests.length });
       }
+      if (authorityRequested) {
+        const error = new CodexClientFault('CODEX_AUTHORITY_REQUESTED'); this.fail(error.code);
+        try { for (const observation of observations) { this.input.onObservation(++this.sequence, observation); if (observation.kind === 'server-request') break; } } catch { // observability-exempt: The explicit denial is already written and authority refusal is terminal; callback errors cannot replace that closed primary code.
+          throw error; }
+        throw error;
+      }
+      for (const observation of observations) this.input.onObservation(++this.sequence, observation);
     } catch (error) { this.fail(codeOf(error)); throw error; }
   }
 
