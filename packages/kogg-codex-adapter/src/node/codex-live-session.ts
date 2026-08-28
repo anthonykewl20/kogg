@@ -2,6 +2,7 @@ import type { Readable, Writable } from 'node:stream';
 import type { CodexSafeCode } from '../common/codex-protocol';
 import { codexLog } from './codex-logger';
 import { CodexClientFault, CodexProtocolClient } from './codex-protocol-client';
+import { CodexCredentialFault } from './codex-credential-reservation';
 import type { CodexSafeObservation } from './codex-protocol-core';
 import { CodexProtocolFault } from './codex-protocol-core';
 import { CodexProcessHostFault } from './codex-process-host';
@@ -22,7 +23,7 @@ export interface CodexLiveSessionInput {
   readonly createClient: (stdin: Writable, onObservation: (sequence: number, observation: CodexSafeObservation) => void) => CodexProtocolClient;
   readonly initializeParams: Readonly<Record<string, unknown>>; readonly initializedParams?: Readonly<Record<string, unknown>>;
   readonly threadParams: Readonly<Record<string, unknown>>; readonly turnParams: Readonly<Record<string, unknown>>;
-  readonly revokeCredentials: () => void | Promise<void>; readonly onObservation: (sequence: number, observation: CodexSafeObservation) => void;
+  readonly activateCredentials: (processRegistrationId: string) => void | Promise<void>; readonly revokeCredentials: () => void | Promise<void>; readonly onObservation: (sequence: number, observation: CodexSafeObservation) => void;
   readonly onFault: (code: CodexSafeCode) => void | Promise<void>; readonly startTimeoutMs?: number; readonly cleanupTimeoutMs?: number; readonly resourceCount?: number;
 }
 export class CodexLiveSessionFault extends Error { constructor(readonly code: CodexSafeCode, readonly cleanup: CodexCleanupResult) { super(code); } }
@@ -37,7 +38,7 @@ export class CodexLiveSession {
   async start(): Promise<void> {
     if (this.started) throw new Error('Codex live session already started'); this.started = true; codexLog('session.start.requested', this.fields());
     try {
-      const stdio = await this.input.host.start(); this.stdin = stdio.stdin;
+      await this.input.activateCredentials(this.input.host.processId); const stdio = await this.input.host.start(); this.stdin = stdio.stdin;
       let active!: () => void; const turnActive = new Promise<void>(resolve => { active = resolve; });
       this.client = this.input.createClient(stdio.stdin, (sequence, observation) => { if (observation.kind === 'notification' && observation.lifecycle === 'turn-started') active(); if (observation.kind === 'notification' && observation.lifecycle === 'turn-completed') this.cleanupCoordinator.observeTerminal('CODEX_OK'); this.input.onObservation(sequence, observation); });
       this.draining = new CodexStdioDrainer(this.client, async code => { this.cleanupCoordinator.observeTerminal(code); await this.safeFault(code); }).run(stdio.stdout, stdio.stderr);
@@ -64,6 +65,6 @@ export class CodexLiveSession {
   private startTimeout(): number { return this.input.startTimeoutMs ?? MAX_START_MS; }
 }
 function validate(input: CodexLiveSessionInput): void { for (const id of [input.attemptId, input.operationId, input.host.processId]) if (!id || id.length > 128) throw new Error('Invalid live session correlation'); const timeout = input.startTimeoutMs ?? MAX_START_MS; if (!Number.isSafeInteger(timeout) || timeout < 1 || timeout > MAX_START_MS) throw new Error('Invalid live session timeout'); }
-function codeOf(error: unknown): CodexSafeCode { return error instanceof StartTimeout ? 'CODEX_FIRST_ACTIVITY_TIMEOUT' : error instanceof CodexClientFault || error instanceof CodexProtocolFault || error instanceof CodexProcessHostFault ? error.code : 'CODEX_INTERNAL_FAILURE'; }
+function codeOf(error: unknown): CodexSafeCode { return error instanceof StartTimeout ? 'CODEX_FIRST_ACTIVITY_TIMEOUT' : error instanceof CodexClientFault || error instanceof CodexCredentialFault || error instanceof CodexProtocolFault || error instanceof CodexProcessHostFault ? error.code : 'CODEX_INTERNAL_FAILURE'; }
 class StartTimeout extends Error {}
 async function bounded<T>(promise: Promise<T>, timeoutMs: number): Promise<T> { let timer: NodeJS.Timeout | undefined; try { return await Promise.race([promise, new Promise<never>((_resolve, reject) => { timer = setTimeout(() => reject(new StartTimeout()), timeoutMs); })]); } finally { if (timer) clearTimeout(timer); } }
