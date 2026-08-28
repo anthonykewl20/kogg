@@ -18,6 +18,9 @@ type EventFields = {
   'content.delivery.completed': { attemptId: string; pendingCount: number; deliveredCount: number };
   'content.delivery.failed': { attemptId: string; pendingCount: number; safeCode: CodexSafeCode };
   'content.closed': { attemptId: string; pendingCount: number };
+  'cleanup.started': { attemptId: string; operationId: string; processId: string; resourceCount: number };
+  'cleanup.completed': { attemptId: string; operationId: string; processId: string; resourceCount: number; residualCount: number };
+  'cleanup.failed': { attemptId: string; operationId: string; processId: string; resourceCount: number; residualCount: number; safeCode: CodexSafeCode };
   'diagnostics.failed': { errorType: string };
 };
 const ALLOWED: { [K in keyof EventFields]: readonly (keyof EventFields[K])[] } = {
@@ -29,6 +32,8 @@ const ALLOWED: { [K in keyof EventFields]: readonly (keyof EventFields[K])[] } =
   'protocol.request.failed': ['attemptId', 'requestClass', 'safeCode'], 'protocol.authority.denied': ['attemptId', 'pendingCount'],
   'content.delivery.started': ['attemptId', 'pendingCount'], 'content.delivery.completed': ['attemptId', 'pendingCount', 'deliveredCount'],
   'content.delivery.failed': ['attemptId', 'pendingCount', 'safeCode'], 'content.closed': ['attemptId', 'pendingCount'],
+  'cleanup.started': ['attemptId', 'operationId', 'processId', 'resourceCount'], 'cleanup.completed': ['attemptId', 'operationId', 'processId', 'resourceCount', 'residualCount'],
+  'cleanup.failed': ['attemptId', 'operationId', 'processId', 'resourceCount', 'residualCount', 'safeCode'],
   'diagnostics.failed': ['errorType']
 };
 let violationCount = 0;
@@ -51,7 +56,10 @@ export function codexLog<K extends keyof EventFields>(event: K, fields: EventFie
   else if (event === 'content.delivery.completed') console.debug('[kogg:agents:codex-content] content.delivery.completed', fields);
   else if (event === 'content.delivery.failed') console.error('[kogg:agents:codex-content] content.delivery.failed', fields);
   else if (event === 'content.closed') console.info('[kogg:agents:codex-content] content.closed', fields);
+  else if (event === 'cleanup.started') console.info('[kogg:agents:codex-supervision] cleanup.started', fields);
+  else if (event === 'cleanup.completed') console.info('[kogg:agents:codex-supervision] cleanup.completed', fields);
+  else if (event === 'cleanup.failed') console.error('[kogg:agents:codex-supervision] cleanup.failed', fields);
   else console.error('[kogg:agents:codex-release] diagnostics.failed', fields);
 }
 export function codexLoggingDiagnostics(): { readonly schemaCount: number; readonly violationCount: number } { return { schemaCount: Object.keys(ALLOWED).length, violationCount }; }
-function safeValue(_event: keyof EventFields, key: string, value: unknown): boolean { return ['pendingCount','deliveredCount'].includes(key) ? typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 : typeof value === 'string' && value.length <= 128; }
+function safeValue(_event: keyof EventFields, key: string, value: unknown): boolean { return ['pendingCount','deliveredCount','resourceCount','residualCount'].includes(key) ? typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 : typeof value === 'string' && value.length <= 128; }
