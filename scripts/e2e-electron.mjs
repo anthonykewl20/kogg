@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { mkdtemp, mkdir, realpath, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, readdir, realpath, rm, writeFile } from 'node:fs/promises';
 import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
@@ -9,6 +9,7 @@ import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
 import { _electron as electron } from 'playwright';
 import { captureSafeFailureArtifacts } from './e2e-artifact-manager.mjs';
+import { INCOMPLETE_DIAGNOSTICS, verifyProductDiagnostics } from './e2e-diagnostics.mjs';
 import { HarnessProcessRegistry } from './e2e-process-registry.mjs';
 import { HarnessRunManifest } from './e2e-run-manifest.mjs';
 import { discover, platformCapabilities, selectedScenario } from './e2e-readiness.mjs';
@@ -32,6 +33,7 @@ const credentialService = `Kogg AI Providers E2E ${randomBytes(16).toString('hex
 let registry;
 let application;
 let completionMessage;
+let productDiagnostics = INCOMPLETE_DIAGNOSTICS;
 
 try {
     await mkdir(workspace, { recursive: true });
@@ -216,6 +218,7 @@ try {
     assert.doesNotMatch(logs.join('\n'), /Command with id '_chat\.editSessions\.accept' is not registered/iu);
     completionMessage = 'Kogg Electron E2E passed: native window, marketplace, provider, Git, debug, projects, switching, and branding.';
     }
+    productDiagnostics = await captureProductDiagnostics(page, application);
 } catch (error) {
     await settleRun(error);
 } finally {
@@ -225,6 +228,7 @@ try {
 async function settleRun(scenarioError) {
     let cleanupError; let artifactError; let artifacts = []; let verification = FAILED_VERIFICATION;
     const state = await run.read(); if (['completed','failed'].includes(state.state)) { if (scenarioError) throw scenarioError; return; }
+    if (!scenarioError && productDiagnostics.coverage !== 'complete') scenarioError = safeDiagnosticsError();
     if (!scenarioError) { try { verification = await verifyHarnessEvidence({ root, repository: workspace, runId: run.runId, runtime: run.runtime, platform: run.platform, profile: state.scenarioId === 'portable-surface' ? 'electron-portable' : 'electron-baseline', logger: line => logs.push(line) }); } catch (error) { scenarioError = error; } }
     if (state.state === 'active' && state.scenarioState === 'active') { try { if (scenarioError) await run.scenarioFailed(); else await run.scenarioCompleted(); } catch (error) { cleanupError = error; } }
     await run.cleaning(processes.manifest()).catch(error => { cleanupError = error; });
@@ -232,12 +236,37 @@ async function settleRun(scenarioError) {
     await processes.cleanup().catch(error => { cleanupError ??= error; }); await keytar.deletePassword(credentialService, 'openai:default').catch(error => { cleanupError ??= error; });
     if (scenarioError || cleanupError) { try { ({ artifacts } = await captureSafeFailureArtifacts({ root: results, runtime: 'electron', runId: run.runId, lifecycleLines: logs, error: scenarioError ?? cleanupError, logger: line => logs.push(line) })); } catch (error) { artifactError = error; } }
     const fixtures = processes.manifest(); const residualCount = fixtures.filter(value => value.state === 'residual').length; const failure = artifactError ?? cleanupError ?? scenarioError;
-    if (failure) await run.failed({ fixtures, artifacts, residualCount, verification, safeCode: artifactError ? 'E2E_ARTIFACT_UNSAFE' : cleanupError ? 'E2E_PROCESS_RESIDUAL' : safeScenarioCode(scenarioError), errorType: safeErrorType(failure) }); else await run.completed({ fixtures, artifacts, residualCount, verification });
+    if (failure) await run.failed({ fixtures, artifacts, residualCount, verification, productDiagnostics, safeCode: artifactError ? 'E2E_ARTIFACT_UNSAFE' : cleanupError ? 'E2E_PROCESS_RESIDUAL' : safeScenarioCode(scenarioError), errorType: safeErrorType(failure) }); else await run.completed({ fixtures, artifacts, residualCount, verification, productDiagnostics });
     if (!cleanupError) await rm(temporary, { recursive: true, force: true }); if (!failure && completionMessage) process.stdout.write(`${completionMessage}\n`);
     if (failure) { const safe = new Error(artifactError ? 'E2E_ARTIFACT_UNSAFE' : cleanupError ? 'E2E_PROCESS_RESIDUAL' : 'E2E_SCENARIO_FAILED'); safe.stack = safe.message; throw safe; }
 }
 function safeErrorType(error) { return error?.name === 'AssertionError' ? 'AssertionError' : error?.name === 'TimeoutError' ? 'TimeoutError' : 'Error'; }
-function safeScenarioCode(error) { return ['E2E_ORACLE_MISMATCH','E2E_SOURCE_MAP_MISSING'].includes(error?.message) ? error.message : 'E2E_SCENARIO_FAILED'; }
+function safeScenarioCode(error) { return ['E2E_DIAGNOSTICS_INCOMPLETE','E2E_ORACLE_MISMATCH','E2E_SOURCE_MAP_MISSING'].includes(error?.message) ? error.message : 'E2E_SCENARIO_FAILED'; }
+function safeDiagnosticsError() { const error = new Error('E2E_DIAGNOSTICS_INCOMPLETE'); error.stack = error.message; return error; }
+
+async function captureProductDiagnostics(page, electronApplication) {
+    const directory = path.join(temporary, 'state', 'support');
+    const before = (await readdir(directory).catch(() => [])).length;
+    await openCommand(page, 'Kogg: Run Diagnostics', electronApplication);
+    await page.getByText(/Diagnostics: (?:FAIL|WARN|PASS)/u).first().waitFor({ timeout: 15_000 });
+    await page.keyboard.press('Escape');
+    await openCommand(page, 'Kogg: Export Diagnostic Support Bundle', electronApplication);
+    const files = (await waitForSupportBundle(directory, before + 1)).sort();
+    const report = JSON.parse(await readFile(path.join(directory, files.at(-1)), 'utf8'));
+    await page.keyboard.press('Escape');
+    await clearNotifications(page);
+    return verifyProductDiagnostics({ root, report, runId: run.runId, runtime: run.runtime, platform: run.platform, logger: line => logs.push(line) });
+}
+
+async function waitForSupportBundle(directory, minimumCount) {
+    const deadline = Date.now() + 15_000;
+    while (Date.now() < deadline) {
+        const files = await readdir(directory).catch(() => []);
+        if (files.length >= minimumCount) return files;
+        await new Promise(resolve => setTimeout(resolve, 100));
+    }
+    throw new Error('Timed out waiting for the diagnostic support bundle export');
+}
 
 async function openCommand(page, label, electronApplication, query = label, optionTimeout = 30_000) {
     const input = page.getByRole('textbox', { name: 'Type to narrow down results.' });
