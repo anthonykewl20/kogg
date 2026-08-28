@@ -37,6 +37,17 @@ export function platformCapabilities(runtime, platform = platformName()) {
     ]);
 }
 
+export function selectedScenario(runtime, environment = process.env) {
+    if (!['browser','electron'].includes(runtime) || !environment || typeof environment !== 'object') throw new Error('E2E_SCENARIO_INVALID');
+    if (runtime === 'browser' && environment.KOGG_E2E_EXECUTION_ONLY === '1') return 'execution-refusal';
+    if (runtime === 'browser' && environment.KOGG_E2E_PROJECTS_ONLY === '1') return 'projects';
+    if (runtime === 'browser' && environment.KOGG_E2E_TASKS_ONLY === '1') return 'tasks';
+    if (environment.KOGG_E2E_OPERATIONS_ONLY === '1') return 'operations';
+    if (environment.KOGG_E2E_WORKFLOW_ONLY === '1') return 'workflow';
+    if (runtime === 'browser' && environment.KOGG_E2E_VERDICT_MERGE_ONLY === '1') return 'verdict-merge';
+    return 'portable-surface';
+}
+
 function delay(milliseconds) { return new Promise(resolve => setTimeout(resolve, milliseconds)); }
 function platformName() { return process.platform === 'darwin' ? 'macos' : process.platform === 'win32' ? 'windows' : 'linux'; }
 function uuid(value) { return typeof value === 'string' && /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u.test(value); }

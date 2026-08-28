@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { discover, platformCapabilities } from './e2e-readiness.mjs';
+import { discover, platformCapabilities, selectedScenario } from './e2e-readiness.mjs';
 const context = { runId: '10000000-0000-4000-8000-000000000001', runtime: 'browser', platform: 'linux' };
 
 test('discovery succeeds early and records only the safe reason and attempt', async () => {
@@ -22,4 +22,7 @@ test('discovery and capability decisions reject open inputs', async () => {
     assert.throws(() => platformCapabilities('mobile', 'linux'), /E2E_CAPABILITY_INVALID/u);
     assert.deepEqual(platformCapabilities('browser', 'windows').map(value => value.status), ['refusal-required','runtime-delegated']);
     assert.deepEqual(platformCapabilities('electron', 'linux').map(value => value.status), ['pending-qualification','available']);
+    assert.equal(selectedScenario('browser', { KOGG_E2E_WORKFLOW_ONLY: '1' }), 'workflow');
+    assert.equal(selectedScenario('electron', {}), 'portable-surface');
+    assert.throws(() => selectedScenario('mobile', {}), /E2E_SCENARIO_INVALID/u);
 });
