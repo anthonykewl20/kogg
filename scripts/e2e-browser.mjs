@@ -1,11 +1,12 @@
 import assert from 'node:assert/strict';
-import { spawn, spawnSync } from 'node:child_process';
+import { spawnSync } from 'node:child_process';
 import { mkdtemp, mkdir, readFile, readdir, realpath, rename, rm, writeFile } from 'node:fs/promises';
 import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { chromium } from 'playwright';
+import { HarnessProcessRegistry } from './e2e-process-registry.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const resultRoot = path.join(root, 'test-results', 'browser');
@@ -25,6 +26,7 @@ const token = 'kogg-disposable-e2e-token';
 const masterKey = 'kogg-disposable-e2e-master-key';
 const providerSecret = 'kogg-disposable-provider-secret';
 const logs = [];
+const processes = new HarnessProcessRegistry({ logger: line => logs.push(line) });
 let registry;
 let backend;
 let browser;
@@ -32,12 +34,14 @@ let browser;
 try {
     await createWorkspace();
     await mkdir(resultRoot, { recursive: true });
-    registry = launch(process.execPath, ['packages/kogg-marketplace/lib/node/dev-registry.js'], {
+    registry = launch('signed-registry', process.execPath, ['packages/kogg-marketplace/lib/node/dev-registry.js'], {
         KOGG_ROOT: root, KOGG_REGISTRY_PORT: String(registryPort)
     });
     await waitFor(`${registryUrl}/health`);
+    processes.ready(registry);
     backend = launchBrowser(token);
     await waitFor(`${appUrl}/kogg/auth/status`, 401);
+    processes.ready(backend);
 
     const anonymousHtml = await fetch(`${appUrl}/`, { redirect: 'manual', headers: { accept: 'text/html' } });
     assert.equal(anonymousHtml.status, 303);
@@ -310,41 +314,27 @@ try {
     throw error;
 } finally {
     if (browser) await browser.close().catch(() => undefined);
-    await stop(backend);
-    await stop(registry);
+    await processes.cleanup();
     await rm(temporary, { recursive: true, force: true });
 }
 
 function launchBrowser(authToken) {
-    return launch(process.execPath, [path.join(root, 'apps/browser/lib/backend/main.js'), `--plugins=local-dir:${path.join(root, 'plugins')}`, '--hostname', '127.0.0.1', '--port', String(browserPort)], {
+    return launch('browser-backend', process.execPath, [path.join(root, 'apps/browser/lib/backend/main.js'), `--plugins=local-dir:${path.join(root, 'plugins')}`, '--hostname', '127.0.0.1', '--port', String(browserPort)], {
         KOGG_RUNTIME: 'browser', KOGG_ROOT: root, KOGG_STATE_DIR: state,
         THEIA_CONFIG_DIR: path.join(state, 'config'), KOGG_AUTH_TOKEN: authToken,
         KOGG_MASTER_KEY: masterKey, KOGG_REGISTRY_URL: registryUrl
     });
 }
 
-function launch(command, args, additions) {
-    const child = spawn(command, args, { cwd: root, env: { ...process.env, ...additions }, stdio: ['ignore', 'pipe', 'pipe'] });
+function launch(kind, command, args, additions) {
+    const child = processes.launch(kind, command, args, { cwd: root, env: { ...process.env, ...additions }, stdio: ['ignore', 'pipe', 'pipe'] });
     child.stdout.on('data', chunk => logs.push(`[backend] ${chunk}`));
     child.stderr.on('data', chunk => logs.push(`[backend:error] ${chunk}`));
     return child;
 }
 
 async function stop(child) {
-    if (!child || child.exitCode !== null) return;
-    child.kill('SIGTERM');
-    await waitForExit(child, 5_000);
-    if (child.exitCode === null) {
-        child.kill('SIGKILL');
-        await waitForExit(child, 5_000);
-    }
-}
-
-async function waitForExit(child, timeout) {
-    const deadline = Date.now() + timeout;
-    while (child.exitCode === null && Date.now() < deadline) {
-        await new Promise(resolve => setTimeout(resolve, 50));
-    }
+    if (child) await processes.stop(child);
 }
 
 async function waitForWorkspaceProof(name, expected) {
