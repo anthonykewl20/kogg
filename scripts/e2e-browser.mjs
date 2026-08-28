@@ -759,7 +759,7 @@ async function exerciseAgents(page, admissionId) {
     const implementerRoleId = await roleOptionValue(agents, 'implementer');
     await agents.getByLabel('Task admission ID').fill(admissionId);
     await agents.getByRole('button', { name: 'Confirm and start exact attempt' }).click();
-    await agents.getByText(/cleaned · AGENT_OK.*resources 0/iu).waitFor({ timeout: 15_000 });
+    await agents.getByText(/cleaned · AGENT_OK.*deadline policy interactive-v1.*activity 1.*usage complete\/provider-cumulative.*resources 0/iu).waitFor({ timeout: 15_000 });
     await agents.getByLabel('Task admission ID').fill(admissionId);
     await agents.getByLabel('Exact adapter and version').fill('missing.adapter@1.0.0');
     await agents.getByRole('button', { name: 'Confirm and start exact attempt' }).click();

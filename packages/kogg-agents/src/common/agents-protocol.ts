@@ -48,10 +48,11 @@ export interface UsageProjectionV1 {
   readonly inputTokens?: Decimal; readonly outputTokens?: Decimal; readonly cachedInputTokens?: Decimal;
   readonly reasoningTokens?: Decimal; readonly totalTokens?: Decimal; readonly costMinorUnits?: Decimal; readonly currency?: string;
 }
+export interface AttemptDeadlineProjectionV1 { readonly deadlineClass: 'handshake' | 'first-activity' | 'idle' | 'provider-request' | 'absolute' | 'cancel-grace' | 'cleanup'; readonly generation: Decimal; readonly expiresAt: string; readonly active: boolean; }
 export interface AttemptProjectionV1 {
   readonly schemaVersion: '1'; readonly attemptId: string; readonly rootAttemptId: string; readonly parentAttemptId?: string;
   readonly attemptRevision: Decimal; readonly registryRevision: Decimal; readonly taskId: string; readonly projectId: string; readonly repositoryId: string;
-  readonly specificationId: string; readonly approvalId: string; readonly runId?: string; readonly worktreeId?: string; readonly roleRevisionId: string;
+  readonly specificationId: string; readonly approvalId: string; readonly runId?: string; readonly worktreeId?: string; readonly roleRevisionId: string; readonly deadlinePolicyId: string; readonly deadlines: readonly AttemptDeadlineProjectionV1[];
   readonly authorityMode: 'plan' | 'build' | 'kogg' | 'unknown'; readonly authoritySequence: Decimal; readonly authorityOperation: 'research' | 'private-mutate' | 'unknown';
   readonly adapterKey: string; readonly adapterVersion: string; readonly providerId: string; readonly requestedModelId: string; readonly observedModelId?: string;
   readonly state: AttemptState; readonly terminalCode?: AgentSafeCode; readonly activityCount: Decimal; readonly childCount: Decimal; readonly ownedResourceCount: Decimal;
