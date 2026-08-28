@@ -527,6 +527,23 @@ condition/fork/join schemas below. Prompts and source content live in separately
 authorized content stores and are referenced opaquely; they are not stored in
 workflow records, logs, diagnostics, or metrics.
 
+The production implementation exposes one optional external-executor authority
+boundary. It accepts exactly two complete, digest-attested contracts:
+`kogg.execution.catalog@1.0.0` owns `tool.git` and `tool.build`, while
+`kogg.kernel.checks@1.0.0` owns `check.deterministic`. Each contract lists a
+sorted, nonempty closed binding-id set for every kind it owns. A tool node stores
+one `operationId`; a deterministic-check node stores one `checkId`; both store
+only the immutable external configuration digest. Raw configuration, argv,
+paths, command output, and check output never enter the workflow record or log.
+Missing, partial, forged, mutable, duplicate, or unknown owner contracts leave
+all three node kinds unavailable. Owner readiness additionally requires complete
+startup recovery and zero residual processes. Runtime dispatch rechecks the exact immutable
+plan, task admission, repository, node configuration digest, owner artifact,
+binding id, closed result schema, process count, and zero-residual success before
+committing the scheduler outcome. The workflow deadline remains authoritative;
+expiry invokes the external owner's cancellation boundary and refuses completion
+unless cancellation returns a closed zero-residual proof.
+
 ### Editor command and template interface
 
 The backend accepts these exact draft commands, all with draft revision CAS:

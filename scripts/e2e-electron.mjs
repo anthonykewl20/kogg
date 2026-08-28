@@ -470,8 +470,12 @@ async function exerciseElectronWorkflowEditor(page, electronApplication) {
     await widget.getByLabel('Node kind').selectOption('check.deterministic');
     await widget.getByRole('button', { name: 'Add node' }).click();
     await widget.getByRole('button', { name: 'Move check.deterministic earlier on canvas' }).click();
-    await widget.getByRole('button', { name: 'Configure implementation.agent on canvas' }).click();
+    await widget.getByRole('button', { name: 'Configure check.deterministic on canvas' }).click();
     let configuration = widget.locator('[data-config]');
+    await configuration.getByLabel('Closed check ID').fill('suite.required-v1'); await configuration.getByLabel('External configuration digest').fill('a'.repeat(64));
+    await configuration.getByRole('button', { name: 'Apply exact configuration' }).click();
+    await widget.getByRole('button', { name: 'Configure implementation.agent on canvas' }).click();
+    configuration = widget.locator('[data-config]');
     await configuration.getByLabel('Role revision ID').fill('60000000-0000-4000-8000-000000000001');
     await configuration.getByLabel('Provider ID').fill('kogg.fixture'); await configuration.getByLabel('Model ID').fill('fixture.echo');
     await configuration.getByLabel('Adapter key').fill('kogg.fixture'); await configuration.getByLabel('Adapter version').fill('1.0.0'); await configuration.getByLabel('Deadline policy').fill('interactive-v1');
@@ -483,6 +487,7 @@ async function exerciseElectronWorkflowEditor(page, electronApplication) {
     assert.equal(await widget.locator('[data-workflow-node]').count(), 3);
     assert.match(await widget.locator('[data-workflow-node]').nth(1).innerText(), /check\.deterministic/u);
     configuration = widget.locator('[data-config]'); assert.equal(await configuration.getByLabel('Role revision ID').inputValue(), '60000000-0000-4000-8000-000000000002'); assert.equal(await configuration.getByLabel('Maximum attempts').inputValue(), '2'); assert.equal(await configuration.getByLabel('Retry backoff').inputValue(), '1000'); assert.equal(await configuration.getByLabel('Retry side-effect policy').inputValue(), 'fresh-authority');
+    await widget.getByRole('button', { name: 'Configure check.deterministic' }).click(); configuration = widget.locator('[data-config]'); assert.equal(await configuration.getByLabel('Closed check ID').inputValue(), 'suite.required-v1'); assert.equal(await configuration.getByLabel('External configuration digest').inputValue(), 'a'.repeat(64));
     await widget.getByRole('button', { name: 'Disconnect connection 1' }).click();
     await widget.getByRole('button', { name: 'Disconnect connection 1' }).click();
     const connection = widget.locator('[data-connect]');
