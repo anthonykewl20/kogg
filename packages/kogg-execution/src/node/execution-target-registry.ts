@@ -1,10 +1,10 @@
-import { existsSync } from 'node:fs';
 import { createHash, timingSafeEqual } from 'node:crypto';
 import { BackendApplicationContribution } from '@theia/core/lib/node';
 import { inject, injectable, unmanaged } from '@theia/core/shared/inversify';
 import { KernelBridgeToken, KOGG_RANEX_COMMIT, type KernelBridge, type KernelExecutionQualification } from '@kogg/contracts';
 import type { ExecutionBindingV1, ExecutionQualificationCode, ExecutionQualificationProjection, ExecutionTargetBindingAuthority, ExecutionTargetBindingV1 } from '../common/execution-protocol';
 import { executionLog } from './execution-logger';
+import { executionSourceMapDiagnostics } from './execution-source-map-diagnostics';
 
 // Qualification is owned by the pinned Ranex boundary. This registry validates only its closed, fresh result and never infers qualification from Linux alone.
 // diagnostic-coverage: execution.target-qualification, execution.recovery, execution.source-maps
@@ -25,7 +25,7 @@ export class ExecutionTargetRegistry implements BackendApplicationContribution, 
     this.value = refused(this.targetId, this.runtime.platform === 'linux' && this.runtime.arch === 'x64' ? 'QUALIFICATION_PROFILE_UNAVAILABLE' : 'QUALIFICATION_PLATFORM_UNSUPPORTED');
   }
   async onStart(): Promise<void> { await this.refresh(); }
-  projection(): ExecutionQualificationProjection { return { ...this.value, sourceMapsPresent: existsSync(`${__filename}.map`) }; }
+  projection(): ExecutionQualificationProjection { return { ...this.value, sourceMapsPresent: executionSourceMapDiagnostics().missingCount === 0 }; }
   async authorize(binding: ExecutionBindingV1): Promise<boolean> {
     const current = await this.refresh(); const authority = this.authority;
     const authorized = current.qualified && authority !== undefined && authority.qualificationId === binding.qualificationId
