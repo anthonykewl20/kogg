@@ -4,7 +4,7 @@ import { codexLog } from './codex-logger';
 // Cleanup logs use [kogg:agents:codex-supervision] with opaque correlations and resource counts only.
 // diagnostic-coverage: codex.credentials, codex.processes, codex.cleanup, codex.recovery, codex.source-maps
 const MAXIMUM_STAGE_TIMEOUT_MS = 10_000;
-export type CodexTerminalCode = Extract<CodexSafeCode, 'CODEX_OK' | 'CODEX_PROVIDER_REFUSED' | 'CODEX_TRANSPORT_LOST' | 'CODEX_HOST_EXITED' | 'CODEX_CANCELLED' | 'CODEX_ABSOLUTE_TIMEOUT'>;
+export type CodexTerminalCode = CodexSafeCode;
 export interface CodexCleanupBoundary {
   closeContentInput(): void;
   revokeCredentials(): Promise<void>;
@@ -28,7 +28,7 @@ export class CodexSessionCleanupCoordinator {
     if (!Number.isSafeInteger(timeout) || timeout < 1 || timeout > MAXIMUM_STAGE_TIMEOUT_MS) throw new Error('Invalid cleanup stage timeout');
   }
   observeTerminal(code: CodexTerminalCode): CodexTerminalCode { return this.terminal ??= code; }
-  cleanup(trigger: 'terminal' | 'cancel' | 'timeout', turnActive: boolean): Promise<CodexCleanupResult> {
+  cleanup(trigger: 'terminal' | 'cancel' | 'timeout' | 'failure', turnActive: boolean): Promise<CodexCleanupResult> {
     if (trigger === 'cancel') this.observeTerminal('CODEX_CANCELLED'); else if (trigger === 'timeout') this.observeTerminal('CODEX_ABSOLUTE_TIMEOUT');
     return this.running ??= this.run(trigger !== 'terminal' && turnActive);
   }
