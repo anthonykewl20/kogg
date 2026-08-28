@@ -14,6 +14,9 @@ type EventFields = {
   'protocol.request.completed': { attemptId: string; requestClass: string };
   'protocol.request.failed': { attemptId: string; requestClass: string; safeCode: CodexSafeCode };
   'protocol.authority.denied': { attemptId: string; pendingCount: number };
+  'protocol.attestation.started': { attemptId: string; attestationClass: string };
+  'protocol.attestation.completed': { attemptId: string; attestationClass: string };
+  'protocol.attestation.failed': { attemptId: string; attestationClass: string; safeCode: CodexSafeCode };
   'content.delivery.started': { attemptId: string; pendingCount: number };
   'content.delivery.completed': { attemptId: string; pendingCount: number; deliveredCount: number };
   'content.delivery.failed': { attemptId: string; pendingCount: number; safeCode: CodexSafeCode };
@@ -47,6 +50,7 @@ const ALLOWED: { [K in keyof EventFields]: readonly (keyof EventFields[K])[] } =
   'protocol.phase.changed': ['phase'], 'protocol.frame.refused': ['safeCode'],
   'protocol.request.started': ['attemptId', 'requestClass'], 'protocol.request.completed': ['attemptId', 'requestClass'],
   'protocol.request.failed': ['attemptId', 'requestClass', 'safeCode'], 'protocol.authority.denied': ['attemptId', 'pendingCount'],
+  'protocol.attestation.started': ['attemptId', 'attestationClass'], 'protocol.attestation.completed': ['attemptId', 'attestationClass'], 'protocol.attestation.failed': ['attemptId', 'attestationClass', 'safeCode'],
   'content.delivery.started': ['attemptId', 'pendingCount'], 'content.delivery.completed': ['attemptId', 'pendingCount', 'deliveredCount'],
   'content.delivery.failed': ['attemptId', 'pendingCount', 'safeCode'], 'content.closed': ['attemptId', 'pendingCount'],
   'process.registered': ['attemptId', 'operationId', 'processId', 'ownerKind'], 'process.registration.failed': ['attemptId', 'operationId', 'safeCode'],
@@ -76,6 +80,9 @@ export function codexLog<K extends keyof EventFields>(event: K, fields: EventFie
   else if (event === 'protocol.request.started') console.debug('[kogg:agents:codex-protocol] protocol.request.started', fields);
   else if (event === 'protocol.request.completed') console.info('[kogg:agents:codex-protocol] protocol.request.completed', fields);
   else if (event === 'protocol.authority.denied') console.info('[kogg:agents:codex-protocol] protocol.authority.denied', fields);
+  else if (event === 'protocol.attestation.started') console.debug('[kogg:agents:codex-protocol] protocol.attestation.started', fields);
+  else if (event === 'protocol.attestation.completed') console.info('[kogg:agents:codex-protocol] protocol.attestation.completed', fields);
+  else if (event === 'protocol.attestation.failed') console.error('[kogg:agents:codex-protocol] protocol.attestation.failed', fields);
   else if (event === 'content.delivery.started') console.debug('[kogg:agents:codex-content] content.delivery.started', fields);
   else if (event === 'content.delivery.completed') console.debug('[kogg:agents:codex-content] content.delivery.completed', fields);
   else if (event === 'content.delivery.failed') console.error('[kogg:agents:codex-content] content.delivery.failed', fields);
