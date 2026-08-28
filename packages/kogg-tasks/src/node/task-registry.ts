@@ -14,6 +14,7 @@ import {
   type MutationPrecondition,
   type ReviewProjection,
   type TaskAdmissionSnapshot,
+  type TaskAdmissionSummary,
   type TaskKernelAuthoritySnapshot,
   type TaskMutationResult,
   type TaskPlanningModeAuthorizer as PlanningModeAuthorizer,
@@ -90,6 +91,22 @@ export class TaskRegistry implements KoggTasksService, TaskAdmissionAuthority, T
         specificationLifecycle: str(spec, 'lifecycle') as TaskSummary['specificationLifecycle'],
         approvalLifecycle: optional(task, 'current_approval_id') ? 'current' : undefined };
     });
+  }
+  async listAdmissions(projectId: string): Promise<readonly TaskAdmissionSummary[]> {
+    console.debug('[kogg:tasks:registry] admission.list.requested', { projectId: safe(projectId) });
+    try {
+      uuid(projectId);
+      const rows = this.db().prepare(`SELECT t.task_admission_id,t.task_id,t.project_id,t.repository_id,t.run_id,a.authorized_at,a.expires_at
+        FROM task_admissions t JOIN admissions a ON a.run_id=t.run_id WHERE t.project_id=? ORDER BY a.authorized_at DESC LIMIT 100`).all(projectId) as Row[];
+      const admissions = rows.map(row => ({ taskAdmissionId: str(row, 'task_admission_id'), taskId: str(row, 'task_id'),
+        projectId: str(row, 'project_id'), repositoryId: str(row, 'repository_id'), runId: str(row, 'run_id'),
+        authorizedAt: str(row, 'authorized_at'), expiresAt: str(row, 'expires_at') }));
+      console.info('[kogg:tasks:registry] admission.list.completed', { projectId, admissionCount: admissions.length });
+      return admissions;
+    } catch (error) {
+      console.warn('[kogg:tasks:registry] admission.list.refused', { projectId: safe(projectId), safeCode: codeOf(error), errorType: errorName(error) });
+      throw error;
+    }
   }
   async get(taskId: string): Promise<TaskProjection> { uuid(taskId); return this.projection(taskId); }
 

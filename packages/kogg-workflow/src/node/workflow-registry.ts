@@ -4,7 +4,7 @@ import path from 'node:path';
 import { DatabaseSync, type SQLOutputValue } from 'node:sqlite';
 import { BackendApplicationContribution } from '@theia/core/lib/node';
 import { inject, injectable, optional, unmanaged } from '@theia/core/shared/inversify';
-import type { EditableWorkflowGraphV1, KoggWorkflowService, WorkflowApprovalReviewResult, WorkflowMutationResult, WorkflowNodeConfigurationV1, WorkflowRunProjection, WorkflowSafeCode, WorkflowTemplateVersionProjection, WorkflowValidationProjection } from '../common/workflow-protocol';
+import type { EditableWorkflowGraphV1, KoggWorkflowService, WorkflowApprovalReviewResult, WorkflowMutationResult, WorkflowNodeConfigurationV1, WorkflowPlanSummary, WorkflowRunProjection, WorkflowSafeCode, WorkflowTemplateVersionProjection, WorkflowValidationProjection } from '../common/workflow-protocol';
 import { canonicalJson, WorkflowValidationError, workflowDigest } from '../common/workflow-canonical';
 import { WorkflowCompiler } from './workflow-compiler';
 import { workflowLog } from './workflow-logger';
@@ -217,6 +217,24 @@ export class WorkflowRegistry implements KoggWorkflowService, BackendApplication
       workflowLog('template.list.completed', { projectId, versionCount: versions.length }); return versions;
     } catch (error) {
       const code = codeOf(error); workflowLog('template.list.refused', { projectId: safeId(projectId), safeCode: code }); throw error;
+    }
+  }
+
+  async listProjectPlans(projectId: string): Promise<readonly WorkflowPlanSummary[]> {
+    workflowLog('plan.list.requested', { projectId: safeId(projectId) });
+    try {
+      uuid(projectId); const plans: WorkflowPlanSummary[] = [];
+      for (const row of this.db().prepare(`SELECT p.plan_id,p.version_id,p.editable_node_count,p.injected_anchor_count,
+        v.template_id,v.version_number,v.graph_json FROM compiled_plans p JOIN template_versions v ON v.version_id=p.version_id
+        ORDER BY v.created_at,v.version_number`).all() as Row[]) {
+        const graph = this.compiler.decodeAndValidate(JSON.parse(text(row, 'graph_json')) as unknown);
+        if (graph.projectId === projectId) plans.push({ planId: text(row, 'plan_id'), versionId: text(row, 'version_id'),
+          templateId: text(row, 'template_id'), versionNumber: number(row, 'version_number'), editableNodeCount: number(row, 'editable_node_count'),
+          injectedAnchorCount: number(row, 'injected_anchor_count') });
+      }
+      workflowLog('plan.list.completed', { projectId, planCount: plans.length }); return plans;
+    } catch (error) {
+      workflowLog('plan.list.refused', { projectId: safeId(projectId), safeCode: codeOf(error) }); throw error;
     }
   }
 

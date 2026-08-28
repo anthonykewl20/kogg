@@ -58,6 +58,10 @@ export interface TaskAdmissionSnapshot {
   readonly repositoryId: string; readonly bindingRevision: string; readonly registryRevision: string; readonly taskRevision: string; readonly runId: string;
   readonly authorizedAt: string; readonly expiresAt: string;
 }
+export interface TaskAdmissionSummary {
+  readonly taskAdmissionId: string; readonly taskId: string; readonly projectId: string; readonly repositoryId: string;
+  readonly runId: string; readonly authorizedAt: string; readonly expiresAt: string;
+}
 
 export interface TaskKernelAuthoritySnapshot {
   readonly taskId: string; readonly taskRevision: number; readonly specificationDigest: string;
@@ -76,6 +80,7 @@ export interface TaskAdmissionAuthority { resolveAdmission(taskAdmissionId: stri
 
 export interface KoggTasksService {
   list(projectId?: string): Promise<readonly TaskSummary[]>;
+  listAdmissions(projectId: string): Promise<readonly TaskAdmissionSummary[]>;
   get(taskId: string): Promise<TaskProjection>;
   create(input: { readonly requestId: string; readonly projectId: string; readonly repositoryId: string; readonly content: string }): Promise<TaskMutationResult>;
   edit(input: MutationPrecondition & { readonly taskId: string; readonly content: string }): Promise<TaskMutationResult>;

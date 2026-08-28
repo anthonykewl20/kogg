@@ -87,6 +87,10 @@ export interface WorkflowCompiledPlanProjection {
   readonly editableNodeCount: number;
   readonly injectedAnchorCount: number;
 }
+export interface WorkflowPlanSummary {
+  readonly planId: string; readonly versionId: string; readonly templateId: string; readonly versionNumber: number;
+  readonly editableNodeCount: number; readonly injectedAnchorCount: number;
+}
 export interface WorkflowRunProjection { readonly runId: string; readonly planId: string; readonly taskAdmissionId: string; readonly state: 'admitted' | 'waiting-approval' | 'completed' | 'failed'; readonly safeCode: WorkflowSafeCode; readonly completedNodeCount: number; readonly skippedNodeCount: number; readonly failedNodeCount: number; }
 export type WorkflowMutationResult =
   | { readonly kind: 'completed'; readonly code: 'WORKFLOW_OK'; readonly version?: WorkflowTemplateVersionProjection; readonly plan?: WorkflowCompiledPlanProjection; readonly run?: WorkflowRunProjection }
@@ -103,4 +107,5 @@ export interface KoggWorkflowService {
   continueRun(input: { readonly requestId: string; readonly runId: string; readonly nodeId: string; readonly sessionId: string; readonly challenge: string }): Promise<WorkflowMutationResult>;
   listVersions(templateId: string): Promise<readonly WorkflowTemplateVersionProjection[]>;
   listProjectVersions(projectId: string): Promise<readonly WorkflowTemplateVersionProjection[]>;
+  listProjectPlans(projectId: string): Promise<readonly WorkflowPlanSummary[]>;
 }
