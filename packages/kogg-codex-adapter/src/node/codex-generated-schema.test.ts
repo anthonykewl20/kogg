@@ -12,7 +12,7 @@ const schemaBytes = (): Buffer => Buffer.from(JSON.stringify({ $schema: 'http://
 
 test('compiles only accepted definitions and validates exact response, notification, request, and error envelopes', () => {
   const schema = compileCodexFrameSchema(schemaBytes(), accepted);
-  assert.deepEqual(schema.validate({ id: 1, result: { platformFamily: 'unix' } }, 'initialize'), { kind: 'response', id: 1, outcome: 'result' });
+  assert.deepEqual(schema.validate({ id: 1, result: { platformFamily: 'unix' } }, 'initialize'), { kind: 'response', id: 1, outcome: 'result', privateResult: { platformFamily: 'unix' } });
   assert.equal(schema.validate({ id: 1, result: { platformFamily: 'unix', extra: true } }, 'initialize'), undefined);
   assert.deepEqual(schema.validate({ method: 'turn/started', params: { turnId: 'opaque' } }), { kind: 'notification', method: 'turn/started', lifecycle: 'turn-started' });
   assert.deepEqual(schema.validate({ id: 8, method: 'item/requestApproval', params: { reason: 'policy' } }), { kind: 'server-request', id: 8, method: 'item/requestApproval', lifecycle: 'authority-request' });
