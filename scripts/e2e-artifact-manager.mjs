@@ -2,8 +2,8 @@ import { createHash, randomUUID } from 'node:crypto';
 import { mkdir, rename, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 
-const EVENTS = new Set(['fixture.registered','fixture.started','fixture.ready','fixture.failed','fixture.cleanup.started','fixture.cleanup.completed','fixture.cleanup.failed']);
-const PAYLOAD_KEYS = new Set(['fixtureId','fixtureKind','safeCode','exitClass','forced']);
+const EVENTS = new Set(['run.requested','run.started','run.completed','run.failed','residual-check.started','residual-check.completed','residual-check.failed','fixture.registered','fixture.started','fixture.ready','fixture.failed','fixture.cleanup.started','fixture.cleanup.completed','fixture.cleanup.failed']);
+const PAYLOAD_KEYS = new Set(['runId','platform','runtime','fixtureId','fixtureKind','safeCode','errorType','exitClass','forced','residualCount']);
 const SAFE = /^[a-zA-Z0-9][a-zA-Z0-9._:-]{0,127}$/u;
 const UNSAFE = [
     /authorization|bearer|cookie|set-cookie/iu,
@@ -16,12 +16,13 @@ const UNSAFE = [
 export async function captureSafeFailureArtifacts({ root, runtime, lifecycleLines, error, logger = () => undefined, runId = randomUUID(), platform = platformName() }) {
     if (!/^[0-9a-f]{8}-[0-9a-f-]{27}$/u.test(runId) || !['linux','macos','windows'].includes(platform) || !['browser','electron'].includes(runtime)) throw new Error('E2E_ARTIFACT_INVALID');
     const directory = path.join(root, runId, platform, runtime);
+    const staging = path.join(directory, `.failure.${randomUUID()}`);
     logger(event('artifact.capture.started', { runId, platform, runtime, artifactKind: 'failure-summary' }));
     try {
         const lifecycle = closedLifecycle(lifecycleLines);
         const lifecycleText = lifecycle.length ? `${lifecycle.join('\n')}\n` : '';
         scanArtifactText(lifecycleText);
-        const manifest = {
+        const failure = {
             schemaVersion: 1, runId, platform, runtime, state: 'failed', safeCode: 'E2E_SCENARIO_FAILED', errorType: safeErrorType(error),
             artifacts: [
                 { kind: 'failure-summary', status: 'retained', digest: digest(lifecycleText) },
@@ -30,15 +31,15 @@ export async function captureSafeFailureArtifacts({ root, runtime, lifecycleLine
             ],
             harnessChecks: [{ id: 'e2e.artifacts', status: 'pass', retainedCount: 1, refusedCount: 2 }]
         };
-        const manifestText = `${JSON.stringify(manifest, null, 2)}\n`;
-        scanArtifactText(manifestText);
+        const failureText = `${JSON.stringify(failure, null, 2)}\n`;
+        scanArtifactText(failureText);
         await mkdir(directory, { recursive: true, mode: 0o700 });
-        await atomicWrite(directory, 'lifecycle.log', lifecycleText);
-        await atomicWrite(directory, 'manifest.json', manifestText);
-        logger(event('artifact.capture.completed', { runId, platform, runtime, artifactKind: 'failure-summary', artifactDigest: manifest.artifacts[0].digest }));
-        return Object.freeze({ directory, manifest: Object.freeze(manifest) });
+        await mkdir(staging, { mode: 0o700 }); await atomicWrite(staging, 'lifecycle.log', lifecycleText); await atomicWrite(staging, 'failure.json', failureText);
+        await rename(path.join(staging, 'lifecycle.log'), path.join(directory, 'lifecycle.log')); await rename(path.join(staging, 'failure.json'), path.join(directory, 'failure.json')); await rm(staging, { recursive: true, force: true });
+        logger(event('artifact.capture.completed', { runId, platform, runtime, artifactKind: 'failure-summary', artifactDigest: failure.artifacts[0].digest }));
+        return Object.freeze({ directory, failure: Object.freeze(failure), artifacts: Object.freeze(failure.artifacts.map(value => Object.freeze({ ...value }))) });
     } catch {
-        await rm(directory, { recursive: true, force: true }).catch(() => undefined);
+        await rm(staging, { recursive: true, force: true }).catch(() => undefined);
         logger(event('artifact.capture.refused', { runId, platform, runtime, artifactKind: 'failure-summary', safeCode: 'E2E_ARTIFACT_UNSAFE' }));
         throw new Error('E2E_ARTIFACT_UNSAFE');
     }
@@ -55,7 +56,7 @@ function closedLifecycle(lines) {
         if (!match || !EVENTS.has(match[1])) continue;
         let payload; try { payload = JSON.parse(match[2]); } catch { continue; }
         if (!payload || Array.isArray(payload) || Object.keys(payload).some(key => !PAYLOAD_KEYS.has(key))) continue;
-        if (Object.entries(payload).some(([key, value]) => key === 'forced' ? typeof value !== 'boolean' : typeof value !== 'string' || !SAFE.test(value))) continue;
+        if (Object.entries(payload).some(([key, value]) => key === 'forced' ? typeof value !== 'boolean' : key === 'residualCount' ? !Number.isSafeInteger(value) || value < 0 : typeof value !== 'string' || !SAFE.test(value))) continue;
         result.push(`[kogg:e2e:harness] ${match[1]} ${JSON.stringify(payload)}`);
         if (result.length === 256) break;
     }

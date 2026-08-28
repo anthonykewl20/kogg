@@ -8,6 +8,7 @@ import { fileURLToPath } from 'node:url';
 import { chromium } from 'playwright';
 import { captureSafeFailureArtifacts } from './e2e-artifact-manager.mjs';
 import { HarnessProcessRegistry } from './e2e-process-registry.mjs';
+import { HarnessRunManifest } from './e2e-run-manifest.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const resultRoot = path.join(root, 'test-results');
@@ -28,9 +29,12 @@ const masterKey = 'kogg-disposable-e2e-master-key';
 const providerSecret = 'kogg-disposable-provider-secret';
 const logs = [];
 const processes = new HarnessProcessRegistry({ logger: line => logs.push(line) });
+const run = await HarnessRunManifest.create({ root: resultRoot, runtime: 'browser', logger: line => logs.push(line) });
+await run.starting();
 let registry;
 let backend;
 let browser;
+let completionMessage;
 
 try {
     await createWorkspace();
@@ -79,25 +83,16 @@ try {
     }
     await page.waitForTimeout(2_000);
     assert.match(await page.title(), /^workspace(?: - Kogg)?$/u);
+    await run.active();
 
     if (process.env.KOGG_E2E_EXECUTION_ONLY === '1') {
         await exerciseExecution(page);
-        process.stdout.write('Kogg browser execution-refusal E2E passed.\n');
-        await browser.close(); browser = undefined;
-        await stop(backend); backend = undefined;
-        await stop(registry); registry = undefined;
-        await rm(temporary, { recursive: true, force: true });
-        process.exit(0);
+        await completeEarly('Kogg browser execution-refusal E2E passed.');
     }
 
     if (process.env.KOGG_E2E_PROJECTS_ONLY === '1') {
         await exerciseProjects(page);
-        process.stdout.write('Kogg browser Projects-only E2E passed.\n');
-        await browser.close(); browser = undefined;
-        await stop(backend); backend = undefined;
-        await stop(registry); registry = undefined;
-        await rm(temporary, { recursive: true, force: true });
-        process.exit(0);
+        await completeEarly('Kogg browser Projects-only E2E passed.');
     }
 
     if (process.env.KOGG_E2E_TASKS_ONLY === '1') {
@@ -105,44 +100,24 @@ try {
         await exerciseTasks(page);
         await createInteractionModeFixture(page);
         await exerciseInteractionModes(page);
-        process.stdout.write('Kogg browser governed-tasks E2E passed.\n');
-        await browser.close(); browser = undefined;
-        await stop(backend); backend = undefined;
-        await stop(registry); registry = undefined;
-        await rm(temporary, { recursive: true, force: true });
-        process.exit(0);
+        await completeEarly('Kogg browser governed-tasks E2E passed.');
     }
 
     if (process.env.KOGG_E2E_OPERATIONS_ONLY === '1') {
         await exerciseOperationsStream(page);
-        process.stdout.write('Kogg browser operations-stream E2E passed.\n');
-        await browser.close(); browser = undefined;
-        await stop(backend); backend = undefined;
-        await stop(registry); registry = undefined;
-        await rm(temporary, { recursive: true, force: true });
-        process.exit(0);
+        await completeEarly('Kogg browser operations-stream E2E passed.');
     }
 
     if (process.env.KOGG_E2E_WORKFLOW_ONLY === '1') {
         await exerciseProjects(page);
         await createWorkflowAdmissionFixture(page);
         await exerciseWorkflowEditor(page);
-        process.stdout.write('Kogg browser workflow-editor E2E passed.\n');
-        await browser.close(); browser = undefined;
-        await stop(backend); backend = undefined;
-        await stop(registry); registry = undefined;
-        await rm(temporary, { recursive: true, force: true });
-        process.exit(0);
+        await completeEarly('Kogg browser workflow-editor E2E passed.');
     }
 
     if (process.env.KOGG_E2E_VERDICT_MERGE_ONLY === '1') {
         await exerciseVerdictMerge(page);
-        process.stdout.write('Kogg browser verdict-merge visible-refusal E2E passed.\n');
-        await browser.close(); browser = undefined;
-        await stop(backend); backend = undefined;
-        await stop(registry); registry = undefined;
-        await rm(temporary, { recursive: true, force: true });
-        process.exit(0);
+        await completeEarly('Kogg browser verdict-merge visible-refusal E2E passed.');
     }
 
     await openCommand(page, 'Kogg: Run Diagnostics');
@@ -301,19 +276,32 @@ try {
     await stop(backend);
     backend = launchBrowser('rotated-disposable-token');
     await waitFor(`${appUrl}/kogg/auth/status`, 401);
+    processes.ready(backend);
     await page.goto(appUrl, { waitUntil: 'domcontentloaded' });
     await page.waitForURL('**/kogg/auth/login', { timeout: 15_000 });
     assert.equal((await page.locator('h1').innerText()), 'Kogg');
 
-    process.stdout.write('Kogg browser E2E passed: auth, branding, marketplace, provider, Git, debug, projects, restoration, and 25 reconnect cycles.\n');
+    completionMessage = 'Kogg browser E2E passed: auth, branding, marketplace, provider, Git, debug, projects, restoration, and 25 reconnect cycles.';
 } catch (error) {
-    await captureSafeFailureArtifacts({ root: resultRoot, runtime: 'browser', lifecycleLines: logs, error, logger: line => logs.push(line) });
-    const safe = new Error('E2E_SCENARIO_FAILED'); safe.stack = safe.message; throw safe;
+    await settleRun(error);
 } finally {
-    if (browser) await browser.close().catch(() => undefined);
-    await processes.cleanup();
-    await rm(temporary, { recursive: true, force: true });
+    if ((await run.read()).state !== 'completed' && (await run.read()).state !== 'failed') await settleRun();
 }
+
+async function settleRun(scenarioError) {
+    let cleanupError; let artifactError; let artifacts = [];
+    await run.cleaning(processes.manifest()).catch(error => { cleanupError = error; });
+    if (browser) { await browser.close().catch(error => { cleanupError ??= error; }); browser = undefined; }
+    await processes.cleanup().catch(error => { cleanupError ??= error; });
+    if (scenarioError || cleanupError) { try { ({ artifacts } = await captureSafeFailureArtifacts({ root: resultRoot, runtime: 'browser', runId: run.runId, lifecycleLines: logs, error: scenarioError ?? cleanupError, logger: line => logs.push(line) })); } catch (error) { artifactError = error; } }
+    const fixtures = processes.manifest(); const residualCount = fixtures.filter(value => value.state === 'residual').length; const failure = artifactError ?? cleanupError ?? scenarioError;
+    if (failure) await run.failed({ fixtures, artifacts, residualCount, safeCode: artifactError ? 'E2E_ARTIFACT_UNSAFE' : cleanupError ? 'E2E_PROCESS_RESIDUAL' : 'E2E_SCENARIO_FAILED', errorType: safeErrorType(failure) }); else await run.completed({ fixtures, artifacts, residualCount });
+    if (!cleanupError) await rm(temporary, { recursive: true, force: true }); if (!failure && completionMessage) process.stdout.write(`${completionMessage}\n`);
+    if (failure) { const safe = new Error(artifactError ? 'E2E_ARTIFACT_UNSAFE' : cleanupError ? 'E2E_PROCESS_RESIDUAL' : 'E2E_SCENARIO_FAILED'); safe.stack = safe.message; throw safe; }
+}
+
+async function completeEarly(message) { completionMessage = message; await settleRun(); process.exit(0); }
+function safeErrorType(error) { return error?.name === 'AssertionError' ? 'AssertionError' : error?.name === 'TimeoutError' ? 'TimeoutError' : 'Error'; }
 
 function launchBrowser(authToken) {
     return launch('browser-backend', process.execPath, [path.join(root, 'apps/browser/lib/backend/main.js'), `--plugins=local-dir:${path.join(root, 'plugins')}`, '--hostname', '127.0.0.1', '--port', String(browserPort)], {
