@@ -563,12 +563,14 @@ async function ensureElectronOperationsWidget(page, electronApplication) {
         await widgets.first().waitFor({ state: 'attached', timeout: 10_000 });
     }
     const widget = widgets.filter({ visible: true }).first();
-    await widget.getByRole('status').filter({ hasText: /Stream: current/u }).waitFor({ timeout: 10_000 });
+    await widget.getByRole('status').filter({ hasText: /Stream: current.*sequence \d+/u }).waitFor({ timeout: 15_000 });
     return widget;
 }
 
 async function electronStreamSequence(widget) {
-    const status = await widget.getByRole('status').filter({ hasText: /Stream:/u }).innerText();
+    const current = widget.getByRole('status').filter({ hasText: /Stream: current.*sequence \d+/u });
+    await current.waitFor({ timeout: 15_000 });
+    const status = await current.innerText();
     const match = /sequence (\d+)/u.exec(status);
     assert(match, `Missing operations stream sequence in: ${status}`);
     return BigInt(match[1]);
