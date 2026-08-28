@@ -12,7 +12,7 @@ import { CodexStdioDrainer } from './codex-stdio-drainer';
 
 // This attempt-local composition logs only opaque lifecycle correlations. Protocol params, content, credentials, stdio, and owner errors remain private.
 // diagnostic-coverage: codex.protocol, codex.credentials, codex.processes, codex.cleanup, codex.recovery, codex.source-maps
-const MAX_START_MS = 60_000; const MAX_HANDSHAKE_MS = 30_000;
+const MAX_START_MS = 60_000; const MAX_HANDSHAKE_MS = 30_000; const MAX_INTERRUPT_MS = 10_000;
 export interface CodexLiveSessionHost {
   readonly processId: string;
   start(): Promise<{ readonly stdin: Writable; readonly stdout: Readable; readonly stderr: Readable }>;
@@ -26,7 +26,7 @@ export interface CodexLiveSessionInput {
   readonly threadParams: Readonly<Record<string, unknown>>; readonly turnParams: Readonly<Record<string, unknown>>;
   readonly attestation: CodexSessionAttestation;
   readonly activateCredentials: (processRegistrationId: string) => void | Promise<void>; readonly revokeCredentials: () => void | Promise<void>; readonly onObservation: (sequence: number, observation: CodexSafeObservation) => void;
-  readonly onFault: (code: CodexSafeCode) => void | Promise<void>; readonly initializeTimeoutMs?: number; readonly threadTimeoutMs?: number; readonly startTimeoutMs?: number; readonly cleanupTimeoutMs?: number; readonly resourceCount?: number;
+  readonly onFault: (code: CodexSafeCode) => void | Promise<void>; readonly initializeTimeoutMs?: number; readonly threadTimeoutMs?: number; readonly startTimeoutMs?: number; readonly interruptTimeoutMs?: number; readonly cleanupTimeoutMs?: number; readonly resourceCount?: number;
 }
 export class CodexLiveSessionFault extends Error { constructor(readonly code: CodexSafeCode, readonly cleanup: CodexCleanupResult) { super(code); } }
 
@@ -54,7 +54,7 @@ export class CodexLiveSession {
   cancel(): Promise<CodexCleanupResult> { return this.cleanupCoordinator.cleanup('cancel', this.turnActive()); }
   timeout(): Promise<CodexCleanupResult> { return this.cleanupCoordinator.cleanup('timeout', this.turnActive()); }
   private turnActive(): boolean { return ['turn-starting', 'turn-active', 'interrupting'].includes(this.client?.phase() ?? ''); }
-  private async interrupt(): Promise<void> { if (this.client && this.turnActive() && !this.client.faulted()) await this.client.request('turn/interrupt', {}); }
+  private async interrupt(): Promise<void> { if (this.client && this.turnActive() && !this.client.faulted()) try { await bounded(this.client.request('turn/interrupt', {}), this.interruptTimeout(), 'CODEX_INTERRUPT_TIMEOUT'); } catch (error) { if (!(error instanceof SessionPhaseTimeout) || error.code !== 'CODEX_INTERRUPT_TIMEOUT') throw error; codexLog('timeout.expired', { attemptId: this.input.attemptId, deadlineClass: 'interrupt', generation: 1, configuredMs: error.configuredMs }); codexLog('cancel.escalated', { ...this.fields(), safeCode: error.code }); } }
   private async settleProtocol(): Promise<void> {
     if (!this.client || !this.stdin) return;
     try { this.client.beginCleanup(); await this.client.drainContent(); if (!this.client.faulted()) await this.client.request('shutdown', {}); }
@@ -67,8 +67,9 @@ export class CodexLiveSession {
   private startTimeout(): number { return this.input.startTimeoutMs ?? MAX_START_MS; }
   private initializeTimeout(): number { return this.input.initializeTimeoutMs ?? MAX_HANDSHAKE_MS; }
   private threadTimeout(): number { return this.input.threadTimeoutMs ?? MAX_HANDSHAKE_MS; }
+  private interruptTimeout(): number { return this.input.interruptTimeoutMs ?? MAX_INTERRUPT_MS; }
 }
-function validate(input: CodexLiveSessionInput): void { for (const id of [input.attemptId, input.operationId, input.host.processId]) if (!id || id.length > 128) throw new Error('Invalid live session correlation'); const deadlines: ReadonlyArray<readonly [number, number]> = [[input.initializeTimeoutMs ?? MAX_HANDSHAKE_MS, MAX_HANDSHAKE_MS], [input.threadTimeoutMs ?? MAX_HANDSHAKE_MS, MAX_HANDSHAKE_MS], [input.startTimeoutMs ?? MAX_START_MS, MAX_START_MS]]; for (const [timeout, maximum] of deadlines) if (!Number.isSafeInteger(timeout) || timeout < 1 || timeout > maximum) throw new Error('Invalid live session timeout'); }
+function validate(input: CodexLiveSessionInput): void { for (const id of [input.attemptId, input.operationId, input.host.processId]) if (!id || id.length > 128) throw new Error('Invalid live session correlation'); const deadlines: ReadonlyArray<readonly [number, number]> = [[input.initializeTimeoutMs ?? MAX_HANDSHAKE_MS, MAX_HANDSHAKE_MS], [input.threadTimeoutMs ?? MAX_HANDSHAKE_MS, MAX_HANDSHAKE_MS], [input.startTimeoutMs ?? MAX_START_MS, MAX_START_MS], [input.interruptTimeoutMs ?? MAX_INTERRUPT_MS, MAX_INTERRUPT_MS]]; for (const [timeout, maximum] of deadlines) if (!Number.isSafeInteger(timeout) || timeout < 1 || timeout > maximum) throw new Error('Invalid live session timeout'); }
 function codeOf(error: unknown): CodexSafeCode { return error instanceof SessionPhaseTimeout ? error.code : error instanceof CodexClientFault || error instanceof CodexCredentialFault || error instanceof CodexProtocolFault || error instanceof CodexProcessHostFault || error instanceof CodexSessionAttestationFault ? error.code : 'CODEX_INTERNAL_FAILURE'; }
-class SessionPhaseTimeout extends Error { constructor(readonly code: Extract<CodexSafeCode, 'CODEX_INITIALIZE_TIMEOUT' | 'CODEX_THREAD_START_TIMEOUT' | 'CODEX_FIRST_ACTIVITY_TIMEOUT'>, readonly deadlineClass: 'initialize' | 'thread-start' | 'first-activity', readonly configuredMs: number) { super(code); } }
-async function bounded<T>(promise: Promise<T>, timeoutMs: number, code: SessionPhaseTimeout['code']): Promise<T> { let timer: NodeJS.Timeout | undefined; const deadlineClass = code === 'CODEX_INITIALIZE_TIMEOUT' ? 'initialize' : code === 'CODEX_THREAD_START_TIMEOUT' ? 'thread-start' : 'first-activity'; try { return await Promise.race([promise, new Promise<never>((_resolve, reject) => { timer = setTimeout(() => reject(new SessionPhaseTimeout(code, deadlineClass, timeoutMs)), timeoutMs); })]); } finally { if (timer) clearTimeout(timer); } }
+class SessionPhaseTimeout extends Error { constructor(readonly code: Extract<CodexSafeCode, 'CODEX_INITIALIZE_TIMEOUT' | 'CODEX_THREAD_START_TIMEOUT' | 'CODEX_FIRST_ACTIVITY_TIMEOUT' | 'CODEX_INTERRUPT_TIMEOUT'>, readonly deadlineClass: 'initialize' | 'thread-start' | 'first-activity' | 'interrupt', readonly configuredMs: number) { super(code); } }
+async function bounded<T>(promise: Promise<T>, timeoutMs: number, code: SessionPhaseTimeout['code']): Promise<T> { let timer: NodeJS.Timeout | undefined; const deadlineClass = code === 'CODEX_INITIALIZE_TIMEOUT' ? 'initialize' : code === 'CODEX_THREAD_START_TIMEOUT' ? 'thread-start' : code === 'CODEX_INTERRUPT_TIMEOUT' ? 'interrupt' : 'first-activity'; try { return await Promise.race([promise, new Promise<never>((_resolve, reject) => { timer = setTimeout(() => reject(new SessionPhaseTimeout(code, deadlineClass, timeoutMs)), timeoutMs); })]); } finally { if (timer) clearTimeout(timer); } }

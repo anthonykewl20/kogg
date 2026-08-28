@@ -74,7 +74,7 @@ export class CodexProtocolClient implements CodexPrivateFrameConsumer {
     catch (error) { this.fail(codeOf(error)); throw error; }
   }
   closeContentInput(): void { this.input.content.closeInput?.(); }
-  beginCleanup(): void { this.closeContentInput(); if (!this.failed) this.core.beginCleanup(); }
+  beginCleanup(): void { this.closeContentInput(); if (!this.failed) { this.core.beginCleanup(); for (const pending of this.pending.values()) { codexLog('protocol.request.failed', { attemptId: this.input.attemptId, requestClass: pending.requestClass, safeCode: 'CODEX_CANCELLED' }); pending.reject(new CodexClientFault('CODEX_CANCELLED')); } this.pending.clear(); this.authorityRequests.length = 0; } }
   async drainContent(timeoutMs = 10_000): Promise<void> { this.input.content.closeInput?.(); if (this.input.content.drain && !await this.input.content.drain(timeoutMs)) { const error = new CodexClientFault('CODEX_CONTENT_BACKPRESSURE'); this.fail(error.code); throw error; } }
 
   accept(frame: CodexValidatedFrame): void {
