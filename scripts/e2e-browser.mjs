@@ -718,6 +718,9 @@ async function exerciseTasks(page) {
         assert.equal(check?.status, 'fail');
         assert.equal(check?.details?.safeCode, 'CLAUDE_LEGAL_APPROVAL_REQUIRED');
     }
+    const claudeAuthority = supportReport.checks.find(check => check.id === 'claude.authority');
+    assert.equal(claudeAuthority?.status, 'fail');
+    assert.equal(claudeAuthority?.details?.safeCode, 'CLAUDE_ATTEMPT_INVALID');
     for (const id of ['claude.processes', 'claude.cleanup', 'claude.recovery']) {
         const check = supportReport.checks.find(candidate => candidate.id === id);
         assert.equal(check?.status, 'fail', id);
