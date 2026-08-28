@@ -916,6 +916,11 @@ async function exerciseWorkflowEditor(page) {
     assert.equal(await widget.locator('[data-workflow-node]').count(), 3);
     assert.match(await widget.locator('[data-workflow-node]').nth(1).innerText(), /check\.deterministic/u);
     configuration = widget.locator('[data-config]'); assert.equal(await configuration.getByLabel('Role revision ID').inputValue(), '60000000-0000-4000-8000-000000000002');
+    const failureRoute = widget.getByLabel('Route from research.agent to check.deterministic');
+    await failureRoute.selectOption('failure');
+    await widget.getByRole('button', { name: 'Apply connection outcomes' }).click();
+    await widget.getByText('Connection outcomes applied; validate before saving.').waitFor();
+    assert.equal(await failureRoute.inputValue(), 'failure');
     await widget.getByRole('button', { name: 'Validate workflow' }).click();
     await widget.getByText(/Workflow valid: 3 nodes and 2 edges/u).waitFor({ timeout: 10_000 });
     await widget.getByRole('button', { name: 'Save immutable version' }).click();
