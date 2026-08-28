@@ -1,0 +1,64 @@
+import { randomUUID } from 'node:crypto';
+import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
+import path from 'node:path';
+
+const TRANSITIONS = { requested: ['starting'], starting: ['active','cleaning'], active: ['cleaning'], cleaning: ['completed','failed'], completed: [], failed: [] };
+const PLATFORMS = ['linux','macos','windows']; const RUNTIMES = ['browser','electron'];
+const FIXTURE_KINDS = ['browser-backend','electron-application','signed-registry']; const FIXTURE_STATES = ['started','ready','exited','cleaned','residual'];
+const SAFE = /^[a-zA-Z0-9][a-zA-Z0-9._:-]{0,127}$/u; const SHA256 = /^[0-9a-f]{64}$/u;
+
+export class HarnessRunManifest {
+    constructor(root, value, logger) { this.root = root; this.value = value; this.logger = logger; this.directory = path.join(root, value.runId, value.platform, value.runtime); }
+
+    static async create({ root, runtime, platform = platformName(), runId = randomUUID(), logger = () => undefined }) {
+        if (typeof root !== 'string' || !uuid(runId) || !PLATFORMS.includes(platform) || !RUNTIMES.includes(runtime)) throw new Error('E2E_MANIFEST_INVALID');
+        const manifest = new HarnessRunManifest(root, { schemaVersion: 1, runId, platform, runtime, state: 'requested', fixtures: [], artifacts: [], harnessChecks: [], residualCount: 0, environment: { platform, runtime } }, logger);
+        await mkdir(manifest.directory, { recursive: true, mode: 0o700 }); await manifest.#write(); manifest.#log('run.requested'); return manifest;
+    }
+
+    get runId() { return this.value.runId; }
+    async starting() { await this.#transition('starting'); this.#log('run.started'); }
+    async active() { await this.#transition('active'); }
+    async cleaning(fixtures) { const patch = { fixtures: validateFixtures(fixtures) }; if (this.value.state === 'cleaning') { this.value = { ...this.value, ...patch }; await this.#write(); return; } await this.#transition('cleaning', patch); this.#log('residual-check.started'); }
+    async completed({ fixtures, artifacts = [], residualCount = 0 }) {
+        const final = finalFields(fixtures, artifacts, residualCount); if (final.harnessChecks.some(check => check.status !== 'pass')) throw new Error('E2E_MANIFEST_SUCCESS_REFUSED');
+        await this.#transition('completed', final); this.#log('residual-check.completed', { residualCount }); this.#log('run.completed');
+    }
+    async failed({ fixtures, artifacts = [], residualCount = 0, safeCode = 'E2E_SCENARIO_FAILED', errorType = 'Error' }) {
+        if (!SAFE.test(safeCode) || !['Error','AssertionError','TimeoutError'].includes(errorType)) throw new Error('E2E_MANIFEST_INVALID');
+        const final = finalFields(fixtures, artifacts, residualCount); if (safeCode === 'E2E_ARTIFACT_UNSAFE') final.harnessChecks.find(check => check.id === 'e2e.artifacts').status = 'fail'; if (safeCode === 'E2E_PROCESS_RESIDUAL') final.harnessChecks.find(check => check.id === 'e2e.processes').status = 'fail';
+        await this.#transition('failed', { ...final, safeCode, errorType }); this.#log('residual-check.failed', { residualCount, safeCode }); this.#log('run.failed', { safeCode, errorType });
+    }
+    async read() { return JSON.parse(await readFile(path.join(this.directory, 'manifest.json'), 'utf8')); }
+
+    async #transition(next, patch = {}) {
+        if (!TRANSITIONS[this.value.state].includes(next)) throw new Error('E2E_MANIFEST_TRANSITION_INVALID');
+        this.value = { ...this.value, ...patch, state: next }; await this.#write();
+    }
+    async #write() {
+        const text = `${JSON.stringify(this.value, null, 2)}\n`; const temporary = path.join(this.directory, `.manifest.${randomUUID()}.tmp`);
+        await writeFile(temporary, text, { encoding: 'utf8', mode: 0o600, flag: 'wx' }); await rename(temporary, path.join(this.directory, 'manifest.json'));
+    }
+    #log(name, fields = {}) { this.logger(`[kogg:e2e:harness] ${name} ${JSON.stringify({ runId: this.value.runId, platform: this.value.platform, runtime: this.value.runtime, ...fields })}`); }
+}
+
+function finalFields(fixtures, artifacts, residualCount) {
+    const validatedFixtures = validateFixtures(fixtures); const validatedArtifacts = validateArtifacts(artifacts);
+    if (!Number.isSafeInteger(residualCount) || residualCount < 0) throw new Error('E2E_MANIFEST_INVALID');
+    const fixturePass = validatedFixtures.every(value => value.state === 'cleaned'); const artifactPass = validatedArtifacts.every(value => value.status === 'retained' || value.status === 'refused');
+    return { fixtures: validatedFixtures, artifacts: validatedArtifacts, residualCount, harnessChecks: [
+        { id: 'e2e.fixtures', status: fixturePass ? 'pass' : 'fail', count: validatedFixtures.length },
+        { id: 'e2e.processes', status: residualCount === 0 && fixturePass ? 'pass' : 'fail', residualCount },
+        { id: 'e2e.artifacts', status: artifactPass ? 'pass' : 'fail', count: validatedArtifacts.length }
+    ] };
+}
+function validateFixtures(values) {
+    if (!Array.isArray(values) || values.length > 16) throw new Error('E2E_MANIFEST_INVALID');
+    return values.map(value => { if (!value || Object.keys(value).sort().join(',') !== ['exitClass','forced','id','kind','state'].sort().join(',') || !/^fixture-[1-9][0-9]*$/u.test(value.id) || !FIXTURE_KINDS.includes(value.kind) || !FIXTURE_STATES.includes(value.state) || typeof value.forced !== 'boolean' || !['zero','nonzero','signal','unknown'].includes(value.exitClass)) throw new Error('E2E_MANIFEST_INVALID'); return { ...value }; });
+}
+function validateArtifacts(values) {
+    if (!Array.isArray(values) || values.length > 16) throw new Error('E2E_MANIFEST_INVALID');
+    return values.map(value => { const keys = Object.keys(value).sort().join(','); if (!value || !['digest,kind,status','kind,safeCode,status'].includes(keys) || !SAFE.test(value.kind) || !['retained','refused'].includes(value.status) || value.status === 'retained' && !SHA256.test(value.digest) || value.status === 'refused' && !SAFE.test(value.safeCode)) throw new Error('E2E_MANIFEST_INVALID'); return { ...value }; });
+}
+function uuid(value) { return typeof value === 'string' && /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u.test(value); }
+function platformName() { return process.platform === 'darwin' ? 'macos' : process.platform === 'win32' ? 'windows' : 'linux'; }

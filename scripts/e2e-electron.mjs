@@ -10,6 +10,7 @@ import { fileURLToPath } from 'node:url';
 import { _electron as electron } from 'playwright';
 import { captureSafeFailureArtifacts } from './e2e-artifact-manager.mjs';
 import { HarnessProcessRegistry } from './e2e-process-registry.mjs';
+import { HarnessRunManifest } from './e2e-run-manifest.mjs';
 
 const require = createRequire(import.meta.url);
 const keytar = require('keytar');
@@ -22,10 +23,13 @@ const registryUrl = `http://127.0.0.1:${registryPort}`;
 const results = path.join(root, 'test-results');
 const logs = [];
 const processes = new HarnessProcessRegistry({ logger: line => logs.push(line) });
+const run = await HarnessRunManifest.create({ root: results, runtime: 'electron', logger: line => logs.push(line) });
+await run.starting();
 const providerSecret = randomBytes(24).toString('base64url');
 const credentialService = `Kogg AI Providers E2E ${randomBytes(16).toString('hex')}`;
 let registry;
 let application;
+let completionMessage;
 
 try {
     await mkdir(workspace, { recursive: true });
@@ -86,6 +90,7 @@ try {
     await application.firstWindow({ timeout: 30_000 });
     const page = await waitForKoggWindow(application);
     processes.ready(application.process());
+    await run.active();
     page.on('console', entry => logs.push(`[frontend:${entry.type()}] ${entry.text()}`));
     page.on('pageerror', error => logs.push(`[frontend:error] ${error.stack ?? error.message}`));
     assert.match(await page.title(), /Kogg|workspace/iu);
@@ -95,12 +100,12 @@ try {
 
     if (process.env.KOGG_E2E_OPERATIONS_ONLY === '1') {
         await exerciseElectronOperations(page, application);
-        process.stdout.write('Kogg Electron operations-stream E2E passed.\n');
+        completionMessage = 'Kogg Electron operations-stream E2E passed.';
     } else if (process.env.KOGG_E2E_WORKFLOW_ONLY === '1') {
         await exerciseElectronProjects(page, application);
         await createElectronWorkflowAdmissionFixture(page, application);
         await exerciseElectronWorkflowEditor(page, application);
-        process.stdout.write('Kogg Electron workflow-editor E2E passed.\n');
+        completionMessage = 'Kogg Electron workflow-editor E2E passed.';
     } else {
     // Exercise a real editor save before Git actions. This activates filesystem
     // and repository watchers through the same path a person uses on a clean
@@ -207,26 +212,26 @@ try {
     assert.doesNotMatch(visible, /Search Open VSX Registry|Learn more about Theia|custom-agent migration/iu);
     assert.doesNotMatch(logs.join('\n'), /Uncaught Exception:\s+Error: transport error/iu);
     assert.doesNotMatch(logs.join('\n'), /Command with id '_chat\.editSessions\.accept' is not registered/iu);
-    process.stdout.write('Kogg Electron E2E passed: native window, marketplace, provider, Git, debug, projects, switching, and branding.\n');
+    completionMessage = 'Kogg Electron E2E passed: native window, marketplace, provider, Git, debug, projects, switching, and branding.';
     }
 } catch (error) {
-    await captureSafeFailureArtifacts({ root: results, runtime: 'electron', lifecycleLines: logs, error, logger: line => logs.push(line) });
-    const safe = new Error('E2E_SCENARIO_FAILED'); safe.stack = safe.message; throw safe;
+    await settleRun(error);
 } finally {
-    if (application) {
-        const closed = await Promise.race([
-            application.close().then(() => true, () => false),
-            new Promise(resolve => setTimeout(() => resolve(false), 10_000))
-        ]);
-        if (!closed) {
-            console.warn('[kogg:e2e:electron] application.close.timed-out');
-            application.process().kill();
-        }
-    }
-    await processes.cleanup();
-    await keytar.deletePassword(credentialService, 'openai:default').catch(() => undefined);
-    await rm(temporary, { recursive: true, force: true });
+    if ((await run.read()).state !== 'completed' && (await run.read()).state !== 'failed') await settleRun();
 }
+
+async function settleRun(scenarioError) {
+    let cleanupError; let artifactError; let artifacts = [];
+    await run.cleaning(processes.manifest()).catch(error => { cleanupError = error; });
+    if (application) { const closed = await Promise.race([application.close().then(() => true, () => false), new Promise(resolve => setTimeout(() => resolve(false), 10_000))]); if (!closed) { cleanupError ??= new Error('E2E_APPLICATION_CLOSE_TIMEOUT'); application.process().kill(); } application = undefined; }
+    await processes.cleanup().catch(error => { cleanupError ??= error; }); await keytar.deletePassword(credentialService, 'openai:default').catch(error => { cleanupError ??= error; });
+    if (scenarioError || cleanupError) { try { ({ artifacts } = await captureSafeFailureArtifacts({ root: results, runtime: 'electron', runId: run.runId, lifecycleLines: logs, error: scenarioError ?? cleanupError, logger: line => logs.push(line) })); } catch (error) { artifactError = error; } }
+    const fixtures = processes.manifest(); const residualCount = fixtures.filter(value => value.state === 'residual').length; const failure = artifactError ?? cleanupError ?? scenarioError;
+    if (failure) await run.failed({ fixtures, artifacts, residualCount, safeCode: artifactError ? 'E2E_ARTIFACT_UNSAFE' : cleanupError ? 'E2E_PROCESS_RESIDUAL' : 'E2E_SCENARIO_FAILED', errorType: safeErrorType(failure) }); else await run.completed({ fixtures, artifacts, residualCount });
+    if (!cleanupError) await rm(temporary, { recursive: true, force: true }); if (!failure && completionMessage) process.stdout.write(`${completionMessage}\n`);
+    if (failure) { const safe = new Error(artifactError ? 'E2E_ARTIFACT_UNSAFE' : cleanupError ? 'E2E_PROCESS_RESIDUAL' : 'E2E_SCENARIO_FAILED'); safe.stack = safe.message; throw safe; }
+}
+function safeErrorType(error) { return error?.name === 'AssertionError' ? 'AssertionError' : error?.name === 'TimeoutError' ? 'TimeoutError' : 'Error'; }
 
 async function openCommand(page, label, electronApplication, query = label, optionTimeout = 30_000) {
     const input = page.getByRole('textbox', { name: 'Type to narrow down results.' });
