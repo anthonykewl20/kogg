@@ -6,10 +6,11 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { chromium } from 'playwright';
+import { captureSafeFailureArtifacts } from './e2e-artifact-manager.mjs';
 import { HarnessProcessRegistry } from './e2e-process-registry.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const resultRoot = path.join(root, 'test-results', 'browser');
+const resultRoot = path.join(root, 'test-results');
 const temporary = await mkdtemp(path.join(await realpath(os.tmpdir()), 'kogg-browser-e2e-'));
 const workspace = path.join(temporary, 'workspace');
 const secondaryRepository = path.join(temporary, 'secondary-repository');
@@ -306,12 +307,8 @@ try {
 
     process.stdout.write('Kogg browser E2E passed: auth, branding, marketplace, provider, Git, debug, projects, restoration, and 25 reconnect cycles.\n');
 } catch (error) {
-    if (browser) {
-        const pages = browser.contexts().flatMap(context => context.pages());
-        if (pages[0]) await pages[0].screenshot({ path: path.join(resultRoot, 'failure.png'), fullPage: true }).catch(() => undefined);
-    }
-    await writeFile(path.join(resultRoot, 'failure.log'), `${logs.join('\n')}\n${error.stack ?? error}\n`).catch(() => undefined);
-    throw error;
+    await captureSafeFailureArtifacts({ root: resultRoot, runtime: 'browser', lifecycleLines: logs, error, logger: line => logs.push(line) });
+    const safe = new Error('E2E_SCENARIO_FAILED'); safe.stack = safe.message; throw safe;
 } finally {
     if (browser) await browser.close().catch(() => undefined);
     await processes.cleanup();

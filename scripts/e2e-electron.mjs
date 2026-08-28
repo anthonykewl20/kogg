@@ -8,6 +8,7 @@ import { randomBytes } from 'node:crypto';
 import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
 import { _electron as electron } from 'playwright';
+import { captureSafeFailureArtifacts } from './e2e-artifact-manager.mjs';
 import { HarnessProcessRegistry } from './e2e-process-registry.mjs';
 
 const require = createRequire(import.meta.url);
@@ -18,7 +19,7 @@ const workspace = path.join(temporary, 'workspace');
 const secondaryRepository = path.join(temporary, 'secondary-repository');
 const registryPort = await freePort();
 const registryUrl = `http://127.0.0.1:${registryPort}`;
-const results = path.join(root, 'test-results', 'electron');
+const results = path.join(root, 'test-results');
 const logs = [];
 const processes = new HarnessProcessRegistry({ logger: line => logs.push(line) });
 const providerSecret = randomBytes(24).toString('base64url');
@@ -209,13 +210,8 @@ try {
     process.stdout.write('Kogg Electron E2E passed: native window, marketplace, provider, Git, debug, projects, switching, and branding.\n');
     }
 } catch (error) {
-    process.stderr.write(`${logs.join('\n')}\n`);
-    if (application) {
-        const windows = application.windows();
-        if (windows[0]) await windows[0].screenshot({ path: path.join(results, 'failure.png'), fullPage: true }).catch(() => undefined);
-    }
-    await writeFile(path.join(results, 'failure.log'), `${logs.join('\n')}\n${error.stack ?? error}\n`).catch(() => undefined);
-    throw error;
+    await captureSafeFailureArtifacts({ root: results, runtime: 'electron', lifecycleLines: logs, error, logger: line => logs.push(line) });
+    const safe = new Error('E2E_SCENARIO_FAILED'); safe.stack = safe.message; throw safe;
 } finally {
     if (application) {
         const closed = await Promise.race([
