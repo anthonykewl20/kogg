@@ -18,7 +18,7 @@ export function compileCodexFrameSchema(bytes: Buffer, accepted: AcceptedCodexMe
       return entry.kind === 'notification' ? { kind: 'notification', method: entry.method, lifecycle: entry.lifecycle as 'turn-started' | 'activity' | 'turn-completed', ...(content === undefined ? {} : { content, contentBytes }) } : typeof frame.id === 'number' ? { kind: 'server-request', id: frame.id, method: entry.method, lifecycle: 'authority-request' } : undefined;
     }
     if (typeof frame.id !== 'number' || !expectedRequestMethod || !responses.has(expectedRequestMethod)) return undefined;
-    if (exact(frame, ['id', 'result']) && validators.get(responses.get(expectedRequestMethod)!)!(frame.result)) return { kind: 'response', id: frame.id, outcome: 'result' };
+    if (exact(frame, ['id', 'result']) && validators.get(responses.get(expectedRequestMethod)!)!(frame.result)) return { kind: 'response', id: frame.id, outcome: 'result', privateResult: frame.result };
     if (exact(frame, ['error', 'id']) && error(frame.error)) return { kind: 'response', id: frame.id, outcome: 'error' }; return undefined;
   } });
 }

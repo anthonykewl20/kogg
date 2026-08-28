@@ -63,13 +63,13 @@ test('registers Codex as disabled and reports all eight diagnostics without fall
   const root = await mkdtemp(path.join(os.tmpdir(), 'kogg-codex-release-')); const release = new CodexReleaseRegistry({} as OperationRegistryApi, root, { platform: 'linux', arch: 'x64' }); const adapters = new AdapterRegistry(); const factory = new CodexAdapterFactory(adapters, release);
   try {
     await factory.onStart(); assert.equal(adapters.descriptors().length, 1); assert.equal(adapters.descriptors()[0]?.enabled, false); assert.throws(() => adapters.resolveExact({ adapterKey: 'codex-app-server', adapterVersion: '1.0.0', providerId: 'openai', modelId: 'gpt-5', requiredCapabilities: ['provider-turn'] }), error => error instanceof Error && error.message === 'ADAPTER_DISABLED');
-    const checks = await new CodexDiagnosticContributor(release).diagnose(); assert.deepEqual(checks.map(check => check.id), CODEX_CHECKS.map(check => check.id)); assert.equal(checks.find(check => check.id === 'codex.release')?.status, 'fail'); assert.equal(checks.find(check => check.id === 'codex.processes')?.status, 'pass'); assert.equal(checks.find(check => check.id === 'codex.cleanup')?.status, 'pass'); const sourceMaps = checks.find(check => check.id === 'codex.source-maps'); assert.equal(sourceMaps?.status, 'pass'); assert.equal(sourceMaps?.details?.expectedCount, 11); assert.equal(sourceMaps?.details?.missingCount, 0);
+    const checks = await new CodexDiagnosticContributor(release).diagnose(); assert.deepEqual(checks.map(check => check.id), CODEX_CHECKS.map(check => check.id)); assert.equal(checks.find(check => check.id === 'codex.release')?.status, 'fail'); assert.equal(checks.find(check => check.id === 'codex.processes')?.status, 'pass'); assert.equal(checks.find(check => check.id === 'codex.cleanup')?.status, 'pass'); const sourceMaps = checks.find(check => check.id === 'codex.source-maps'); assert.equal(sourceMaps?.status, 'pass'); assert.equal(sourceMaps?.details?.expectedCount, 12); assert.equal(sourceMaps?.details?.missingCount, 0);
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 
-test('closed Codex logging rejects hostile fields without echoing their values', () => {
+test('closed Codex logging rejects hostile fields and field types without echoing their values', () => {
   const canary = `codex-secret-${Date.now()}`; const logs: string[] = []; const original = console.error; console.error = (...values: unknown[]) => { logs.push(JSON.stringify(values)); };
-  try { codexLog('release.verification.failed', { adapterVersion: '1.0.0', safeCode: 'CODEX_RELEASE_UNQUALIFIED', credential: canary } as never); assert.equal(logs.join('\n').includes(canary), false); assert.equal(codexLoggingDiagnostics().violationCount > 0, true); }
+  try { const before = codexLoggingDiagnostics().violationCount; codexLog('release.verification.failed', { adapterVersion: '1.0.0', safeCode: 'CODEX_RELEASE_UNQUALIFIED', credential: canary } as never); codexLog('protocol.authority.denied', { attemptId: 'attempt-1', pendingCount: canary } as never); assert.equal(logs.join('\n').includes(canary), false); assert.equal(codexLoggingDiagnostics().violationCount, before + 2); }
   finally { console.error = original; }
 });
 

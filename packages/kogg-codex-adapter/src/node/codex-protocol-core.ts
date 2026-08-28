@@ -11,7 +11,7 @@ const DECODER = new TextDecoder('utf-8', { fatal: true });
 
 export type CodexProtocolPhase = 'spawned' | 'initializing' | 'initialize-replied' | 'initialized' | 'thread-starting' | 'thread-ready' | 'turn-starting' | 'turn-active' | 'interrupting' | 'turn-terminal-observed' | 'cleaning' | 'faulted';
 export type CodexValidatedFrame =
-  | { readonly kind: 'response'; readonly id: number; readonly outcome: 'result' | 'error'; readonly content?: unknown; readonly contentBytes?: number }
+  | { readonly kind: 'response'; readonly id: number; readonly outcome: 'result' | 'error'; readonly privateResult?: unknown; readonly content?: unknown; readonly contentBytes?: number }
   | { readonly kind: 'notification'; readonly method: string; readonly lifecycle: 'turn-started' | 'activity' | 'turn-completed'; readonly content?: unknown; readonly contentBytes?: number }
   | { readonly kind: 'server-request'; readonly id: number; readonly method: string; readonly lifecycle: 'authority-request'; readonly content?: unknown; readonly contentBytes?: number };
 export type CodexSafeObservation =
@@ -20,6 +20,7 @@ export type CodexSafeObservation =
   | { readonly kind: 'server-request'; readonly lifecycle: 'authority-request' };
 export interface CodexFrameSchema { validate(frame: Readonly<Record<string, unknown>>, expectedRequestMethod?: string): CodexValidatedFrame | undefined; }
 export interface CodexContentRouter { accept(content: unknown, byteCount: number): Promise<boolean>; }
+export interface CodexPrivateFrameConsumer { accept(frame: CodexValidatedFrame): void; }
 
 export class CodexProtocolFault extends Error { constructor(readonly code: Extract<CodexSafeCode, 'CODEX_PROTOCOL_VIOLATION' | 'CODEX_PROTOCOL_UNSUPPORTED' | 'CODEX_FRAME_TOO_LARGE' | 'CODEX_QUEUE_OVERFLOW' | 'CODEX_STDIN_BACKPRESSURE' | 'CODEX_STDERR_LIMIT' | 'CODEX_CONTENT_BACKPRESSURE' | 'CODEX_TRANSPORT_LOST'>) { super(code); } }
 
@@ -28,7 +29,8 @@ export class CodexProtocolCore {
   private readonly queue: Array<{ readonly bytes: number; readonly value: CodexSafeObservation }> = [];
   private readonly requests = new Map<number, string>(); private readonly serverRequests = new Set<number>();
   private threadCount = 0; private turnCount = 0; private terminalCount = 0; private shutdownCount = 0; private failed = false;
-  constructor(private readonly schema: CodexFrameSchema, private readonly acceptedInboundMethods: Pick<ReadonlySet<string>, 'has'>, private readonly content: CodexContentRouter) {}
+  constructor(private readonly schema: CodexFrameSchema, private readonly acceptedInboundMethods: Pick<ReadonlySet<string>, 'has'>, private readonly content: CodexContentRouter,
+    private readonly privateFrames?: CodexPrivateFrameConsumer) {}
   phase(): CodexProtocolPhase { return this.phaseValue; }
   outstanding(): { readonly client: number; readonly server: number } { return { client: this.requests.size, server: this.serverRequests.size }; }
 
@@ -78,6 +80,8 @@ export class CodexProtocolCore {
     const observation = this.reduce(validated);
     if (contentBytes) { let accepted = false; try { accepted = await this.content.accept(validated.content, contentBytes); } catch { // observability-exempt: Content-router errors are normalized below and raw content/error data is intentionally discarded.
         this.fault('CODEX_CONTENT_BACKPRESSURE'); } if (!accepted) this.fault('CODEX_CONTENT_BACKPRESSURE'); }
+    try { this.privateFrames?.accept(validated); } catch { // observability-exempt: Private correlation/result consumer failures are normalized without exposing the validated frame.
+      this.fault('CODEX_PROTOCOL_VIOLATION'); }
     this.queue.push({ bytes: frameBytes, value: observation }); this.queuedBytes += frameBytes;
   }
 
