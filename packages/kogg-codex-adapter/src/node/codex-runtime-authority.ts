@@ -4,6 +4,7 @@ import type { AgentAdapterFactory, AgentAdapterSession } from '@kogg/agents/lib/
 import type { CodexSafeCode } from '../common/codex-protocol';
 import type { GovernedCodexAttemptV1 } from '../common/codex-protocol';
 import { CodexAttemptAuthorityFault, CodexAttemptAuthorityRegistry } from './codex-attempt-authority';
+import { CodexCredentialReservation, type CodexCredentialActivation, type CodexCredentialBinding } from './codex-credential-reservation';
 import { codexLog } from './codex-logger';
 import { CodexReleaseRegistry, type QualifiedCodexRuntimeV1 } from './codex-release-registry';
 
@@ -16,7 +17,10 @@ export interface QualifiedCodexRuntimeProjection {
 }
 export interface QualifiedCodexRuntimeAuthority {
   qualify(runtime: QualifiedCodexRuntimeV1): Promise<QualifiedCodexRuntimeProjection>;
-  create(input: Omit<Parameters<AgentAdapterFactory['create']>[0], 'binding'> & { readonly runtime: QualifiedCodexRuntimeV1; readonly attempt: GovernedCodexAttemptV1 }): AgentAdapterSession;
+  reserveCredentials(input: { readonly attempt: GovernedCodexAttemptV1; readonly binding: CodexCredentialBinding }): Promise<{ readonly reservationId: string }>;
+  activateCredentials(input: { readonly attempt: GovernedCodexAttemptV1; readonly activation: CodexCredentialActivation }): Promise<void>;
+  revokeCredentials(input: { readonly attempt: GovernedCodexAttemptV1; readonly reservationId: string }): Promise<void>;
+  create(input: Omit<Parameters<AgentAdapterFactory['create']>[0], 'binding' | 'credentialLease'> & { readonly runtime: QualifiedCodexRuntimeV1; readonly attempt: GovernedCodexAttemptV1; readonly credentials: CodexCredentialReservation }): AgentAdapterSession;
 }
 export interface CodexRuntimeAuthorityProjection {
   readonly releaseId?: string; readonly target?: QualifiedCodexRuntimeV1['release']['target']; readonly qualificationProfileId?: string;
@@ -36,7 +40,7 @@ export class CodexRuntimeAuthorityRegistry implements BackendApplicationContribu
   create(input: Parameters<AgentAdapterFactory['create']>[0]): AgentAdapterSession {
     if (!this.authority || !this.value.ownerReady || !this.value.confinementVerified || !this.value.credentialBrokerReady) throw new CodexRuntimeAuthorityFault(this.value.safeCode);
     const runtime = this.releases.qualifiedRuntime(); codexLog('session.create.requested', { attemptId: input.binding.attemptId, releaseId: runtime.release.releaseId });
-    try { const attempt = this.attempts.authorize({ binding: input.binding, runtime, authority: this.value }); const { binding: _binding, ...ownerInput } = input; const session = this.authority.create({ ...ownerInput, runtime, attempt }); validateSession(session); codexLog('session.create.completed', { attemptId: input.binding.attemptId, releaseId: runtime.release.releaseId, resourceId: session.resourceId }); return session; }
+    try { const attempt = this.attempts.authorize({ binding: input.binding, runtime, authority: this.value }); const credentials = new CodexCredentialReservation(attempt, input.credentialLease, { reserve: binding => this.authority!.reserveCredentials({ attempt, binding }), activate: activation => this.authority!.activateCredentials({ attempt, activation }), revoke: reservationId => this.authority!.revokeCredentials({ attempt, reservationId }) }); const { binding: _binding, credentialLease: _credentialLease, ...ownerInput } = input; let session: AgentAdapterSession; try { session = this.authority.create({ ...ownerInput, runtime, attempt, credentials }); validateSession(session); } catch (error) { credentials.abandon(); throw error; } codexLog('session.create.completed', { attemptId: input.binding.attemptId, releaseId: runtime.release.releaseId, resourceId: session.resourceId }); return credentialBound(session, credentials); }
     catch (error) { // observability-exempt: The closed creation failure discards authority errors and never logs the attempt payload, runtime paths, or credential lease.
       const safeCode = error instanceof CodexRuntimeAuthorityFault || error instanceof CodexAttemptAuthorityFault ? error.code : 'CODEX_INTERNAL_FAILURE'; codexLog('session.create.failed', { attemptId: input.binding.attemptId, releaseId: runtime.release.releaseId, safeCode }); throw new CodexRuntimeAuthorityFault(safeCode); }
   }
@@ -62,4 +66,8 @@ function validateProjection(value: QualifiedCodexRuntimeProjection, runtime: Qua
 }
 function validateSession(value: AgentAdapterSession): void {
   if (!value || typeof value.resourceId !== 'string' || !value.resourceId || value.resourceId.length > 128 || !['provider-host', 'provider-request'].includes(value.resourceKind) || value.ownerKind !== 'kogg' || typeof value.start !== 'function' || typeof value.cancel !== 'function' || typeof value.cleanup !== 'function') throw new Error('Invalid Codex adapter session');
+}
+function credentialBound(session: AgentAdapterSession, credentials: CodexCredentialReservation): AgentAdapterSession {
+  const settle = async (owner: () => Promise<unknown>): Promise<unknown> => { let ownerFailure: unknown; let result: unknown; try { result = await owner(); } catch (error) { /* observability-exempt: The qualified owner must emit its closed failure; credential revocation still runs before the error is returned. */ ownerFailure = error; } try { await credentials.revoke(); } catch (error) { /* observability-exempt: Credential revocation already emitted its closed failure; an earlier owner failure remains the primary lifecycle result. */ if (!ownerFailure) ownerFailure = error; } if (ownerFailure) throw ownerFailure; return result; };
+  return { resourceId: session.resourceId, resourceKind: session.resourceKind, ownerKind: session.ownerKind, async start() { try { await session.start(); } catch (error) { try { await settle(() => session.cleanup()); } catch { /* observability-exempt: Owner cleanup and credential revocation emitted their closed failures; startup failure remains primary. */ } throw error; } }, async cancel(reason) { await settle(() => session.cancel(reason)); }, async cleanup() { return await settle(() => session.cleanup()) as { readonly residualCount: number }; } };
 }
