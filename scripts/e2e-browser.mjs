@@ -914,7 +914,7 @@ async function ensureOperationsWidget(page) {
     }
     const widget = widgets.first();
     await widget.getByText(/Admission:\s+(?:enabled|recovering|blocked)/u).waitFor({ timeout: 15_000 });
-    await widget.getByRole('status').filter({ hasText: /Stream: current/u }).waitFor({ timeout: 15_000 });
+    await widget.getByRole('status').filter({ hasText: /Stream: current.*sequence \d+/u }).waitFor({ timeout: 15_000 });
     return widget;
 }
 
@@ -1149,7 +1149,7 @@ async function exerciseOperationsStream(page) {
     await secondPage.reload({ waitUntil: 'domcontentloaded' });
     await secondPage.locator('body.kogg-application').waitFor({ timeout: 20_000 });
     second = await ensureOperationsWidget(secondPage);
-    await second.getByRole('status').filter({ hasText: /Stream: current/u }).waitFor({ timeout: 10_000 });
+    await second.getByRole('status').filter({ hasText: /Stream: current.*sequence \d+/u }).waitFor({ timeout: 10_000 });
     const recoveredSecond = await streamSequence(second);
     assert(recoveredSecond >= resumedSecond);
     await waitForStreamAtLeast(first, recoveredSecond);
@@ -1158,7 +1158,9 @@ async function exerciseOperationsStream(page) {
 }
 
 async function streamSequence(widget) {
-    const status = await widget.getByRole('status').filter({ hasText: /Stream:/u }).innerText();
+    const current = widget.getByRole('status').filter({ hasText: /Stream: current.*sequence \d+/u });
+    await current.waitFor({ timeout: 15_000 });
+    const status = await current.innerText();
     const match = /sequence (\d+)/u.exec(status);
     assert(match, `Missing operations stream sequence in: ${status}`);
     return BigInt(match[1]);
