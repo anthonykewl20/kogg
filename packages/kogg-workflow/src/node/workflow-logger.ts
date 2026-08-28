@@ -24,6 +24,9 @@ type Fields = {
   'executor.catalog.verification.started': Record<string, never>;
   'executor.catalog.verification.completed': { contractCount: number; bindingCount: number };
   'executor.catalog.verification.refused': { safeCode: 'WORKFLOW_EXECUTOR_INCOMPATIBLE'; errorType: string };
+  'anchor.execution.started': { runId: string; anchor: string; ordinal: number };
+  'anchor.execution.completed': { runId: string; anchor: string; ordinal: number; safeCode: 'WORKFLOW_OK' };
+  'anchor.execution.refused': { runId: string; anchor: string; ordinal: number; safeCode: WorkflowSafeCode; residualProcessCount: number };
   'approval.waiting': { runId: string; nodeId: string; safeCode: 'WORKFLOW_APPROVAL_REQUIRED' };
   'approval.review.requested': { requestId: string; runId: string; nodeId: string };
   'approval.review.completed': { requestId: string; runId: string; nodeId: string };
@@ -70,6 +73,9 @@ export function workflowLog<K extends keyof Fields>(event: K, fields: Fields[K])
   else if (event === 'executor.catalog.verification.started') console.info('[kogg:workflow:executor] executor.catalog.verification.started', fields);
   else if (event === 'executor.catalog.verification.completed') console.info('[kogg:workflow:executor] executor.catalog.verification.completed', fields);
   else if (event === 'executor.catalog.verification.refused') console.warn('[kogg:workflow:executor] executor.catalog.verification.refused', fields);
+  else if (event === 'anchor.execution.started') console.info('[kogg:workflow:engine] anchor.execution.started', fields);
+  else if (event === 'anchor.execution.completed') console.info('[kogg:workflow:engine] anchor.execution.completed', fields);
+  else if (event === 'anchor.execution.refused') console.warn('[kogg:workflow:engine] anchor.execution.refused', fields);
   else if (event === 'approval.waiting') console.info('[kogg:workflow:engine] approval.waiting', fields);
   else if (event === 'approval.review.requested') console.info('[kogg:workflow:engine] approval.review.requested', fields);
   else if (event === 'approval.review.completed') console.info('[kogg:workflow:engine] approval.review.completed', fields);
