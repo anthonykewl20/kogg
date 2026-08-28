@@ -56,6 +56,7 @@ export class CodexProcessHost {
   start(onFault: (code: 'CODEX_HOST_EXITED') => void | Promise<void>): Promise<Pick<CodexOwnedHost, 'stdin' | 'stdout' | 'stderr'>> {
     if (this.started || typeof onFault !== 'function') return Promise.reject(new CodexProcessHostFault('CODEX_PROCESS_START_FAILED')); this.started = true; this.onFault = onFault; return this.startOnce();
   }
+  revokeCredentials(): Promise<void> { return this.input.credentials.revoke(); }
   terminateOwnedHost(): Promise<void> { return this.terminating ??= this.terminateOnce(); }
   async enumerateResiduals(): Promise<number> {
     const count = await bounded(this.input.owner.enumerateResiduals(this.ownerIdentity()), this.cleanupTimeout()); if (!Number.isSafeInteger(count) || count < 0) throw new CodexProcessHostFault('CODEX_CLEANUP_FAILED');
@@ -72,7 +73,7 @@ export class CodexProcessHost {
       const code = error instanceof HostTimeout ? 'CODEX_SPAWN_TIMEOUT' : error instanceof CodexCredentialFault ? error.code : error instanceof CodexProcessHostFault ? error.code : 'CODEX_PROCESS_START_FAILED'; if (error instanceof HostTimeout) codexLog('timeout.expired', { attemptId: this.input.attempt.attemptId, deadlineClass: 'spawn', generation: 1, configuredMs: this.spawnTimeout() }); throw await this.failStart(code);
     }
   }
-  private async terminateOnce(): Promise<void> { this.expectedExit = true; let failure: unknown; try { await this.input.credentials.revoke(); } catch (error) { /* observability-exempt: Credential revocation emitted its closed failure; owned process termination remains mandatory. */ failure = error; } try { await bounded(this.input.owner.terminate(this.ownerIdentity()), this.cleanupTimeout()); if (this.exitMonitor) await bounded(this.exitMonitor, this.cleanupTimeout()); } catch (error) { /* observability-exempt: Owner errors are discarded behind the closed cleanup failure after revocation was attempted. */ failure ??= error; } if (failure) throw new CodexProcessHostFault('CODEX_CLEANUP_FAILED'); }
+  private async terminateOnce(): Promise<void> { this.expectedExit = true; let failure: unknown; try { await this.revokeCredentials(); } catch (error) { /* observability-exempt: Credential revocation emitted its closed failure; owned process termination remains mandatory. */ failure = error; } try { await bounded(this.input.owner.terminate(this.ownerIdentity()), this.cleanupTimeout()); if (this.exitMonitor) await bounded(this.exitMonitor, this.cleanupTimeout()); } catch (error) { /* observability-exempt: Owner errors are discarded behind the closed cleanup failure after revocation was attempted. */ failure ??= error; } if (failure) throw new CodexProcessHostFault('CODEX_CLEANUP_FAILED'); }
   private async monitor(host: CodexOwnedHost): Promise<void> {
     let exitClass: 'zero' | 'nonzero' | 'signal'; try { ({ exitClass } = await host.closed); } catch { // observability-exempt: A rejected close observation is safely classified as signal; external enumeration remains authoritative.
       exitClass = 'signal'; }

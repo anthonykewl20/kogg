@@ -16,6 +16,7 @@ const MAX_START_MS = 60_000; const MAX_HANDSHAKE_MS = 30_000; const MAX_INTERRUP
 export interface CodexLiveSessionHost {
   readonly processId: string;
   start(): Promise<{ readonly stdin: Writable; readonly stdout: Readable; readonly stderr: Readable }>;
+  revokeCredentials(): Promise<void>;
   terminateOwnedHost(): Promise<void>;
   enumerateResiduals(): Promise<number>;
 }
@@ -25,7 +26,7 @@ export interface CodexLiveSessionInput {
   readonly initializeParams: Readonly<Record<string, unknown>>; readonly initializedParams?: Readonly<Record<string, unknown>>;
   readonly threadParams: Readonly<Record<string, unknown>>; readonly turnParams: Readonly<Record<string, unknown>>;
   readonly attestation: CodexSessionAttestation;
-  readonly activateCredentials: (processRegistrationId: string) => void | Promise<void>; readonly revokeCredentials: () => void | Promise<void>; readonly onObservation: (sequence: number, observation: CodexSafeObservation) => void;
+  readonly onObservation: (sequence: number, observation: CodexSafeObservation) => void;
   readonly onFault: (code: CodexSafeCode) => void | Promise<void>; readonly initializeTimeoutMs?: number; readonly threadTimeoutMs?: number; readonly startTimeoutMs?: number; readonly interruptTimeoutMs?: number; readonly cleanupTimeoutMs?: number; readonly resourceCount?: number;
 }
 export class CodexLiveSessionFault extends Error { constructor(readonly code: CodexSafeCode, readonly cleanup: CodexCleanupResult) { super(code); } }
@@ -35,12 +36,12 @@ export class CodexLiveSession {
   private readonly cleanupCoordinator: CodexSessionCleanupCoordinator;
   constructor(private readonly input: CodexLiveSessionInput) {
     validate(input); this.cleanupCoordinator = new CodexSessionCleanupCoordinator({ attemptId: input.attemptId, operationId: input.operationId, processId: input.host.processId, resourceCount: input.resourceCount ?? 5, stageTimeoutMs: input.cleanupTimeoutMs,
-      boundary: { closeContentInput: () => this.client?.closeContentInput(), revokeCredentials: async () => input.revokeCredentials(), interruptTurn: () => this.interrupt(), settleProtocol: () => this.settleProtocol(), terminateOwnedHost: () => input.host.terminateOwnedHost(), enumerateResiduals: () => this.enumerate() } });
+      boundary: { closeContentInput: () => this.client?.closeContentInput(), revokeCredentials: () => input.host.revokeCredentials(), interruptTurn: () => this.interrupt(), settleProtocol: () => this.settleProtocol(), terminateOwnedHost: () => input.host.terminateOwnedHost(), enumerateResiduals: () => this.enumerate() } });
   }
   async start(): Promise<void> {
     if (this.started) throw new Error('Codex live session already started'); this.started = true; codexLog('session.start.requested', this.fields());
     try {
-      await this.input.activateCredentials(this.input.host.processId); const stdio = await this.input.host.start(); this.stdin = stdio.stdin;
+      const stdio = await this.input.host.start(); this.stdin = stdio.stdin;
       let active!: () => void; const turnActive = new Promise<void>(resolve => { active = resolve; });
       this.client = this.input.createClient(stdio.stdin, (sequence, observation) => { if (observation.kind === 'notification' && observation.lifecycle === 'turn-started') active(); if (observation.kind === 'notification' && observation.lifecycle === 'turn-completed') this.cleanupCoordinator.observeTerminal('CODEX_OK'); this.input.onObservation(sequence, observation); });
       this.draining = new CodexStdioDrainer(this.client, async code => { this.cleanupCoordinator.observeTerminal(code); await this.safeFault(code); }).run(stdio.stdout, stdio.stderr);
