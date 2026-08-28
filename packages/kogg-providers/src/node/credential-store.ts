@@ -27,7 +27,7 @@ function splitRecordKey(key: string): [string, string] {
 
 @injectable()
 export class ElectronCredentialStore implements CredentialStore {
-    private readonly service = 'Kogg AI Providers';
+    private readonly service = electronCredentialService();
 
     async set(provider: string, account: string, secret: string): Promise<void> {
         await keytar.setPassword(this.service, recordKey(provider, account), secret);
@@ -79,6 +79,11 @@ export class ElectronCredentialStore implements CredentialStore {
     private metadataPath(): string {
         return path.join(stateRoot(), 'credentials', 'electron-metadata.json');
     }
+}
+
+export function electronCredentialService(): string {
+    const isolated = process.env.KOGG_E2E_CREDENTIAL_SERVICE;
+    return isolated && /^Kogg AI Providers E2E [0-9a-f]{32}$/u.test(isolated) ? isolated : 'Kogg AI Providers';
 }
 
 @injectable()

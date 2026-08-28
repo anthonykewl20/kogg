@@ -10,6 +10,7 @@ import { fileURLToPath } from 'node:url';
 import { _electron as electron } from 'playwright';
 
 const require = createRequire(import.meta.url);
+const keytar = require('keytar');
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const temporary = await mkdtemp(path.join(os.tmpdir(), 'kogg-electron-e2e-'));
 const workspace = path.join(temporary, 'workspace');
@@ -19,6 +20,7 @@ const registryUrl = `http://127.0.0.1:${registryPort}`;
 const results = path.join(root, 'test-results', 'electron');
 const logs = [];
 const providerSecret = randomBytes(24).toString('base64url');
+const credentialService = `Kogg AI Providers E2E ${randomBytes(16).toString('hex')}`;
 let registry;
 let application;
 
@@ -61,6 +63,7 @@ try {
             KOGG_STATE_DIR: path.join(temporary, 'state'),
             THEIA_CONFIG_DIR: path.join(temporary, 'state', 'config'),
             KOGG_REGISTRY_URL: registryUrl,
+            KOGG_E2E_CREDENTIAL_SERVICE: credentialService,
             THEIA_ELECTRON_DISABLE_NATIVE_ELEMENTS: '1'
         },
         timeout: 30_000
@@ -220,6 +223,7 @@ try {
         }
     }
     await stop(registry);
+    await keytar.deletePassword(credentialService, 'openai:default').catch(() => undefined);
     await rm(temporary, { recursive: true, force: true });
 }
 
