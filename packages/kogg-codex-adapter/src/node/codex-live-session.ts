@@ -6,6 +6,7 @@ import { CodexCredentialFault } from './codex-credential-reservation';
 import type { CodexSafeObservation } from './codex-protocol-core';
 import { CodexProtocolFault } from './codex-protocol-core';
 import { CodexProcessHostFault } from './codex-process-host';
+import { CodexSessionAttestation, CodexSessionAttestationFault } from './codex-session-attestation';
 import { CodexSessionCleanupCoordinator, type CodexCleanupResult } from './codex-session-cleanup';
 import { CodexStdioDrainer } from './codex-stdio-drainer';
 
@@ -23,6 +24,7 @@ export interface CodexLiveSessionInput {
   readonly createClient: (stdin: Writable, onObservation: (sequence: number, observation: CodexSafeObservation) => void) => CodexProtocolClient;
   readonly initializeParams: Readonly<Record<string, unknown>>; readonly initializedParams?: Readonly<Record<string, unknown>>;
   readonly threadParams: Readonly<Record<string, unknown>>; readonly turnParams: Readonly<Record<string, unknown>>;
+  readonly attestation: CodexSessionAttestation;
   readonly activateCredentials: (processRegistrationId: string) => void | Promise<void>; readonly revokeCredentials: () => void | Promise<void>; readonly onObservation: (sequence: number, observation: CodexSafeObservation) => void;
   readonly onFault: (code: CodexSafeCode) => void | Promise<void>; readonly startTimeoutMs?: number; readonly cleanupTimeoutMs?: number; readonly resourceCount?: number;
 }
@@ -42,7 +44,7 @@ export class CodexLiveSession {
       let active!: () => void; const turnActive = new Promise<void>(resolve => { active = resolve; });
       this.client = this.input.createClient(stdio.stdin, (sequence, observation) => { if (observation.kind === 'notification' && observation.lifecycle === 'turn-started') active(); if (observation.kind === 'notification' && observation.lifecycle === 'turn-completed') this.cleanupCoordinator.observeTerminal('CODEX_OK'); this.input.onObservation(sequence, observation); });
       this.draining = new CodexStdioDrainer(this.client, async code => { this.cleanupCoordinator.observeTerminal(code); await this.safeFault(code); }).run(stdio.stdout, stdio.stderr);
-      await this.client.request('initialize', this.input.initializeParams); await this.client.initialized(this.input.initializedParams); await this.client.request('thread/start', this.input.threadParams); await this.client.request('turn/start', this.input.turnParams); await bounded(turnActive, this.startTimeout());
+      const initialized = await this.client.request('initialize', this.input.initializeParams); this.input.attestation.verifyInitialize(initialized); await this.client.initialized(this.input.initializedParams); const thread = await this.client.request('thread/start', this.input.threadParams); this.input.attestation.verifyThread(thread); await this.client.request('turn/start', this.input.turnParams); await bounded(turnActive, this.startTimeout());
       codexLog('session.start.completed', this.fields());
     } catch (error) { // observability-exempt: The closed session failure and cleanup result below discard protocol params, stdio, owner errors, and private response details.
       const code = codeOf(error); this.cleanupCoordinator.observeTerminal(code); codexLog('session.start.failed', { ...this.fields(), safeCode: code }); const cleanup = await this.cleanupCoordinator.cleanup('failure', this.turnActive()); await this.safeFault(cleanup.terminalCode); throw new CodexLiveSessionFault(cleanup.terminalCode, cleanup);
@@ -65,6 +67,6 @@ export class CodexLiveSession {
   private startTimeout(): number { return this.input.startTimeoutMs ?? MAX_START_MS; }
 }
 function validate(input: CodexLiveSessionInput): void { for (const id of [input.attemptId, input.operationId, input.host.processId]) if (!id || id.length > 128) throw new Error('Invalid live session correlation'); const timeout = input.startTimeoutMs ?? MAX_START_MS; if (!Number.isSafeInteger(timeout) || timeout < 1 || timeout > MAX_START_MS) throw new Error('Invalid live session timeout'); }
-function codeOf(error: unknown): CodexSafeCode { return error instanceof StartTimeout ? 'CODEX_FIRST_ACTIVITY_TIMEOUT' : error instanceof CodexClientFault || error instanceof CodexCredentialFault || error instanceof CodexProtocolFault || error instanceof CodexProcessHostFault ? error.code : 'CODEX_INTERNAL_FAILURE'; }
+function codeOf(error: unknown): CodexSafeCode { return error instanceof StartTimeout ? 'CODEX_FIRST_ACTIVITY_TIMEOUT' : error instanceof CodexClientFault || error instanceof CodexCredentialFault || error instanceof CodexProtocolFault || error instanceof CodexProcessHostFault || error instanceof CodexSessionAttestationFault ? error.code : 'CODEX_INTERNAL_FAILURE'; }
 class StartTimeout extends Error {}
 async function bounded<T>(promise: Promise<T>, timeoutMs: number): Promise<T> { let timer: NodeJS.Timeout | undefined; try { return await Promise.race([promise, new Promise<never>((_resolve, reject) => { timer = setTimeout(() => reject(new StartTimeout()), timeoutMs); })]); } finally { if (timer) clearTimeout(timer); } }

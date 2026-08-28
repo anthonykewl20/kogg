@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'; import { PassThrough } from 'node:strea
 import { CodexLiveSession, CodexLiveSessionFault, type CodexLiveSessionHost } from './codex-live-session';
 import { CodexCredentialFault } from './codex-credential-reservation';
 import { CodexProtocolClient } from './codex-protocol-client'; import type { CodexFrameSchema, CodexValidatedFrame } from './codex-protocol-core';
+import { CodexSessionAttestation } from './codex-session-attestation';
 
 // diagnostic-coverage: codex.protocol, codex.credentials, codex.processes, codex.cleanup, codex.recovery, codex.source-maps
 const schema: CodexFrameSchema = { validate(frame) {
@@ -9,12 +10,12 @@ const schema: CodexFrameSchema = { validate(frame) {
   if (keys === 'lifecycle,method' && typeof frame.method === 'string') return { kind: 'notification', method: frame.method, lifecycle: frame.lifecycle } as CodexValidatedFrame;
   if (keys === 'id,lifecycle,method' && typeof frame.id === 'number' && frame.lifecycle === 'authority-request') return { kind: 'server-request', id: frame.id, method: String(frame.method), lifecycle: 'authority-request' }; return undefined;
 } };
-function fixture(sendTurnStarted = true, privatePrompt: unknown = true, activationFails = false) {
+function fixture(sendTurnStarted = true, privatePrompt: unknown = true, activationFails = false, observedModelId = 'gpt-5') {
   const stdin = new PassThrough(); const stdout = new PassThrough(); const stderr = new PassThrough(); const events: string[] = []; const observations: string[] = []; const faults: string[] = []; let buffer = '';
-  stdin.on('data', chunk => { buffer += Buffer.from(chunk).toString('utf8'); while (buffer.includes('\n')) { const end = buffer.indexOf('\n'); const frame = JSON.parse(buffer.slice(0, end)) as { id?: number; method?: string; error?: unknown }; buffer = buffer.slice(end + 1); if (frame.error && frame.id) { events.push(`authority.denied.${frame.id}`); continue; } if (frame.id && frame.method) stdout.write(`${JSON.stringify({ id: frame.id, outcome: 'result', result: { privateId: frame.method } })}\n`); if (frame.method === 'turn/start' && sendTurnStarted) stdout.write(`${JSON.stringify({ method: 'turn/started', lifecycle: 'turn-started' })}\n`); events.push(`request.${frame.method}`); } });
+  stdin.on('data', chunk => { buffer += Buffer.from(chunk).toString('utf8'); while (buffer.includes('\n')) { const end = buffer.indexOf('\n'); const frame = JSON.parse(buffer.slice(0, end)) as { id?: number; method?: string; error?: unknown }; buffer = buffer.slice(end + 1); if (frame.error && frame.id) { events.push(`authority.denied.${frame.id}`); continue; } if (frame.id && frame.method) stdout.write(`${JSON.stringify({ id: frame.id, outcome: 'result', result: resultFor(frame.method, observedModelId) })}\n`); if (frame.method === 'turn/start' && sendTurnStarted) stdout.write(`${JSON.stringify({ method: 'turn/started', lifecycle: 'turn-started' })}\n`); events.push(`request.${frame.method}`); } });
   let streamsClosed = false; const closeStreams = (): void => { if (streamsClosed) return; streamsClosed = true; stdout.end(); stderr.end(); };
   const host: CodexLiveSessionHost = { processId: 'process-1', start: async () => { events.push('host.started'); return { stdin, stdout, stderr }; }, terminateOwnedHost: async () => { events.push('host.terminated'); closeStreams(); }, enumerateResiduals: async () => { events.push('host.enumerated'); return 0; } };
-  let contentClosed = 0; const session = new CodexLiveSession({ attemptId: 'attempt-1', operationId: 'operation-1', host, initializeParams: {}, threadParams: { ephemeral: true }, turnParams: { privatePrompt }, activateCredentials: processId => { events.push(`credentials.activated.${processId}`); if (activationFails) throw new CodexCredentialFault('CODEX_CREDENTIAL_LEASE_REFUSED'); }, revokeCredentials: () => { events.push('credentials.revoked'); }, onObservation: (_sequence, observation) => { if (observation.kind === 'notification') observations.push(observation.lifecycle); }, onFault: code => { faults.push(code); }, startTimeoutMs: 20, cleanupTimeoutMs: 20,
+  let contentClosed = 0; const session = new CodexLiveSession({ attemptId: 'attempt-1', operationId: 'operation-1', host, initializeParams: {}, threadParams: { ephemeral: true }, turnParams: { privatePrompt }, attestation: new CodexSessionAttestation({ attemptId: 'attempt-1', providerId: 'openai', modelId: 'gpt-5', capabilityIds: ['provider-turn'], mapper: { initialize: value => value, thread: value => value } }), activateCredentials: processId => { events.push(`credentials.activated.${processId}`); if (activationFails) throw new CodexCredentialFault('CODEX_CREDENTIAL_LEASE_REFUSED'); }, revokeCredentials: () => { events.push('credentials.revoked'); }, onObservation: (_sequence, observation) => { if (observation.kind === 'notification') observations.push(observation.lifecycle); }, onFault: code => { faults.push(code); }, startTimeoutMs: 20, cleanupTimeoutMs: 20,
     createClient: (stream, onObservation) => new CodexProtocolClient({ attemptId: 'attempt-1', schema, acceptedInboundMethods: new Set(['turn/started', 'turn/completed', 'item/approval']), stdin: stream, content: { accept: async () => true, closeInput: () => { contentClosed++; }, drain: async () => true }, authorityDenial: id => ({ id, error: { code: -32600, message: 'Denied by Kogg policy' } }), onObservation }) });
   return { session, stdout, events, observations, faults, contentClosed: () => contentClosed };
 }
@@ -39,3 +40,11 @@ test('an authority request is denied before the live attempt fails and owned cle
   assert.deepEqual(value.faults, ['CODEX_AUTHORITY_REQUESTED']); assert.equal(value.events.filter(event => event === 'authority.denied.91').length, 1);
   assert.deepEqual(await value.session.cleanup(), { terminalCode: 'CODEX_AUTHORITY_REQUESTED', residualCount: 0, cleaned: true }); assert.equal(value.events.indexOf('authority.denied.91') < value.events.indexOf('credentials.revoked'), true); assert.deepEqual(value.events.slice(-2), ['host.terminated', 'host.enumerated']);
 });
+test('semantic reply mismatch fails before turn start and completes credential and process cleanup', async () => {
+  const value = fixture(true, true, false, 'unapproved-model'); await assert.rejects(value.session.start(), error => error instanceof CodexLiveSessionFault && error.code === 'CODEX_MODEL_MISMATCH' && error.cleanup.cleaned);
+  assert.equal(value.events.includes('request.turn/start'), false); assert.equal(value.events.indexOf('request.thread/start') < value.events.indexOf('credentials.revoked'), true); assert.deepEqual(value.events.slice(-2), ['host.terminated', 'host.enumerated']); assert.deepEqual(value.faults, ['CODEX_MODEL_MISMATCH']);
+});
+function resultFor(method: string, modelId: string): Record<string, unknown> {
+  if (method === 'initialize') return { schemaVersion: '1', externalSandbox: true, approvalPolicy: 'never', capabilityIds: ['provider-turn'] };
+  if (method === 'thread/start') return { schemaVersion: '1', ephemeral: true, providerId: 'openai', modelId, sandboxMode: 'workspace-write' }; return {};
+}
