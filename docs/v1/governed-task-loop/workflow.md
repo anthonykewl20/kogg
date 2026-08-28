@@ -287,6 +287,15 @@ valid compiled plan cannot rely on compile-time truth for mutable facts such as
 current verdict or branch head. The controlled-merge node revalidates all exact
 bindings immediately before mutation.
 
+The scheduler persists each externally owned evidence-admission, current-PASS,
+merge-preflight, and controlled-merge attempt before dispatch. Requests bind the
+immutable plan, task admission, repository, exact deterministic-check subject,
+and the preceding fact. Successful results must return a closed subject/fact
+binding plus a strictly increasing owner sequence; subject drift is forbidden
+until the controlled-merge result. Missing or malformed authority, refusal,
+sequence replay, deadline cancellation with residual work, and ambiguous
+restart state all fail closed and can never produce a completed run.
+
 ## Execution and durable recovery model
 
 The backend scheduler owns a durable state machine. A node attempt passes through
