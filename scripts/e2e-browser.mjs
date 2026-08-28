@@ -964,6 +964,9 @@ async function exerciseWorkflowEditor(page) {
     await widget.getByRole('button', { name: 'Add parallel fork and join' }).click();
     await widget.getByText('Two-branch parallel fork and exact join added; configure branches and validate before saving.').waitFor();
     assert.equal(await widget.locator('[data-workflow-node]').count(), 7);
+    await widget.getByRole('button', { name: 'Group selected with previous node' }).click();
+    await widget.getByText('Visual group created with two explicit members; execution graph is unchanged.').waitFor();
+    assert.match(await widget.getByLabel('Workflow visual groups').innerText(), /2 visible members/u);
     await widget.getByRole('button', { name: 'Validate workflow' }).click();
     await widget.getByText(/Workflow valid: 7 nodes and 7 edges/u).waitFor({ timeout: 10_000 });
     await widget.getByRole('button', { name: 'Save immutable version' }).click();

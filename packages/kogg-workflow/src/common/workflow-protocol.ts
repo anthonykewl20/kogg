@@ -55,11 +55,17 @@ export interface EditableWorkflowEdgeV1 {
   readonly targetNodeId: string;
   readonly targetPort: 'in';
 }
+export interface WorkflowGroupV1 {
+  readonly groupId: string;
+  readonly memberNodeIds: readonly string[];
+  readonly displayOrder: readonly string[];
+}
 export interface EditableWorkflowGraphV1 {
   readonly schemaVersion: '1';
   readonly projectId: string;
   readonly nodes: readonly EditableWorkflowNodeV1[];
   readonly edges: readonly EditableWorkflowEdgeV1[];
+  readonly groups?: readonly WorkflowGroupV1[];
 }
 export interface WorkflowValidationProjection {
   readonly valid: boolean;
