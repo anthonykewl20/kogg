@@ -390,7 +390,7 @@ async function exerciseElectronAgents(page, electronApplication, admissionId) {
     await agents.locator('section').filter({ hasText: 'Role Revisions' }).locator('li').filter({ hasText: /implementer · [0-9a-f-]{36}/u }).waitFor();
     await agents.getByLabel('Task admission ID').fill(admissionId);
     await agents.getByRole('button', { name: 'Confirm and start exact attempt' }).click();
-    await agents.getByText(/cleaned · AGENT_OK.*resources 0/iu).waitFor({ timeout: 15_000 });
+    await agents.getByText(/cleaned · AGENT_OK.*deadline policy interactive-v1.*activity 1.*usage complete\/provider-cumulative.*resources 0/iu).waitFor({ timeout: 15_000 });
 }
 
 async function exerciseElectronWorkflowEditor(page, electronApplication) {
