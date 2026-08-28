@@ -435,8 +435,11 @@ async function exerciseElectronWorkflowEditor(page, electronApplication) {
     await widget.getByRole('button', { name: 'Apply connection outcomes' }).click();
     await widget.getByText('Connection outcomes applied; validate before saving.').waitFor();
     assert.equal(await failureRoute.inputValue(), 'failure');
+    await widget.getByRole('button', { name: 'Add parallel fork and join' }).click();
+    await widget.getByText('Two-branch parallel fork and exact join added; configure branches and validate before saving.').waitFor();
+    assert.equal(await widget.locator('[data-workflow-node]').count(), 7);
     await widget.getByRole('button', { name: 'Validate workflow' }).click();
-    await widget.getByText(/Workflow valid: 3 nodes and 2 edges/u).waitFor({ timeout: 10_000 });
+    await widget.getByText(/Workflow valid: 7 nodes and 7 edges/u).waitFor({ timeout: 10_000 });
     await widget.getByRole('button', { name: 'Save immutable version' }).click();
     await widget.getByText('Workflow version 1 saved immutably.').waitFor({ timeout: 10_000 });
     await widget.getByRole('button', { name: 'Compile current version' }).click();
