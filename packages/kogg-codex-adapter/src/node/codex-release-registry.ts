@@ -12,7 +12,7 @@ import { codexLog } from './codex-logger';
 import { codexSourceMapDiagnostics } from './codex-source-map-diagnostics';
 
 // Logs through the closed [kogg:agents:codex-release] schema in codex-logger.
-// diagnostic-coverage: codex.release, codex.protocol, codex.processes, codex.cleanup, codex.recovery, codex.source-maps
+// diagnostic-coverage: codex.release, codex.protocol, codex.source-maps
 const ADAPTER_VERSION = '1.0.0'; const MAX_MANIFEST_BYTES = 64 * 1024; const MAX_VERSION_BYTES = 256; const MAX_BINARY_BYTES = 512 * 1024 * 1024; const MAX_SCHEMA_BYTES = 32 * 1024 * 1024; const MAX_METHOD_BYTES = 1024 * 1024; const MAX_HELPER_BYTES = 64 * 1024 * 1024;
 const SHA256 = /^[0-9a-f]{64}$/u; const SYMBOLIC = /^[a-z0-9][a-z0-9._:-]{0,127}$/u; const SEMVER = /^(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)(?:-[0-9A-Za-z.-]+)?$/u; const COMMIT = /^[0-9a-f]{40}$/u; const DECIMAL = /^(?:0|[1-9][0-9]*)$/u;
 const FIELDS = ['manifestVersion', 'releaseId', 'codexVersion', 'codexCommit', 'target', 'binarySha256', 'binarySize', 'appServerSchemaVersion', 'appServerSchemaSha256', 'acceptedMethodsSha256', 'linuxHelperSha256', 'adapterVersion', 'qualificationProfileId', 'signedAt', 'signatureKeyId', 'signature'] as const;
@@ -49,7 +49,7 @@ export class CodexReleaseRegistry implements BackendApplicationContribution {
         throw new ReleaseError('CODEX_SCHEMA_MISMATCH'); }
       await exactAsset(path.join(releaseRoot, 'linux-helper'), manifest.linuxHelperSha256, undefined, MAX_HELPER_BYTES, true, 'CODEX_BINARY_MISMATCH');
       await this.inspectVersion(binary, manifest.codexVersion);
-      this.projectionValue = { qualified: true, safeCode: 'CODEX_OK', adapterVersion: ADAPTER_VERSION, target: manifest.target, releasePresent: true, assetsVerified: true, protocolVerified: true, confinementVerified: false, credentialBrokerReady: false, processCount: 0, residualCount: 0, recoveryComplete: true, sourceMapsPresent: true };
+      this.projectionValue = { qualified: true, safeCode: 'CODEX_OK', adapterVersion: ADAPTER_VERSION, target: manifest.target, releasePresent: true, assetsVerified: true, protocolVerified: true, confinementVerified: false, credentialBrokerReady: false, sourceMapsPresent: true };
       codexLog('release.verification.completed', { releaseId: manifest.releaseId, target: manifest.target, adapterVersion: ADAPTER_VERSION });
     } catch (error) { // observability-exempt: fail emits the single closed release-verification failure for this classified boundary.
       this.fail(error instanceof ReleaseError ? error.code : 'CODEX_RELEASE_UNQUALIFIED'); }
@@ -76,7 +76,7 @@ export class CodexReleaseRegistry implements BackendApplicationContribution {
 
 class ReleaseError extends Error { constructor(readonly code: CodexSafeCode) { super(code); } }
 function platformCode(runtime: { readonly platform: NodeJS.Platform; readonly arch: string }): CodexSafeCode { return runtime.platform === 'linux' && ['x64', 'arm64'].includes(runtime.arch) ? 'CODEX_RELEASE_UNQUALIFIED' : 'CODEX_PLATFORM_UNSUPPORTED'; }
-function unqualified(safeCode: CodexSafeCode): CodexReleaseProjection { return { qualified: false, safeCode, adapterVersion: ADAPTER_VERSION, releasePresent: false, assetsVerified: false, protocolVerified: false, confinementVerified: false, credentialBrokerReady: false, processCount: 0, residualCount: 0, recoveryComplete: true, sourceMapsPresent: true }; }
+function unqualified(safeCode: CodexSafeCode): CodexReleaseProjection { return { qualified: false, safeCode, adapterVersion: ADAPTER_VERSION, releasePresent: false, assetsVerified: false, protocolVerified: false, confinementVerified: false, credentialBrokerReady: false, sourceMapsPresent: true }; }
 async function boundedFile(file: string, maximum: number, executable: boolean): Promise<Buffer> { const stat = await lstat(file); if (!stat.isFile() || stat.isSymbolicLink() || stat.size <= 0 || stat.size > maximum || !owned(stat.uid) || !secureMode(stat.mode, executable)) throw new ReleaseError('CODEX_RELEASE_UNQUALIFIED'); return readFile(file); }
 async function trustedDirectory(directory: string): Promise<void> { const stat = await lstat(directory); if (!stat.isDirectory() || stat.isSymbolicLink() || !owned(stat.uid) || !secureMode(stat.mode, false)) throw new ReleaseError('CODEX_RELEASE_UNQUALIFIED'); }
 async function exactAsset(file: string, digest: string, size: number | undefined, maximum: number, executable: boolean, code: CodexSafeCode): Promise<Buffer> { try { const stat = await lstat(file); if (!stat.isFile() || stat.isSymbolicLink() || stat.size <= 0 || stat.size > maximum || !owned(stat.uid) || !secureMode(stat.mode, executable) || (size !== undefined && stat.size !== size)) throw new Error(); const bytes = await readFile(file); if (createHash('sha256').update(bytes).digest('hex') !== digest) throw new Error(); return bytes; } catch { throw new ReleaseError(code); } }

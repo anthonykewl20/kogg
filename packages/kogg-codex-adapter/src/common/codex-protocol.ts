@@ -10,7 +10,8 @@ export type CodexSafeCode = 'CODEX_OK' | 'CODEX_RELEASE_UNQUALIFIED' | 'CODEX_MA
   | 'CODEX_PROVIDER_MISMATCH' | 'CODEX_MODEL_MISMATCH' | 'CODEX_SANDBOX_MISMATCH' | 'CODEX_CAPABILITY_UNEXPECTED'
   | 'CODEX_CREDENTIAL_LEASE_REFUSED' | 'CODEX_CREDENTIAL_REVOKED'
   | 'CODEX_TRANSPORT_LOST' | 'CODEX_HOST_EXITED' | 'CODEX_PROVIDER_REFUSED' | 'CODEX_CANCELLED'
-  | 'CODEX_SPAWN_TIMEOUT' | 'CODEX_INITIALIZE_TIMEOUT' | 'CODEX_THREAD_START_TIMEOUT' | 'CODEX_FIRST_ACTIVITY_TIMEOUT' | 'CODEX_ABSOLUTE_TIMEOUT' | 'CODEX_INTERRUPT_TIMEOUT' | 'CODEX_CLEANUP_TIMEOUT' | 'CODEX_CLEANUP_FAILED' | 'CODEX_INTERNAL_FAILURE';
+  | 'CODEX_SPAWN_TIMEOUT' | 'CODEX_INITIALIZE_TIMEOUT' | 'CODEX_THREAD_START_TIMEOUT' | 'CODEX_FIRST_ACTIVITY_TIMEOUT' | 'CODEX_ABSOLUTE_TIMEOUT' | 'CODEX_INTERRUPT_TIMEOUT' | 'CODEX_CLEANUP_TIMEOUT' | 'CODEX_CLEANUP_FAILED'
+  | 'CODEX_RECOVERY_REQUIRED' | 'CODEX_RECOVERED_AFTER_BACKEND_LOSS' | 'CODEX_UNVERIFIED_RESIDUAL' | 'CODEX_INTERNAL_FAILURE';
 
 export interface QualifiedCodexReleaseV1 {
   readonly manifestVersion: '1'; readonly releaseId: string; readonly codexVersion: string; readonly codexCommit: string;
@@ -22,6 +23,5 @@ export interface QualifiedCodexReleaseV1 {
 
 export interface CodexReleaseProjection {
   readonly qualified: boolean; readonly safeCode: CodexSafeCode; readonly adapterVersion: string; readonly target?: QualifiedCodexReleaseV1['target'];
-  readonly releasePresent: boolean; readonly assetsVerified: boolean; readonly protocolVerified: boolean; readonly confinementVerified: boolean; readonly credentialBrokerReady: boolean; readonly processCount: number;
-  readonly residualCount: number; readonly recoveryComplete: boolean; readonly sourceMapsPresent: boolean;
+  readonly releasePresent: boolean; readonly assetsVerified: boolean; readonly protocolVerified: boolean; readonly confinementVerified: boolean; readonly credentialBrokerReady: boolean; readonly sourceMapsPresent: boolean;
 }

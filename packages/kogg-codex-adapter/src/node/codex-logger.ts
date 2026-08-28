@@ -43,6 +43,9 @@ type EventFields = {
   'cleanup.started': { attemptId: string; operationId: string; processId: string; resourceCount: number };
   'cleanup.completed': { attemptId: string; operationId: string; processId: string; resourceCount: number; residualCount: number };
   'cleanup.failed': { attemptId: string; operationId: string; processId: string; resourceCount: number; residualCount: number; safeCode: CodexSafeCode };
+  'recovery.started': { recoveryBacklog: number };
+  'recovery.completed': { processCount: number; residualCount: number; recoveryBacklog: number };
+  'recovery.failed': { recoveryBacklog: number; residualCount: number; safeCode: CodexSafeCode };
   'diagnostics.failed': { errorType: string };
 };
 const ALLOWED: { [K in keyof EventFields]: readonly (keyof EventFields[K])[] } = {
@@ -66,6 +69,7 @@ const ALLOWED: { [K in keyof EventFields]: readonly (keyof EventFields[K])[] } =
   'broker.revoked': ['attemptId', 'providerId', 'modelId', 'requestCount'], 'broker.revoke.failed': ['attemptId', 'providerId', 'modelId', 'requestCount', 'safeCode'],
   'cleanup.started': ['attemptId', 'operationId', 'processId', 'resourceCount'], 'cleanup.completed': ['attemptId', 'operationId', 'processId', 'resourceCount', 'residualCount'],
   'cleanup.failed': ['attemptId', 'operationId', 'processId', 'resourceCount', 'residualCount', 'safeCode'],
+  'recovery.started': ['recoveryBacklog'], 'recovery.completed': ['processCount', 'residualCount', 'recoveryBacklog'], 'recovery.failed': ['recoveryBacklog', 'residualCount', 'safeCode'],
   'diagnostics.failed': ['errorType']
 };
 let violationCount = 0;
@@ -113,7 +117,10 @@ export function codexLog<K extends keyof EventFields>(event: K, fields: EventFie
   else if (event === 'cleanup.started') console.info('[kogg:agents:codex-supervision] cleanup.started', fields);
   else if (event === 'cleanup.completed') console.info('[kogg:agents:codex-supervision] cleanup.completed', fields);
   else if (event === 'cleanup.failed') console.error('[kogg:agents:codex-supervision] cleanup.failed', fields);
+  else if (event === 'recovery.started') console.info('[kogg:agents:codex-recovery] recovery.started', fields);
+  else if (event === 'recovery.completed') console.info('[kogg:agents:codex-recovery] recovery.completed', fields);
+  else if (event === 'recovery.failed') console.error('[kogg:agents:codex-recovery] recovery.failed', fields);
   else console.error('[kogg:agents:codex-release] diagnostics.failed', fields);
 }
 export function codexLoggingDiagnostics(): { readonly schemaCount: number; readonly violationCount: number } { return { schemaCount: Object.keys(ALLOWED).length, violationCount }; }
-function safeValue(_event: keyof EventFields, key: string, value: unknown): boolean { return ['pendingCount','deliveredCount','resourceCount','residualCount','requestCount','generation','configuredMs'].includes(key) ? typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 : typeof value === 'string' && value.length <= 128; }
+function safeValue(_event: keyof EventFields, key: string, value: unknown): boolean { return ['pendingCount','deliveredCount','resourceCount','residualCount','processCount','recoveryBacklog','requestCount','generation','configuredMs'].includes(key) ? typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 : typeof value === 'string' && value.length <= 128; }
