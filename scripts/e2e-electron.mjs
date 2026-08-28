@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { spawn, spawnSync } from 'node:child_process';
+import { spawnSync } from 'node:child_process';
 import { mkdtemp, mkdir, realpath, rm, writeFile } from 'node:fs/promises';
 import net from 'node:net';
 import os from 'node:os';
@@ -8,6 +8,7 @@ import { randomBytes } from 'node:crypto';
 import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
 import { _electron as electron } from 'playwright';
+import { HarnessProcessRegistry } from './e2e-process-registry.mjs';
 
 const require = createRequire(import.meta.url);
 const keytar = require('keytar');
@@ -19,6 +20,7 @@ const registryPort = await freePort();
 const registryUrl = `http://127.0.0.1:${registryPort}`;
 const results = path.join(root, 'test-results', 'electron');
 const logs = [];
+const processes = new HarnessProcessRegistry({ logger: line => logs.push(line) });
 const providerSecret = randomBytes(24).toString('base64url');
 const credentialService = `Kogg AI Providers E2E ${randomBytes(16).toString('hex')}`;
 let registry;
@@ -44,7 +46,7 @@ try {
     spawnSync('git', ['-C', workspace, 'commit', '-m', 'initial Electron fixture'], { stdio: 'ignore' });
     await writeFile(path.join(workspace, 'README.md'), '# Kogg Electron E2E\nHuman workflow change.\n');
     await initializeGitRepository(secondaryRepository, 'secondary Electron fixture');
-    registry = spawn(process.execPath, ['packages/kogg-marketplace/lib/node/dev-registry.js'], {
+    registry = processes.launch('signed-registry', process.execPath, ['packages/kogg-marketplace/lib/node/dev-registry.js'], {
         cwd: root,
         env: { ...process.env, KOGG_ROOT: root, KOGG_REGISTRY_PORT: String(registryPort) },
         stdio: ['ignore', 'pipe', 'pipe']
@@ -52,6 +54,7 @@ try {
     registry.stdout.on('data', chunk => logs.push(`[registry] ${chunk}`));
     registry.stderr.on('data', chunk => logs.push(`[registry:error] ${chunk}`));
     await waitFor(`${registryUrl}/health`);
+    processes.ready(registry);
 
     application = await electron.launch({
         executablePath: require('electron'),
@@ -68,6 +71,7 @@ try {
         },
         timeout: 30_000
     });
+    processes.adopt('electron-application', application.process());
     application.process().stdout?.on('data', chunk => logs.push(`[electron] ${chunk}`));
     application.process().stderr?.on('data', chunk => logs.push(`[electron:error] ${chunk}`));
     const argumentShape = await application.evaluate(({ app }) => process.argv.slice(1).map(argument => {
@@ -80,6 +84,7 @@ try {
     logs.push(`[electron] [kogg:e2e:electron] argv.shape ${JSON.stringify(argumentShape)}`);
     await application.firstWindow({ timeout: 30_000 });
     const page = await waitForKoggWindow(application);
+    processes.ready(application.process());
     page.on('console', entry => logs.push(`[frontend:${entry.type()}] ${entry.text()}`));
     page.on('pageerror', error => logs.push(`[frontend:error] ${error.stack ?? error.message}`));
     assert.match(await page.title(), /Kogg|workspace/iu);
@@ -222,7 +227,7 @@ try {
             application.process().kill();
         }
     }
-    await stop(registry);
+    await processes.cleanup();
     await keytar.deletePassword(credentialService, 'openai:default').catch(() => undefined);
     await rm(temporary, { recursive: true, force: true });
 }
@@ -764,23 +769,6 @@ async function waitFor(url) {
         await new Promise(resolve => setTimeout(resolve, 200));
     }
     throw new Error(`Timed out waiting for ${url}`);
-}
-
-async function stop(child) {
-    if (!child || child.exitCode !== null) return;
-    child.kill('SIGTERM');
-    await waitForExit(child, 5_000);
-    if (child.exitCode === null) {
-        child.kill('SIGKILL');
-        await waitForExit(child, 5_000);
-    }
-}
-
-async function waitForExit(child, timeout) {
-    const deadline = Date.now() + timeout;
-    while (child.exitCode === null && Date.now() < deadline) {
-        await new Promise(resolve => setTimeout(resolve, 50));
-    }
 }
 
 function freePort() {
