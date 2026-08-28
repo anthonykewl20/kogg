@@ -7,6 +7,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { chromium } from 'playwright';
 import { captureSafeFailureArtifacts } from './e2e-artifact-manager.mjs';
+import { HarnessAbsoluteDeadline } from './e2e-deadline.mjs';
 import { INCOMPLETE_DIAGNOSTICS, verifyProductDiagnostics } from './e2e-diagnostics.mjs';
 import { HarnessProcessRegistry } from './e2e-process-registry.mjs';
 import { HarnessRunManifest } from './e2e-run-manifest.mjs';
@@ -39,6 +40,9 @@ let backend;
 let browser;
 let completionMessage;
 let productDiagnostics = INCOMPLETE_DIAGNOSTICS;
+let settlement;
+const absoluteDeadline = new HarnessAbsoluteDeadline({ runId: run.runId, runtime: run.runtime, platform: run.platform, logger: line => logs.push(line), onTimeout: error => settleRun(error) });
+absoluteDeadline.start();
 
 try {
     await createWorkspace();
@@ -294,6 +298,12 @@ try {
 }
 
 async function settleRun(scenarioError) {
+    settlement ??= settleRunOnce(scenarioError);
+    return settlement;
+}
+
+async function settleRunOnce(scenarioError) {
+    absoluteDeadline.complete();
     let cleanupError; let artifactError; let artifacts = []; let verification = FAILED_VERIFICATION;
     const state = await run.read(); if (['completed','failed'].includes(state.state)) { if (scenarioError) throw scenarioError; return; }
     if (!scenarioError && productDiagnostics.coverage !== 'complete') scenarioError = safeDiagnosticsError();
@@ -311,7 +321,7 @@ async function settleRun(scenarioError) {
 
 async function completeEarly(page, message) { productDiagnostics = await captureProductDiagnostics(page); completionMessage = message; await settleRun(); process.exit(0); }
 function safeErrorType(error) { return error?.name === 'AssertionError' ? 'AssertionError' : error?.name === 'TimeoutError' ? 'TimeoutError' : 'Error'; }
-function safeScenarioCode(error) { return ['E2E_DIAGNOSTICS_INCOMPLETE','E2E_ORACLE_MISMATCH','E2E_SOURCE_MAP_MISSING'].includes(error?.message) ? error.message : 'E2E_SCENARIO_FAILED'; }
+function safeScenarioCode(error) { return ['E2E_ABSOLUTE_TIMEOUT','E2E_DIAGNOSTICS_INCOMPLETE','E2E_ORACLE_MISMATCH','E2E_SOURCE_MAP_MISSING'].includes(error?.message) ? error.message : 'E2E_SCENARIO_FAILED'; }
 function safeDiagnosticsError() { const error = new Error('E2E_DIAGNOSTICS_INCOMPLETE'); error.stack = error.message; return error; }
 
 function launchBrowser(authToken) {
