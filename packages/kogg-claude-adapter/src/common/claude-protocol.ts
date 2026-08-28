@@ -1,5 +1,5 @@
 // diagnostic-exempt: Closed Claude adapter declarations contain no operational behavior.
-export type ClaudeSafeCode = 'CLAUDE_OK' | 'CLAUDE_LEGAL_APPROVAL_REQUIRED' | 'CLAUDE_ARTIFACT_MISMATCH' | 'CLAUDE_CONFINEMENT_UNAVAILABLE' | 'CLAUDE_CREDENTIAL_BROKER_UNAVAILABLE' | 'CLAUDE_ATTEMPT_INVALID' | 'CLAUDE_RECOVERY_REQUIRED' | 'CLAUDE_UNVERIFIED_RESIDUAL' | 'CLAUDE_INTERNAL';
+export type ClaudeSafeCode = 'CLAUDE_OK' | 'CLAUDE_LEGAL_APPROVAL_REQUIRED' | 'CLAUDE_ARTIFACT_MISMATCH' | 'CLAUDE_CONFINEMENT_UNAVAILABLE' | 'CLAUDE_CREDENTIAL_BROKER_UNAVAILABLE' | 'CLAUDE_ATTEMPT_INVALID' | 'CLAUDE_INITIALIZATION_MISMATCH' | 'CLAUDE_PROTOCOL_OVERFLOW' | 'CLAUDE_PROTOCOL_INVALID' | 'CLAUDE_MODEL_MISMATCH' | 'CLAUDE_RECOVERY_REQUIRED' | 'CLAUDE_UNVERIFIED_RESIDUAL' | 'CLAUDE_INTERNAL';
 export interface ClaudeCommercialUseApprovalV1 {
   readonly schema: 'kogg.claude-commercial-use-approval/v1'; readonly packageName: '@anthropic-ai/claude-agent-sdk'; readonly packageVersion: '0.3.246';
   readonly npmIntegritySha512: 'FtR0HoHHNqeqJWjZN8qLUAzZVFUI9ztXYNPPwv98Ecmv9qq2QTauI8IzkY26CC0mleWAqb9RQEW2C0OtiUliug=='; readonly tarballSha1: '0009206e79ee0ae25f68ebb526584031cb5db048';
@@ -17,4 +17,5 @@ export interface GovernedClaudeAttemptV1 {
   readonly deadlines: { readonly spawnMs: 10000; readonly initializeMs: 30000; readonly firstProgressMs: 60000; readonly idleMs: 120000; readonly permissionDecisionMs: 60000; readonly interruptReceiptMs: 5000; readonly gracefulExitMs: 10000; readonly terminateMs: 5000; readonly killMs: 5000; readonly closeMs: 5000; readonly cgroupEmptyMs: 10000; readonly absoluteMs: number };
   readonly authorityDigest: string;
 }
+export interface ClaudeInitializationProjectionV1 { readonly model: string; readonly permissionMode: 'default'; readonly tools: readonly ['Bash','Edit','Glob','Grep','Read','Write']; readonly mcpServers: readonly []; readonly plugins: readonly []; readonly slashCommands: readonly []; readonly agents: readonly []; readonly accountOrganizationPresent: false; readonly cliVersion: string; }
 export interface ClaudeReleaseProjection { readonly legalApproved: boolean; readonly artifactVerified: boolean; readonly confinementVerified: boolean; readonly credentialBrokerReady: boolean; readonly sourceMapsPresent: boolean; readonly safeCode: ClaudeSafeCode; }
