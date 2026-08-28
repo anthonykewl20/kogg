@@ -414,11 +414,11 @@ async function exerciseElectronWorkflowEditor(page, electronApplication) {
     await configuration.getByRole('button', { name: 'Apply exact configuration' }).click();
     await widget.getByRole('button', { name: 'Configure research.agent on canvas' }).click(); configuration = widget.locator('[data-config]');
     await configuration.getByLabel('Role revision ID').fill('60000000-0000-4000-8000-000000000002'); await configuration.getByLabel('Provider ID').fill('kogg.fixture.read'); await configuration.getByLabel('Model ID').fill('fixture.research');
-    await configuration.getByLabel('Adapter key').fill('kogg.fixture'); await configuration.getByLabel('Adapter version').fill('1.0.0'); await configuration.getByLabel('Deadline policy').fill('research-v1'); await configuration.getByRole('button', { name: 'Apply exact configuration' }).click();
+    await configuration.getByLabel('Adapter key').fill('kogg.fixture'); await configuration.getByLabel('Adapter version').fill('1.0.0'); await configuration.getByLabel('Deadline policy').fill('research-v1'); await configuration.getByLabel('Maximum attempts').selectOption('2'); await configuration.getByLabel('Retry backoff').selectOption('1000'); await configuration.getByLabel('Retry side-effect policy').selectOption('fresh-authority'); await configuration.getByRole('button', { name: 'Apply exact configuration' }).click();
     await widget.getByRole('button', { name: 'Show structured outline' }).click();
     assert.equal(await widget.locator('[data-workflow-node]').count(), 3);
     assert.match(await widget.locator('[data-workflow-node]').nth(1).innerText(), /check\.deterministic/u);
-    configuration = widget.locator('[data-config]'); assert.equal(await configuration.getByLabel('Role revision ID').inputValue(), '60000000-0000-4000-8000-000000000002');
+    configuration = widget.locator('[data-config]'); assert.equal(await configuration.getByLabel('Role revision ID').inputValue(), '60000000-0000-4000-8000-000000000002'); assert.equal(await configuration.getByLabel('Maximum attempts').inputValue(), '2'); assert.equal(await configuration.getByLabel('Retry backoff').inputValue(), '1000'); assert.equal(await configuration.getByLabel('Retry side-effect policy').inputValue(), 'fresh-authority');
     await widget.getByRole('button', { name: 'Disconnect connection 1' }).click();
     await widget.getByRole('button', { name: 'Disconnect connection 1' }).click();
     const connection = widget.locator('[data-connect]');
