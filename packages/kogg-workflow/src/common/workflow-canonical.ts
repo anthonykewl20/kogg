@@ -61,14 +61,21 @@ function decodeNode(input: unknown): EditableWorkflowNodeV1 {
 }
 
 function decodeConfiguration(input: unknown, kind: EditableWorkflowNodeV1['kind']): WorkflowNodeConfigurationV1 {
-  const required = ['schemaVersion','absoluteDeadlineMs','target','condition']; const optional = ['roleRevisionId','providerId','modelId','adapterKey','adapterVersion','deadlinePolicyId'];
+  const required = ['schemaVersion','absoluteDeadlineMs','target','condition']; const agent = ['roleRevisionId','providerId','modelId','adapterKey','adapterVersion','deadlinePolicyId']; const external = ['operationId','checkId','externalConfigurationDigest']; const optional = [...agent, ...external];
   if (!input || typeof input !== 'object' || Array.isArray(input)) fail('WORKFLOW_SCHEMA_INVALID'); const value = input as Record<string, unknown>; const keys = Object.keys(value);
   if (required.some(key => !keys.includes(key)) || keys.some(key => !required.includes(key) && !optional.includes(key))) fail('WORKFLOW_SCHEMA_INVALID');
   if (value.schemaVersion !== '1' || !Number.isSafeInteger(value.absoluteDeadlineMs) || Number(value.absoluteDeadlineMs) < 1_000 || !['project-read-only','private-worktree'].includes(String(value.target)) || !['always','prior-success','prior-failure'].includes(String(value.condition))) fail('WORKFLOW_SCHEMA_INVALID');
-  const bindingKeys = optional.filter(key => value[key] !== undefined); if (bindingKeys.length !== 0 && bindingKeys.length !== optional.length) fail('WORKFLOW_SCHEMA_INVALID');
-  if (bindingKeys.length) {
+  const agentKeys = agent.filter(key => value[key] !== undefined); if (agentKeys.length !== 0 && agentKeys.length !== agent.length) fail('WORKFLOW_SCHEMA_INVALID');
+  if (agentKeys.length) {
     if (!String(kind).endsWith('.agent')) fail('WORKFLOW_ROLE_SEPARATION');
     if (typeof value.roleRevisionId !== 'string' || !UUID.test(value.roleRevisionId) || !['providerId','modelId','adapterKey','deadlinePolicyId'].every(key => typeof value[key] === 'string' && SYMBOLIC.test(String(value[key]))) || typeof value.adapterVersion !== 'string' || !SEMVER.test(value.adapterVersion)) fail('WORKFLOW_SCHEMA_INVALID');
+  }
+  const externalKeys = external.filter(key => value[key] !== undefined);
+  if (externalKeys.length) {
+    if (String(kind).endsWith('.agent') || !['tool.git','tool.build','check.deterministic'].includes(kind) || typeof value.externalConfigurationDigest !== 'string' || !DIGEST.test(value.externalConfigurationDigest)) fail('WORKFLOW_SCHEMA_INVALID');
+    if (kind === 'check.deterministic') {
+      if (externalKeys.length !== 2 || typeof value.checkId !== 'string' || !SYMBOLIC.test(value.checkId) || value.operationId !== undefined) fail('WORKFLOW_SCHEMA_INVALID');
+    } else if (externalKeys.length !== 2 || typeof value.operationId !== 'string' || !SYMBOLIC.test(value.operationId) || value.checkId !== undefined) fail('WORKFLOW_SCHEMA_INVALID');
   }
   if (kind === 'control.condition' ? value.condition === 'always' : value.condition !== 'always') fail('WORKFLOW_CONDITION_INVALID');
   return value as unknown as WorkflowNodeConfigurationV1;

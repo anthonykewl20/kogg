@@ -16,6 +16,7 @@ export class WorkflowCompiler {
   executeControl(request: Parameters<WorkflowNodeCatalog['executeControl']>[0]) { return this.catalog.executeControl(request); }
   executeTaskApproval(request: Parameters<WorkflowNodeCatalog['executeTaskApproval']>[0]) { return this.catalog.executeTaskApproval(request); }
   executeContinuation(request: Parameters<WorkflowNodeCatalog['executeContinuation']>[0]) { return this.catalog.executeContinuation(request); }
+  executeExternal(request: Parameters<WorkflowNodeCatalog['executeExternal']>[0]) { return this.catalog.executeExternal(request); }
   validate(input: unknown): WorkflowValidationProjection {
     try { const graph = decodeGraph(input); const checked = this.check(graph); return { valid: true, code: 'WORKFLOW_OK', graphDigest: workflowDigest('template', graph), ...checked }; }
     catch (error) { /* observability-exempt: the RPC-owning registry logs the sanitized validation outcome; this pure projection retains no input. */ return { valid: false, code: error instanceof WorkflowValidationError ? error.code : 'WORKFLOW_INTERNAL', nodeCount: count(input, 'nodes'), edgeCount: count(input, 'edges'), rootCount: 0 }; }
@@ -51,6 +52,7 @@ export class WorkflowCompiler {
     const edgeIds = new Set<string>(); const incoming = new Map<string, number>(); const outgoing = new Map<string, string[]>();
     for (const node of graph.nodes) {
       const entry = this.catalog.entry(node.kind); const allowed = new Set<WorkflowAuthorityEffect>(entry.grantCeiling); if (node.requestedEffects.some(effect => !allowed.has(effect))) throw new WorkflowValidationError('WORKFLOW_AUTHORITY_EXPANSION');
+      if (entry.executor.status === 'available' && ['tool.git','tool.build','check.deterministic'].includes(node.kind) && !this.catalog.externalConfigurationAvailable(node)) throw new WorkflowValidationError('WORKFLOW_EXECUTOR_INCOMPATIBLE');
       if (node.configuration && node.configuration.absoluteDeadlineMs > entry.absoluteDeadlineMs) throw new WorkflowValidationError('WORKFLOW_DEADLINE');
       if (node.configuration?.target === 'project-read-only' && node.requestedEffects.includes('mutate-private-repository')) throw new WorkflowValidationError('WORKFLOW_TARGET_MISMATCH');
       if (node.retry.maxAttempts > 1 && node.retry.sideEffectPolicy === 'none' && node.requestedEffects.some(effect => effect !== 'read-repository')) throw new WorkflowValidationError('WORKFLOW_AUTHORITY_EXPANSION');
