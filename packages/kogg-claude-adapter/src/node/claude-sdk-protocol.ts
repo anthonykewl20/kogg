@@ -26,7 +26,7 @@ export class ClaudeSdkProtocolGate {
   }
   async drain(): Promise<void> { await this.tail; this.guard(); }
   end(): void { this.guard(); if (this.phaseValue !== 'terminal-observed' && this.phaseValue !== 'cleaning') this.fault('CLAUDE_PROTOCOL_INVALID'); }
-  beginCleanup(): void { if (this.failed) return; this.phaseValue = 'cleaning'; claudeLog('protocol.phase.changed', { attemptId: this.attemptId, phase: this.phaseValue }); }
+  beginCleanup(): void { if (this.failed || this.phaseValue === 'cleaning') return; this.phaseValue = 'cleaning'; claudeLog('protocol.phase.changed', { attemptId: this.attemptId, phase: this.phaseValue }); }
   private async process(message: unknown): Promise<ClaudeSafeProtocolObservation> {
     this.guard(); if (!record(message) || typeof message.type !== 'string') this.fault('CLAUDE_PROTOCOL_INVALID');
     if (message.type === 'system') return this.initialize(message);
