@@ -190,8 +190,11 @@ for Kogg. Function nodes, mutable payloads, runtime module installation, and
 partial live deploy can introduce code and authority outside a closed catalog.
 Kogg does not mutate a running graph. Saving creates a new immutable version;
 starting binds that version; editing produces a new draft/version for a future
-run. A reusable group is a versioned template reference expanded and validated
-by the compiler, never an opaque runtime subflow.
+run. In V1, a group is an explicit visual/organizational record whose complete
+member graph is stored in that immutable template version and validated by the
+compiler. It is never an opaque runtime subflow. Cross-template composition is
+outside the V1 schema; adding it later requires a separately specified,
+version-bound reference and compile-time expansion contract.
 
 ### Ranex: external trust and evidence authority
 
