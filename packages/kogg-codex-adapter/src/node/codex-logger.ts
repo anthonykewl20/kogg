@@ -27,6 +27,14 @@ type EventFields = {
   'session.start.requested': { attemptId: string; operationId: string; processId: string };
   'session.start.completed': { attemptId: string; operationId: string; processId: string };
   'session.start.failed': { attemptId: string; operationId: string; processId: string; safeCode: CodexSafeCode };
+  'broker.reservation.requested': { attemptId: string; providerId: string; modelId: string; requestCount: number };
+  'broker.reservation.completed': { attemptId: string; providerId: string; modelId: string; requestCount: number };
+  'broker.reservation.failed': { attemptId: string; providerId: string; modelId: string; requestCount: number; safeCode: CodexSafeCode };
+  'broker.activation.requested': { attemptId: string; providerId: string; modelId: string; requestCount: number; processId: string };
+  'broker.activation.completed': { attemptId: string; providerId: string; modelId: string; requestCount: number; processId: string };
+  'broker.activation.failed': { attemptId: string; providerId: string; modelId: string; requestCount: number; processId: string; safeCode: CodexSafeCode };
+  'broker.revoked': { attemptId: string; providerId: string; modelId: string; requestCount: number };
+  'broker.revoke.failed': { attemptId: string; providerId: string; modelId: string; requestCount: number; safeCode: CodexSafeCode };
   'cleanup.started': { attemptId: string; operationId: string; processId: string; resourceCount: number };
   'cleanup.completed': { attemptId: string; operationId: string; processId: string; resourceCount: number; residualCount: number };
   'cleanup.failed': { attemptId: string; operationId: string; processId: string; resourceCount: number; residualCount: number; safeCode: CodexSafeCode };
@@ -45,6 +53,9 @@ const ALLOWED: { [K in keyof EventFields]: readonly (keyof EventFields[K])[] } =
   'host.start.requested': ['attemptId', 'operationId', 'processId'], 'host.start.completed': ['attemptId', 'operationId', 'processId'],
   'host.exited': ['attemptId', 'operationId', 'processId', 'exitClass'], 'host.failed': ['attemptId', 'operationId', 'processId', 'safeCode'],
   'session.start.requested': ['attemptId', 'operationId', 'processId'], 'session.start.completed': ['attemptId', 'operationId', 'processId'], 'session.start.failed': ['attemptId', 'operationId', 'processId', 'safeCode'],
+  'broker.reservation.requested': ['attemptId', 'providerId', 'modelId', 'requestCount'], 'broker.reservation.completed': ['attemptId', 'providerId', 'modelId', 'requestCount'], 'broker.reservation.failed': ['attemptId', 'providerId', 'modelId', 'requestCount', 'safeCode'],
+  'broker.activation.requested': ['attemptId', 'providerId', 'modelId', 'requestCount', 'processId'], 'broker.activation.completed': ['attemptId', 'providerId', 'modelId', 'requestCount', 'processId'], 'broker.activation.failed': ['attemptId', 'providerId', 'modelId', 'requestCount', 'processId', 'safeCode'],
+  'broker.revoked': ['attemptId', 'providerId', 'modelId', 'requestCount'], 'broker.revoke.failed': ['attemptId', 'providerId', 'modelId', 'requestCount', 'safeCode'],
   'cleanup.started': ['attemptId', 'operationId', 'processId', 'resourceCount'], 'cleanup.completed': ['attemptId', 'operationId', 'processId', 'resourceCount', 'residualCount'],
   'cleanup.failed': ['attemptId', 'operationId', 'processId', 'resourceCount', 'residualCount', 'safeCode'],
   'diagnostics.failed': ['errorType']
@@ -78,10 +89,18 @@ export function codexLog<K extends keyof EventFields>(event: K, fields: EventFie
   else if (event === 'session.start.requested') console.debug('[kogg:agents:codex-supervision] session.start.requested', fields);
   else if (event === 'session.start.completed') console.info('[kogg:agents:codex-supervision] session.start.completed', fields);
   else if (event === 'session.start.failed') console.error('[kogg:agents:codex-supervision] session.start.failed', fields);
+  else if (event === 'broker.reservation.requested') console.debug('[kogg:agents:codex-broker] broker.reservation.requested', fields);
+  else if (event === 'broker.reservation.completed') console.info('[kogg:agents:codex-broker] broker.reservation.completed', fields);
+  else if (event === 'broker.reservation.failed') console.error('[kogg:agents:codex-broker] broker.reservation.failed', fields);
+  else if (event === 'broker.activation.requested') console.debug('[kogg:agents:codex-broker] broker.activation.requested', fields);
+  else if (event === 'broker.activation.completed') console.info('[kogg:agents:codex-broker] broker.activation.completed', fields);
+  else if (event === 'broker.activation.failed') console.error('[kogg:agents:codex-broker] broker.activation.failed', fields);
+  else if (event === 'broker.revoked') console.info('[kogg:agents:codex-broker] broker.revoked', fields);
+  else if (event === 'broker.revoke.failed') console.error('[kogg:agents:codex-broker] broker.revoke.failed', fields);
   else if (event === 'cleanup.started') console.info('[kogg:agents:codex-supervision] cleanup.started', fields);
   else if (event === 'cleanup.completed') console.info('[kogg:agents:codex-supervision] cleanup.completed', fields);
   else if (event === 'cleanup.failed') console.error('[kogg:agents:codex-supervision] cleanup.failed', fields);
   else console.error('[kogg:agents:codex-release] diagnostics.failed', fields);
 }
 export function codexLoggingDiagnostics(): { readonly schemaCount: number; readonly violationCount: number } { return { schemaCount: Object.keys(ALLOWED).length, violationCount }; }
-function safeValue(_event: keyof EventFields, key: string, value: unknown): boolean { return ['pendingCount','deliveredCount','resourceCount','residualCount'].includes(key) ? typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 : typeof value === 'string' && value.length <= 128; }
+function safeValue(_event: keyof EventFields, key: string, value: unknown): boolean { return ['pendingCount','deliveredCount','resourceCount','residualCount','requestCount'].includes(key) ? typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 : typeof value === 'string' && value.length <= 128; }
