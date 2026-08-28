@@ -4,6 +4,7 @@ import { KoggOperationRegistry, type OperationRegistryApi } from '@kogg/operatio
 import { ExecutionAllocationRegistry } from './execution-allocation-registry';
 import { executionLoggingDiagnostics } from './execution-logger';
 import { ExecutionTargetRegistry } from './execution-target-registry';
+import { executionSourceMapDiagnostics } from './execution-source-map-diagnostics';
 
 // Every execution catalog check is returned even when inspection fails; absent production owners fail rather than disappear.
 // diagnostic-coverage: execution.target-qualification, execution.worktree-registry, execution.git-independence, execution.source-integrity, execution.process-cleanup, execution.capacity, execution.recovery, execution.retention, execution.source-maps
@@ -16,7 +17,7 @@ export class ExecutionDiagnosticContributor implements KoggDiagnosticContributor
     @inject(KoggOperationRegistry) private readonly operations: OperationRegistryApi) {}
   async diagnose(): Promise<readonly KoggDiagnosticCheck[]> {
     try {
-      const target = this.targets.projection(); const allocation = this.allocations.diagnostics(); const operation = this.operations.diagnostics(); const logging = executionLoggingDiagnostics();
+      const target = this.targets.projection(); const allocation = this.allocations.diagnostics(); const operation = this.operations.diagnostics(); const logging = executionLoggingDiagnostics(); const sourceMaps = executionSourceMapDiagnostics();
       const registryHealthy = allocation.integrity && allocation.foreignKeys && allocation.permissions
         && allocation.quarantinedCount === 0 && allocation.recoveryRequiredCount === 0 && allocation.cleanupFailureCount === 0
         && allocation.quarantinedQuotaProjectLeaseCount === 0 && allocation.loggingViolationCount === 0 && logging.violationCount === 0;
@@ -29,7 +30,7 @@ export class ExecutionDiagnosticContributor implements KoggDiagnosticContributor
         { id: 'execution.capacity', ...result(allocation.admission === 'enabled' && allocation.reservationCount < 64 && allocation.activeQuotaProjectLeaseCount < 64, 'Execution reservation and quota-project capacity is available.') },
         { id: 'execution.recovery', ...result(allocation.admission === 'enabled' && operation.recoveryComplete && operation.admission === 'enabled', 'Execution startup recovery is complete.') },
         { id: 'execution.retention', ...result(allocation.retentionViolationCount === 0, 'Every candidate cleanup transition agrees with its durable retention fact.') },
-        { id: 'execution.source-maps', ...result(target.sourceMapsPresent, target.sourceMapsPresent ? 'Execution backend source maps are present.' : 'Execution backend source maps are missing.') }
+        { id: 'execution.source-maps', ...result(target.sourceMapsPresent && sourceMaps.missingCount === 0, target.sourceMapsPresent && sourceMaps.missingCount === 0 ? 'Every execution allocation, Git, recovery, service, and browser failure boundary has a debugger source map.' : 'One or more execution backend or browser source maps are missing.'), details: { ...sourceMaps } }
       ];
     } catch (error) { console.error('[kogg:execution:target] diagnostics.failed', { errorType: error instanceof Error ? error.name : 'UnknownError' }); return EXECUTION_CHECKS.map(id => check(id, false, 'Execution diagnostics could not run.')); }
   }
