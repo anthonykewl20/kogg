@@ -9,6 +9,7 @@ import { chromium } from 'playwright';
 import { captureSafeFailureArtifacts } from './e2e-artifact-manager.mjs';
 import { HarnessProcessRegistry } from './e2e-process-registry.mjs';
 import { HarnessRunManifest } from './e2e-run-manifest.mjs';
+import { discover, platformCapabilities } from './e2e-readiness.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const resultRoot = path.join(root, 'test-results');
@@ -29,7 +30,7 @@ const masterKey = 'kogg-disposable-e2e-master-key';
 const providerSecret = 'kogg-disposable-provider-secret';
 const logs = [];
 const processes = new HarnessProcessRegistry({ logger: line => logs.push(line) });
-const run = await HarnessRunManifest.create({ root: resultRoot, runtime: 'browser', logger: line => logs.push(line) });
+const run = await HarnessRunManifest.create({ root: resultRoot, runtime: 'browser', capabilities: platformCapabilities('browser'), logger: line => logs.push(line) });
 await run.starting();
 let registry;
 let backend;
@@ -381,12 +382,7 @@ async function exerciseNodeDebug(page, configuration, expectedOutput) {
 }
 
 async function waitFor(url, expected = 200) {
-    const deadline = Date.now() + 30_000;
-    while (Date.now() < deadline) {
-        try { if ((await fetch(url, { redirect: 'manual' })).status === expected) return; } catch { /* retry */ }
-        await new Promise(resolve => setTimeout(resolve, 200));
-    }
-    throw new Error(`Timed out waiting for ${url}`);
+    await discover({ reason: 'fixture-readiness', runId: run.runId, runtime: run.runtime, platform: run.platform, logger: line => logs.push(line), probe: async () => (await fetch(url, { redirect: 'manual' })).status === expected });
 }
 
 async function openCommand(page, label) {

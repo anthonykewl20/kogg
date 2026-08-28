@@ -5,18 +5,21 @@ import path from 'node:path';
 const TRANSITIONS = { requested: ['starting'], starting: ['active','cleaning'], active: ['cleaning'], cleaning: ['completed','failed'], completed: [], failed: [] };
 const PLATFORMS = ['linux','macos','windows']; const RUNTIMES = ['browser','electron'];
 const FIXTURE_KINDS = ['browser-backend','electron-application','signed-registry']; const FIXTURE_STATES = ['started','ready','exited','cleaned','residual'];
+const CAPABILITY_NAMES = ['governed-generation','terminal-debug']; const CAPABILITY_STATUSES = ['available','pending-qualification','refusal-required','runtime-delegated'];
 const SAFE = /^[a-zA-Z0-9][a-zA-Z0-9._:-]{0,127}$/u; const SHA256 = /^[0-9a-f]{64}$/u;
 
 export class HarnessRunManifest {
     constructor(root, value, logger) { this.root = root; this.value = value; this.logger = logger; this.directory = path.join(root, value.runId, value.platform, value.runtime); }
 
-    static async create({ root, runtime, platform = platformName(), runId = randomUUID(), logger = () => undefined }) {
+    static async create({ root, runtime, capabilities, platform = platformName(), runId = randomUUID(), logger = () => undefined }) {
         if (typeof root !== 'string' || !uuid(runId) || !PLATFORMS.includes(platform) || !RUNTIMES.includes(runtime)) throw new Error('E2E_MANIFEST_INVALID');
-        const manifest = new HarnessRunManifest(root, { schemaVersion: 1, runId, platform, runtime, state: 'requested', fixtures: [], artifacts: [], harnessChecks: [], residualCount: 0, environment: { platform, runtime } }, logger);
+        const manifest = new HarnessRunManifest(root, { schemaVersion: 1, runId, platform, runtime, state: 'requested', capabilities: validateCapabilities(capabilities, platform, runtime), fixtures: [], artifacts: [], harnessChecks: [], residualCount: 0, environment: { platform, runtime } }, logger);
         await mkdir(manifest.directory, { recursive: true, mode: 0o700 }); await manifest.#write(); manifest.#log('run.requested'); return manifest;
     }
 
     get runId() { return this.value.runId; }
+    get platform() { return this.value.platform; }
+    get runtime() { return this.value.runtime; }
     async starting() { await this.#transition('starting'); this.#log('run.started'); }
     async active() { await this.#transition('active'); }
     async cleaning(fixtures) { const patch = { fixtures: validateFixtures(fixtures) }; if (this.value.state === 'cleaning') { this.value = { ...this.value, ...patch }; await this.#write(); return; } await this.#transition('cleaning', patch); this.#log('residual-check.started'); }
@@ -59,6 +62,16 @@ function validateFixtures(values) {
 function validateArtifacts(values) {
     if (!Array.isArray(values) || values.length > 16) throw new Error('E2E_MANIFEST_INVALID');
     return values.map(value => { const keys = Object.keys(value).sort().join(','); if (!value || !['digest,kind,status','kind,safeCode,status'].includes(keys) || !SAFE.test(value.kind) || !['retained','refused'].includes(value.status) || value.status === 'retained' && !SHA256.test(value.digest) || value.status === 'refused' && !SAFE.test(value.safeCode)) throw new Error('E2E_MANIFEST_INVALID'); return { ...value }; });
+}
+function validateCapabilities(values, platform, runtime) {
+    if (!Array.isArray(values) || values.length !== CAPABILITY_NAMES.length) throw new Error('E2E_MANIFEST_INVALID');
+    const result = values.map(value => { if (!value || Object.keys(value).sort().join(',') !== 'name,safeCode,status' || !CAPABILITY_NAMES.includes(value.name) || !CAPABILITY_STATUSES.includes(value.status) || !SAFE.test(value.safeCode)) throw new Error('E2E_MANIFEST_INVALID'); return { ...value }; });
+    if (new Set(result.map(value => value.name)).size !== CAPABILITY_NAMES.length) throw new Error('E2E_MANIFEST_INVALID');
+    const expected = {
+        'governed-generation': platform === 'linux' ? ['pending-qualification','E2E_CAPABILITY_PENDING'] : ['refusal-required','E2E_CAPABILITY_UNQUALIFIED'],
+        'terminal-debug': runtime === 'browser' && platform === 'windows' ? ['runtime-delegated','E2E_CAPABILITY_RUNTIME_DELEGATED'] : ['available','E2E_CAPABILITY_AVAILABLE']
+    };
+    if (result.some(value => value.status !== expected[value.name][0] || value.safeCode !== expected[value.name][1])) throw new Error('E2E_MANIFEST_INVALID'); return result;
 }
 function uuid(value) { return typeof value === 'string' && /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u.test(value); }
 function platformName() { return process.platform === 'darwin' ? 'macos' : process.platform === 'win32' ? 'windows' : 'linux'; }

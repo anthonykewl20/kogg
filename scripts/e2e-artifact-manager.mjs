@@ -2,8 +2,8 @@ import { createHash, randomUUID } from 'node:crypto';
 import { mkdir, rename, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 
-const EVENTS = new Set(['run.requested','run.started','run.completed','run.failed','residual-check.started','residual-check.completed','residual-check.failed','fixture.registered','fixture.started','fixture.ready','fixture.failed','fixture.cleanup.started','fixture.cleanup.completed','fixture.cleanup.failed']);
-const PAYLOAD_KEYS = new Set(['runId','platform','runtime','fixtureId','fixtureKind','safeCode','errorType','exitClass','forced','residualCount']);
+const EVENTS = new Set(['run.requested','run.started','run.completed','run.failed','residual-check.started','residual-check.completed','residual-check.failed','fixture.registered','fixture.started','fixture.ready','fixture.failed','fixture.cleanup.started','fixture.cleanup.completed','fixture.cleanup.failed','discovery.attempt','discovery.completed','discovery.failed']);
+const PAYLOAD_KEYS = new Set(['runId','platform','runtime','fixtureId','fixtureKind','safeCode','errorType','exitClass','forced','residualCount','reason','attempt']);
 const SAFE = /^[a-zA-Z0-9][a-zA-Z0-9._:-]{0,127}$/u;
 const UNSAFE = [
     /authorization|bearer|cookie|set-cookie/iu,
@@ -56,7 +56,7 @@ function closedLifecycle(lines) {
         if (!match || !EVENTS.has(match[1])) continue;
         let payload; try { payload = JSON.parse(match[2]); } catch { continue; }
         if (!payload || Array.isArray(payload) || Object.keys(payload).some(key => !PAYLOAD_KEYS.has(key))) continue;
-        if (Object.entries(payload).some(([key, value]) => key === 'forced' ? typeof value !== 'boolean' : key === 'residualCount' ? !Number.isSafeInteger(value) || value < 0 : typeof value !== 'string' || !SAFE.test(value))) continue;
+        if (Object.entries(payload).some(([key, value]) => key === 'forced' ? typeof value !== 'boolean' : key === 'residualCount' || key === 'attempt' ? !Number.isSafeInteger(value) || value < 0 : typeof value !== 'string' || !SAFE.test(value))) continue;
         result.push(`[kogg:e2e:harness] ${match[1]} ${JSON.stringify(payload)}`);
         if (result.length === 256) break;
     }

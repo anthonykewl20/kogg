@@ -11,11 +11,12 @@ test('retains only closed harness lifecycle facts and a safe atomic failure mani
         const value = await captureSafeFailureArtifacts({ root, runtime: 'browser', platform: 'linux', runId: '10000000-0000-4000-8000-000000000001', error: new Error('private bearer token=canary'), logger: line => logs.push(line), lifecycleLines: [
             '[backend] source code: private canary',
             '[kogg:e2e:harness] run.started {"runId":"10000000-0000-4000-8000-000000000001","platform":"linux","runtime":"browser"}',
+            '[kogg:e2e:harness] discovery.attempt {"reason":"fixture-readiness","attempt":2}',
             '[kogg:e2e:harness] fixture.registered {"fixtureId":"fixture-1","fixtureKind":"signed-registry"}',
             '[kogg:e2e:harness] fixture.cleanup.completed {"fixtureId":"fixture-1","fixtureKind":"signed-registry","exitClass":"signal","forced":false}'
         ] });
         const lifecycle = await readFile(path.join(value.directory, 'lifecycle.log'), 'utf8'); const failure = await readFile(path.join(value.directory, 'failure.json'), 'utf8');
-        assert.match(lifecycle, /run\.started/u); assert.match(lifecycle, /fixture\.cleanup\.completed/u); assert.doesNotMatch(`${lifecycle}\n${failure}`, /private|bearer|token=|source code/iu);
+        assert.match(lifecycle, /run\.started/u); assert.match(lifecycle, /discovery\.attempt.*"attempt":2/u); assert.match(lifecycle, /fixture\.cleanup\.completed/u); assert.doesNotMatch(`${lifecycle}\n${failure}`, /private|bearer|token=|source code/iu);
         assert.match(failure, /E2E_ARTIFACT_CONTENT_BEARING/u); assert.deepEqual(logs.map(line => line.match(/artifact\.[a-z.]+/u)?.[0]), ['artifact.capture.started','artifact.capture.completed']);
     } finally { await rm(root, { recursive: true, force: true }); }
 });
