@@ -7,6 +7,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { chromium } from 'playwright';
 import { captureSafeFailureArtifacts } from './e2e-artifact-manager.mjs';
+import { INCOMPLETE_DIAGNOSTICS, verifyProductDiagnostics } from './e2e-diagnostics.mjs';
 import { HarnessProcessRegistry } from './e2e-process-registry.mjs';
 import { HarnessRunManifest } from './e2e-run-manifest.mjs';
 import { discover, platformCapabilities, selectedScenario } from './e2e-readiness.mjs';
@@ -37,6 +38,7 @@ let registry;
 let backend;
 let browser;
 let completionMessage;
+let productDiagnostics = INCOMPLETE_DIAGNOSTICS;
 
 try {
     await createWorkspace();
@@ -89,12 +91,12 @@ try {
 
     if (process.env.KOGG_E2E_EXECUTION_ONLY === '1') {
         await exerciseExecution(page);
-        await completeEarly('Kogg browser execution-refusal E2E passed.');
+        await completeEarly(page, 'Kogg browser execution-refusal E2E passed.');
     }
 
     if (process.env.KOGG_E2E_PROJECTS_ONLY === '1') {
         await exerciseProjects(page);
-        await completeEarly('Kogg browser Projects-only E2E passed.');
+        await completeEarly(page, 'Kogg browser Projects-only E2E passed.');
     }
 
     if (process.env.KOGG_E2E_TASKS_ONLY === '1') {
@@ -102,24 +104,24 @@ try {
         await exerciseTasks(page);
         await createInteractionModeFixture(page);
         await exerciseInteractionModes(page);
-        await completeEarly('Kogg browser governed-tasks E2E passed.');
+        await completeEarly(page, 'Kogg browser governed-tasks E2E passed.');
     }
 
     if (process.env.KOGG_E2E_OPERATIONS_ONLY === '1') {
         await exerciseOperationsStream(page);
-        await completeEarly('Kogg browser operations-stream E2E passed.');
+        await completeEarly(page, 'Kogg browser operations-stream E2E passed.');
     }
 
     if (process.env.KOGG_E2E_WORKFLOW_ONLY === '1') {
         await exerciseProjects(page);
         await createWorkflowAdmissionFixture(page);
         await exerciseWorkflowEditor(page);
-        await completeEarly('Kogg browser workflow-editor E2E passed.');
+        await completeEarly(page, 'Kogg browser workflow-editor E2E passed.');
     }
 
     if (process.env.KOGG_E2E_VERDICT_MERGE_ONLY === '1') {
         await exerciseVerdictMerge(page);
-        await completeEarly('Kogg browser verdict-merge visible-refusal E2E passed.');
+        await completeEarly(page, 'Kogg browser verdict-merge visible-refusal E2E passed.');
     }
 
     await openCommand(page, 'Kogg: Run Diagnostics');
@@ -267,6 +269,7 @@ try {
     await page.waitForTimeout(2_000);
     assert.doesNotMatch(logs.join('\n'), /Uncaught Exception:\s+Error: transport error/iu);
 
+    productDiagnostics = await captureProductDiagnostics(page);
     await openCommand(page, 'Kogg: Sign Out');
     await page.waitForURL('**/kogg/auth/login');
     await page.getByRole('textbox').fill(token);
@@ -293,6 +296,7 @@ try {
 async function settleRun(scenarioError) {
     let cleanupError; let artifactError; let artifacts = []; let verification = FAILED_VERIFICATION;
     const state = await run.read(); if (['completed','failed'].includes(state.state)) { if (scenarioError) throw scenarioError; return; }
+    if (!scenarioError && productDiagnostics.coverage !== 'complete') scenarioError = safeDiagnosticsError();
     if (!scenarioError) { try { verification = await verifyHarnessEvidence({ root, repository: workspace, runId: run.runId, runtime: run.runtime, platform: run.platform, profile: state.scenarioId === 'portable-surface' ? 'browser-portable' : 'browser-baseline', logger: line => logs.push(line) }); } catch (error) { scenarioError = error; } }
     if (state.state === 'active' && state.scenarioState === 'active') { try { if (scenarioError) await run.scenarioFailed(); else await run.scenarioCompleted(); } catch (error) { cleanupError = error; } }
     await run.cleaning(processes.manifest()).catch(error => { cleanupError = error; });
@@ -300,14 +304,15 @@ async function settleRun(scenarioError) {
     await processes.cleanup().catch(error => { cleanupError ??= error; });
     if (scenarioError || cleanupError) { try { ({ artifacts } = await captureSafeFailureArtifacts({ root: resultRoot, runtime: 'browser', runId: run.runId, lifecycleLines: logs, error: scenarioError ?? cleanupError, logger: line => logs.push(line) })); } catch (error) { artifactError = error; } }
     const fixtures = processes.manifest(); const residualCount = fixtures.filter(value => value.state === 'residual').length; const failure = artifactError ?? cleanupError ?? scenarioError;
-    if (failure) await run.failed({ fixtures, artifacts, residualCount, verification, safeCode: artifactError ? 'E2E_ARTIFACT_UNSAFE' : cleanupError ? 'E2E_PROCESS_RESIDUAL' : safeScenarioCode(scenarioError), errorType: safeErrorType(failure) }); else await run.completed({ fixtures, artifacts, residualCount, verification });
+    if (failure) await run.failed({ fixtures, artifacts, residualCount, verification, productDiagnostics, safeCode: artifactError ? 'E2E_ARTIFACT_UNSAFE' : cleanupError ? 'E2E_PROCESS_RESIDUAL' : safeScenarioCode(scenarioError), errorType: safeErrorType(failure) }); else await run.completed({ fixtures, artifacts, residualCount, verification, productDiagnostics });
     if (!cleanupError) await rm(temporary, { recursive: true, force: true }); if (!failure && completionMessage) process.stdout.write(`${completionMessage}\n`);
     if (failure) { const safe = new Error(artifactError ? 'E2E_ARTIFACT_UNSAFE' : cleanupError ? 'E2E_PROCESS_RESIDUAL' : 'E2E_SCENARIO_FAILED'); safe.stack = safe.message; throw safe; }
 }
 
-async function completeEarly(message) { completionMessage = message; await settleRun(); process.exit(0); }
+async function completeEarly(page, message) { productDiagnostics = await captureProductDiagnostics(page); completionMessage = message; await settleRun(); process.exit(0); }
 function safeErrorType(error) { return error?.name === 'AssertionError' ? 'AssertionError' : error?.name === 'TimeoutError' ? 'TimeoutError' : 'Error'; }
-function safeScenarioCode(error) { return ['E2E_ORACLE_MISMATCH','E2E_SOURCE_MAP_MISSING'].includes(error?.message) ? error.message : 'E2E_SCENARIO_FAILED'; }
+function safeScenarioCode(error) { return ['E2E_DIAGNOSTICS_INCOMPLETE','E2E_ORACLE_MISMATCH','E2E_SOURCE_MAP_MISSING'].includes(error?.message) ? error.message : 'E2E_SCENARIO_FAILED'; }
+function safeDiagnosticsError() { const error = new Error('E2E_DIAGNOSTICS_INCOMPLETE'); error.stack = error.message; return error; }
 
 function launchBrowser(authToken) {
     return launch('browser-backend', process.execPath, [path.join(root, 'apps/browser/lib/backend/main.js'), `--plugins=local-dir:${path.join(root, 'plugins')}`, '--hostname', '127.0.0.1', '--port', String(browserPort)], {
@@ -346,6 +351,20 @@ async function waitForSupportBundle(directory, minimumCount = 1) {
         await new Promise(resolve => setTimeout(resolve, 100));
     }
     throw new Error('Timed out waiting for the diagnostic support bundle export');
+}
+
+async function captureProductDiagnostics(page) {
+    const directory = path.join(state, 'support');
+    const before = (await readdir(directory).catch(() => [])).length;
+    await openCommand(page, 'Kogg: Run Diagnostics');
+    await page.getByText(/Diagnostics: (?:FAIL|WARN|PASS)/u).first().waitFor({ timeout: 15_000 });
+    await page.keyboard.press('Escape');
+    await openCommand(page, 'Kogg: Export Diagnostic Support Bundle');
+    const files = (await waitForSupportBundle(directory, before + 1)).sort();
+    const report = JSON.parse(await readFile(path.join(directory, files.at(-1)), 'utf8'));
+    await page.keyboard.press('Escape');
+    await clearNotifications(page);
+    return verifyProductDiagnostics({ root, report, runId: run.runId, runtime: run.runtime, platform: run.platform, logger: line => logs.push(line) });
 }
 
 async function waitForGitBranch(expected) {
