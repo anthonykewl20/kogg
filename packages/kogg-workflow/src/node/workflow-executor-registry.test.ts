@@ -34,7 +34,7 @@ test('admits only an exact external catalog and normalizes external execution fa
   const calls: string[] = []; const authority: WorkflowExternalExecutorAuthority = {
     readiness: () => ({ ready: true, recoveryComplete: true, residualProcessCount: 0 }),
     attestations: () => externalContracts(),
-    async execute(request) { calls.push(request.bindingId); return { kind: 'completed', code: 'WORKFLOW_OK', output: 'success', processCount: 1, residualProcessCount: 0 }; },
+    async execute(request) { calls.push(request.bindingId); return { kind: 'completed', code: 'WORKFLOW_OK', output: 'success', subjectStateDigest: 'd'.repeat(64), factDigest: 'e'.repeat(64), ownerSequence: '1', processCount: 1, residualProcessCount: 0 }; },
     async cancel() { return { code: 'WORKFLOW_CANCELLED', processCount: 1, residualProcessCount: 0 }; }
   };
   const registry = new WorkflowExecutorRegistry(authority); assert.equal(registry.attestations().length, 6);
@@ -42,7 +42,9 @@ test('admits only an exact external catalog and normalizes external execution fa
   const node: EditableWorkflowNodeV1 = { nodeId: NODE, kind: 'tool.git', kindVersion: '1', configuration, configurationDigest: workflowDigest('node-configuration', configuration), requestedEffects: ['read-repository','mutate-private-repository','run-tool'], retry: { maxAttempts: 1, backoffMs: 0, sideEffectPolicy: 'idempotent-exact-key' } };
   const binding = registry.binding(node.kind); assert.ok(binding); assert.equal(registry.externalConfigurationAvailable(node), true);
   const request = { runId: RUN, node, attempt: 1, predecessorOutcomes: ['success'] as const, planDigest: 'c'.repeat(64), taskAdmissionId: 'task-admission-1', repositoryId: 'repository-1', bindingId: configuration.operationId, externalConfigurationDigest: configuration.externalConfigurationDigest };
-  assert.deepEqual(await registry.executeExternal(request, binding), { kind: 'completed', code: 'WORKFLOW_OK', output: 'success', processCount: 1, residualProcessCount: 0 }); assert.deepEqual(calls, ['git.status-v1']);
+  assert.deepEqual(await registry.executeExternal(request, binding), { kind: 'completed', code: 'WORKFLOW_OK', output: 'success', subjectStateDigest: 'd'.repeat(64), factDigest: 'e'.repeat(64), ownerSequence: '1', processCount: 1, residualProcessCount: 0 }); assert.deepEqual(calls, ['git.status-v1']);
+  const openResult = new WorkflowExecutorRegistry({ ...authority, async execute() { return { kind: 'completed', code: 'WORKFLOW_OK', output: 'success', subjectStateDigest: 'invalid', factDigest: 'e'.repeat(64), ownerSequence: '1', processCount: 1, residualProcessCount: 0 } as never; } });
+  assert.deepEqual(await openResult.executeExternal(request, openResult.binding('tool.git')!), { kind: 'refused', code: 'WORKFLOW_EXTERNAL_FAILURE', processCount: 0, residualProcessCount: 0 });
   assert.deepEqual(await registry.executeExternal({ ...request, bindingId: 'git.unknown-v1' }, binding), { kind: 'refused', code: 'WORKFLOW_STORE_INTEGRITY', processCount: 0, residualProcessCount: 0 }); assert.deepEqual(calls, ['git.status-v1']);
   const canary = `private-external-${Date.now()}`; const logs: string[] = []; const originalWarn = console.warn; console.warn = (...values: unknown[]) => logs.push(JSON.stringify(values));
   try { const hostile = new WorkflowExecutorRegistry({ ...authority, async execute() { throw new Error(canary); } }); const hostileBinding = hostile.binding(node.kind)!; assert.deepEqual(await hostile.executeExternal(request, hostileBinding), { kind: 'refused', code: 'WORKFLOW_EXTERNAL_FAILURE', processCount: 0, residualProcessCount: 0 }); }

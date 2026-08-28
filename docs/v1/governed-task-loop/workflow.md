@@ -544,6 +544,16 @@ committing the scheduler outcome. The workflow deadline remains authoritative;
 expiry invokes the external owner's cancellation boundary and refuses completion
 unless cancellation returns a closed zero-residual proof.
 
+A successful external result is not a generic success bit. The closed result
+also carries the exact repository subject-state digest, the owning subsystem's
+fact digest, and its positive monotonic owner sequence. All three are committed
+with the node attempt in the same scheduler transaction as the outbox outcome.
+Missing, open-shaped, malformed, or partially populated fact bindings normalize
+to an external failure before persistence; restart integrity checks refuse any
+stored partial or malformed binding. These opaque bindings are never logged and
+are the only external-node inputs later policy anchors may consume when proving
+checks, evidence, verdict currentness, or controlled merge.
+
 ### Editor command and template interface
 
 The backend accepts these exact draft commands, all with draft revision CAS:

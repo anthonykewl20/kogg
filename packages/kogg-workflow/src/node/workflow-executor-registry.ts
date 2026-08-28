@@ -26,7 +26,14 @@ export interface WorkflowExternalExecutorContractV1 extends WorkflowExecutorAtte
 export interface WorkflowExternalExecutionRequestV1 extends WorkflowControlExecutionRequestV1 {
   readonly planDigest: string; readonly taskAdmissionId: string; readonly repositoryId: string; readonly bindingId: string; readonly externalConfigurationDigest: string;
 }
-export interface WorkflowExternalExecutionResultV1 { readonly kind: 'completed' | 'refused'; readonly code: WorkflowSafeCode; readonly output?: 'success'; readonly processCount: number; readonly residualProcessCount: number; }
+export type WorkflowExternalExecutionResultV1 = {
+  readonly kind: 'completed'; readonly code: 'WORKFLOW_OK'; readonly output: 'success';
+  readonly subjectStateDigest: string; readonly factDigest: string; readonly ownerSequence: string;
+  readonly processCount: number; readonly residualProcessCount: 0;
+} | {
+  readonly kind: 'refused'; readonly code: Exclude<WorkflowSafeCode, 'WORKFLOW_OK'>;
+  readonly processCount: number; readonly residualProcessCount: number;
+};
 export interface WorkflowExternalCancellationResultV1 { readonly code: WorkflowSafeCode; readonly processCount: number; readonly residualProcessCount: number; }
 export const WorkflowExternalExecutorAuthority = Symbol('WorkflowExternalExecutorAuthority');
 export interface WorkflowExternalExecutorAuthority {
@@ -121,7 +128,7 @@ export class WorkflowExecutorRegistry {
       if (result.kind === 'completed') { workflowLog('node.execution.completed', { ...fields, output: 'success', safeCode: result.code, processCount: result.processCount, residualProcessCount: result.residualProcessCount }); return result; }
       workflowLog('node.execution.refused', { ...fields, safeCode: result.code, processCount: result.processCount, residualProcessCount: result.residualProcessCount }); return result;
     } catch (error) { // observability-exempt: node.execution.refused discards owner errors and external configuration while retaining closed lifecycle facts.
-      const code = error instanceof WorkflowExecutorError ? error.code : 'WORKFLOW_EXTERNAL_FAILURE'; workflowLog('node.execution.refused', { ...fields, safeCode: code, processCount: 0, residualProcessCount: 0 }); return { kind: 'refused', code, processCount: 0, residualProcessCount: 0 };
+      const observed = error instanceof WorkflowExecutorError ? error.code : 'WORKFLOW_EXTERNAL_FAILURE'; const code = observed === 'WORKFLOW_OK' ? 'WORKFLOW_EXTERNAL_FAILURE' : observed; workflowLog('node.execution.refused', { ...fields, safeCode: code, processCount: 0, residualProcessCount: 0 }); return { kind: 'refused', code, processCount: 0, residualProcessCount: 0 };
     }
   }
 }
@@ -150,10 +157,12 @@ function validateExternalAttestations(input: readonly WorkflowExternalExecutorCo
   if (seen.size !== 3) throw new Error('external executor catalog incomplete'); return Object.freeze(input.map(value => Object.freeze({ ...value, supportedKinds: Object.freeze([...value.supportedKinds]), supportedBindingIds: Object.freeze(Object.fromEntries(Object.entries(value.supportedBindingIds).map(([kind, ids]) => [kind, Object.freeze([...((ids as readonly string[] | undefined) ?? [])])]))) })));
 }
 function validateExternalResult(value: WorkflowExternalExecutionResultV1): void {
-  const expectedKeys = value?.kind === 'completed' ? ['code','kind','output','processCount','residualProcessCount'] : ['code','kind','processCount','residualProcessCount'];
-  if (!value || Object.keys(value).sort().join(',') !== expectedKeys.sort().join(',') || !['completed','refused'].includes(value.kind) || !WORKFLOW_SAFE_CODES.includes(value.code) || !Number.isSafeInteger(value.processCount) || value.processCount < 0 || !Number.isSafeInteger(value.residualProcessCount) || value.residualProcessCount < 0 || (value.kind === 'completed' ? value.code !== 'WORKFLOW_OK' || value.output !== 'success' || value.residualProcessCount !== 0 : value.code === 'WORKFLOW_OK' || value.output !== undefined)) throw new WorkflowExecutorError('WORKFLOW_EXTERNAL_FAILURE');
+  const expectedKeys = value?.kind === 'completed' ? ['code','factDigest','kind','output','ownerSequence','processCount','residualProcessCount','subjectStateDigest'] : ['code','kind','processCount','residualProcessCount'];
+  if (!value || Object.keys(value).sort().join(',') !== expectedKeys.sort().join(',') || !['completed','refused'].includes(value.kind) || !WORKFLOW_SAFE_CODES.includes(value.code) || !Number.isSafeInteger(value.processCount) || value.processCount < 0 || !Number.isSafeInteger(value.residualProcessCount) || value.residualProcessCount < 0 || (value.kind === 'completed' ? value.output !== 'success' || value.residualProcessCount !== 0 || !digest(value.subjectStateDigest) || !digest(value.factDigest) || !positiveDecimal(value.ownerSequence) : 'output' in value)) throw new WorkflowExecutorError('WORKFLOW_EXTERNAL_FAILURE');
 }
 function validReadiness(value: ReturnType<WorkflowExternalExecutorAuthority['readiness']>): boolean { return !!value && Object.keys(value).sort().join(',') === 'ready,recoveryComplete,residualProcessCount' && value.ready === true && value.recoveryComplete === true && value.residualProcessCount === 0; }
+function digest(value: string): boolean { return /^[0-9a-f]{64}$/u.test(value); }
+function positiveDecimal(value: string): boolean { return /^(?:[1-9][0-9]{0,19})$/u.test(value); }
 async function executeWithinDeadline(authority: WorkflowExternalExecutorAuthority, request: WorkflowExternalExecutionRequestV1, deadlineMs: number): Promise<WorkflowExternalExecutionResultV1> {
   if (!Number.isSafeInteger(deadlineMs) || deadlineMs < 1_000) throw new WorkflowExecutorError('WORKFLOW_DEADLINE'); let timer: NodeJS.Timeout | undefined;
   try {
