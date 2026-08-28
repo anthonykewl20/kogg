@@ -12,7 +12,7 @@ import { CodexStdioDrainer } from './codex-stdio-drainer';
 
 // This attempt-local composition logs only opaque lifecycle correlations. Protocol params, content, credentials, stdio, and owner errors remain private.
 // diagnostic-coverage: codex.protocol, codex.credentials, codex.processes, codex.cleanup, codex.recovery, codex.source-maps
-const MAX_START_MS = 60_000;
+const MAX_START_MS = 60_000; const MAX_HANDSHAKE_MS = 30_000;
 export interface CodexLiveSessionHost {
   readonly processId: string;
   start(): Promise<{ readonly stdin: Writable; readonly stdout: Readable; readonly stderr: Readable }>;
@@ -26,7 +26,7 @@ export interface CodexLiveSessionInput {
   readonly threadParams: Readonly<Record<string, unknown>>; readonly turnParams: Readonly<Record<string, unknown>>;
   readonly attestation: CodexSessionAttestation;
   readonly activateCredentials: (processRegistrationId: string) => void | Promise<void>; readonly revokeCredentials: () => void | Promise<void>; readonly onObservation: (sequence: number, observation: CodexSafeObservation) => void;
-  readonly onFault: (code: CodexSafeCode) => void | Promise<void>; readonly startTimeoutMs?: number; readonly cleanupTimeoutMs?: number; readonly resourceCount?: number;
+  readonly onFault: (code: CodexSafeCode) => void | Promise<void>; readonly initializeTimeoutMs?: number; readonly threadTimeoutMs?: number; readonly startTimeoutMs?: number; readonly cleanupTimeoutMs?: number; readonly resourceCount?: number;
 }
 export class CodexLiveSessionFault extends Error { constructor(readonly code: CodexSafeCode, readonly cleanup: CodexCleanupResult) { super(code); } }
 
@@ -44,10 +44,10 @@ export class CodexLiveSession {
       let active!: () => void; const turnActive = new Promise<void>(resolve => { active = resolve; });
       this.client = this.input.createClient(stdio.stdin, (sequence, observation) => { if (observation.kind === 'notification' && observation.lifecycle === 'turn-started') active(); if (observation.kind === 'notification' && observation.lifecycle === 'turn-completed') this.cleanupCoordinator.observeTerminal('CODEX_OK'); this.input.onObservation(sequence, observation); });
       this.draining = new CodexStdioDrainer(this.client, async code => { this.cleanupCoordinator.observeTerminal(code); await this.safeFault(code); }).run(stdio.stdout, stdio.stderr);
-      const initialized = await this.client.request('initialize', this.input.initializeParams); this.input.attestation.verifyInitialize(initialized); await this.client.initialized(this.input.initializedParams); const thread = await this.client.request('thread/start', this.input.threadParams); this.input.attestation.verifyThread(thread); await this.client.request('turn/start', this.input.turnParams); await bounded(turnActive, this.startTimeout());
+      const initialized = await bounded(this.client.request('initialize', this.input.initializeParams), this.initializeTimeout(), 'CODEX_INITIALIZE_TIMEOUT'); this.input.attestation.verifyInitialize(initialized); await this.client.initialized(this.input.initializedParams); const thread = await bounded(this.client.request('thread/start', this.input.threadParams), this.threadTimeout(), 'CODEX_THREAD_START_TIMEOUT'); this.input.attestation.verifyThread(thread); await this.client.request('turn/start', this.input.turnParams); await bounded(turnActive, this.startTimeout(), 'CODEX_FIRST_ACTIVITY_TIMEOUT');
       codexLog('session.start.completed', this.fields());
     } catch (error) { // observability-exempt: The closed session failure and cleanup result below discard protocol params, stdio, owner errors, and private response details.
-      const code = codeOf(error); this.cleanupCoordinator.observeTerminal(code); codexLog('session.start.failed', { ...this.fields(), safeCode: code }); const cleanup = await this.cleanupCoordinator.cleanup('failure', this.turnActive()); await this.safeFault(cleanup.terminalCode); throw new CodexLiveSessionFault(cleanup.terminalCode, cleanup);
+      const code = codeOf(error); this.cleanupCoordinator.observeTerminal(code); if (error instanceof SessionPhaseTimeout) codexLog('timeout.expired', { attemptId: this.input.attemptId, deadlineClass: error.deadlineClass, generation: 1, configuredMs: error.configuredMs }); codexLog('session.start.failed', { ...this.fields(), safeCode: code }); const cleanup = await this.cleanupCoordinator.cleanup('failure', this.turnActive()); await this.safeFault(cleanup.terminalCode); throw new CodexLiveSessionFault(cleanup.terminalCode, cleanup);
     }
   }
   cleanup(): Promise<CodexCleanupResult> { return this.cleanupCoordinator.cleanup('terminal', this.turnActive()); }
@@ -65,8 +65,10 @@ export class CodexLiveSession {
       return; } }
   private fields(): { attemptId: string; operationId: string; processId: string } { return { attemptId: this.input.attemptId, operationId: this.input.operationId, processId: this.input.host.processId }; }
   private startTimeout(): number { return this.input.startTimeoutMs ?? MAX_START_MS; }
+  private initializeTimeout(): number { return this.input.initializeTimeoutMs ?? MAX_HANDSHAKE_MS; }
+  private threadTimeout(): number { return this.input.threadTimeoutMs ?? MAX_HANDSHAKE_MS; }
 }
-function validate(input: CodexLiveSessionInput): void { for (const id of [input.attemptId, input.operationId, input.host.processId]) if (!id || id.length > 128) throw new Error('Invalid live session correlation'); const timeout = input.startTimeoutMs ?? MAX_START_MS; if (!Number.isSafeInteger(timeout) || timeout < 1 || timeout > MAX_START_MS) throw new Error('Invalid live session timeout'); }
-function codeOf(error: unknown): CodexSafeCode { return error instanceof StartTimeout ? 'CODEX_FIRST_ACTIVITY_TIMEOUT' : error instanceof CodexClientFault || error instanceof CodexCredentialFault || error instanceof CodexProtocolFault || error instanceof CodexProcessHostFault || error instanceof CodexSessionAttestationFault ? error.code : 'CODEX_INTERNAL_FAILURE'; }
-class StartTimeout extends Error {}
-async function bounded<T>(promise: Promise<T>, timeoutMs: number): Promise<T> { let timer: NodeJS.Timeout | undefined; try { return await Promise.race([promise, new Promise<never>((_resolve, reject) => { timer = setTimeout(() => reject(new StartTimeout()), timeoutMs); })]); } finally { if (timer) clearTimeout(timer); } }
+function validate(input: CodexLiveSessionInput): void { for (const id of [input.attemptId, input.operationId, input.host.processId]) if (!id || id.length > 128) throw new Error('Invalid live session correlation'); const deadlines: ReadonlyArray<readonly [number, number]> = [[input.initializeTimeoutMs ?? MAX_HANDSHAKE_MS, MAX_HANDSHAKE_MS], [input.threadTimeoutMs ?? MAX_HANDSHAKE_MS, MAX_HANDSHAKE_MS], [input.startTimeoutMs ?? MAX_START_MS, MAX_START_MS]]; for (const [timeout, maximum] of deadlines) if (!Number.isSafeInteger(timeout) || timeout < 1 || timeout > maximum) throw new Error('Invalid live session timeout'); }
+function codeOf(error: unknown): CodexSafeCode { return error instanceof SessionPhaseTimeout ? error.code : error instanceof CodexClientFault || error instanceof CodexCredentialFault || error instanceof CodexProtocolFault || error instanceof CodexProcessHostFault || error instanceof CodexSessionAttestationFault ? error.code : 'CODEX_INTERNAL_FAILURE'; }
+class SessionPhaseTimeout extends Error { constructor(readonly code: Extract<CodexSafeCode, 'CODEX_INITIALIZE_TIMEOUT' | 'CODEX_THREAD_START_TIMEOUT' | 'CODEX_FIRST_ACTIVITY_TIMEOUT'>, readonly deadlineClass: 'initialize' | 'thread-start' | 'first-activity', readonly configuredMs: number) { super(code); } }
+async function bounded<T>(promise: Promise<T>, timeoutMs: number, code: SessionPhaseTimeout['code']): Promise<T> { let timer: NodeJS.Timeout | undefined; const deadlineClass = code === 'CODEX_INITIALIZE_TIMEOUT' ? 'initialize' : code === 'CODEX_THREAD_START_TIMEOUT' ? 'thread-start' : 'first-activity'; try { return await Promise.race([promise, new Promise<never>((_resolve, reject) => { timer = setTimeout(() => reject(new SessionPhaseTimeout(code, deadlineClass, timeoutMs)), timeoutMs); })]); } finally { if (timer) clearTimeout(timer); } }

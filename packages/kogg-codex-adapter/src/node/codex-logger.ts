@@ -17,6 +17,7 @@ type EventFields = {
   'protocol.attestation.started': { attemptId: string; attestationClass: string };
   'protocol.attestation.completed': { attemptId: string; attestationClass: string };
   'protocol.attestation.failed': { attemptId: string; attestationClass: string; safeCode: CodexSafeCode };
+  'timeout.expired': { attemptId: string; deadlineClass: string; generation: number; configuredMs: number };
   'content.delivery.started': { attemptId: string; pendingCount: number };
   'content.delivery.completed': { attemptId: string; pendingCount: number; deliveredCount: number };
   'content.delivery.failed': { attemptId: string; pendingCount: number; safeCode: CodexSafeCode };
@@ -51,6 +52,7 @@ const ALLOWED: { [K in keyof EventFields]: readonly (keyof EventFields[K])[] } =
   'protocol.request.started': ['attemptId', 'requestClass'], 'protocol.request.completed': ['attemptId', 'requestClass'],
   'protocol.request.failed': ['attemptId', 'requestClass', 'safeCode'], 'protocol.authority.denied': ['attemptId', 'pendingCount'],
   'protocol.attestation.started': ['attemptId', 'attestationClass'], 'protocol.attestation.completed': ['attemptId', 'attestationClass'], 'protocol.attestation.failed': ['attemptId', 'attestationClass', 'safeCode'],
+  'timeout.expired': ['attemptId', 'deadlineClass', 'generation', 'configuredMs'],
   'content.delivery.started': ['attemptId', 'pendingCount'], 'content.delivery.completed': ['attemptId', 'pendingCount', 'deliveredCount'],
   'content.delivery.failed': ['attemptId', 'pendingCount', 'safeCode'], 'content.closed': ['attemptId', 'pendingCount'],
   'process.registered': ['attemptId', 'operationId', 'processId', 'ownerKind'], 'process.registration.failed': ['attemptId', 'operationId', 'safeCode'],
@@ -83,6 +85,7 @@ export function codexLog<K extends keyof EventFields>(event: K, fields: EventFie
   else if (event === 'protocol.attestation.started') console.debug('[kogg:agents:codex-protocol] protocol.attestation.started', fields);
   else if (event === 'protocol.attestation.completed') console.info('[kogg:agents:codex-protocol] protocol.attestation.completed', fields);
   else if (event === 'protocol.attestation.failed') console.error('[kogg:agents:codex-protocol] protocol.attestation.failed', fields);
+  else if (event === 'timeout.expired') console.warn('[kogg:agents:codex-supervision] timeout.expired', fields);
   else if (event === 'content.delivery.started') console.debug('[kogg:agents:codex-content] content.delivery.started', fields);
   else if (event === 'content.delivery.completed') console.debug('[kogg:agents:codex-content] content.delivery.completed', fields);
   else if (event === 'content.delivery.failed') console.error('[kogg:agents:codex-content] content.delivery.failed', fields);
@@ -110,4 +113,4 @@ export function codexLog<K extends keyof EventFields>(event: K, fields: EventFie
   else console.error('[kogg:agents:codex-release] diagnostics.failed', fields);
 }
 export function codexLoggingDiagnostics(): { readonly schemaCount: number; readonly violationCount: number } { return { schemaCount: Object.keys(ALLOWED).length, violationCount }; }
-function safeValue(_event: keyof EventFields, key: string, value: unknown): boolean { return ['pendingCount','deliveredCount','resourceCount','residualCount','requestCount'].includes(key) ? typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 : typeof value === 'string' && value.length <= 128; }
+function safeValue(_event: keyof EventFields, key: string, value: unknown): boolean { return ['pendingCount','deliveredCount','resourceCount','residualCount','requestCount','generation','configuredMs'].includes(key) ? typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 : typeof value === 'string' && value.length <= 128; }
