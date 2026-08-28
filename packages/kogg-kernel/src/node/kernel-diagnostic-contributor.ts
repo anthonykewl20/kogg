@@ -7,6 +7,7 @@ import {
 } from '@kogg/contracts';
 import { RanexOperationsOwner } from './ranex-operations-owner';
 import { CheckOperationsOwner } from './check-operations-owner';
+import { kernelSourceMapDiagnostics } from './kernel-source-map-diagnostics';
 
 // diagnostic-coverage: kernel.protocol, kernel.bridge, kernel.bindings, kernel.producers, kernel.suites, kernel.checks, kernel.evidence, kernel.verdicts, kernel.cleanup, kernel.recovery, kernel.source-maps, operations.ranex-owner, operations.check-owner
 
@@ -28,6 +29,7 @@ export class KernelDiagnosticContributor implements KoggDiagnosticContributor {
       const states = (operations: readonly string[]): Omit<KoggDiagnosticCheck, 'id'> => statesFor(implemented, operations);
       const ranexOwner = this.ranexOwner.diagnostics();
       const checkOwner = this.checkOwner.diagnostics();
+      const sourceMaps = kernelSourceMapDiagnostics();
       return [
         { id: 'kernel.protocol', status: 'pass', summary: 'Ranex v2 framing, provenance, schema set, and advertised operation closure verified.', details: { operationCount: implemented.size } },
         { id: 'kernel.bridge', status: health.status === 'failed' ? 'fail' : health.status === 'degraded' ? 'warn' : 'pass', summary: `Ranex bridge reports ${health.status}.`, details: { confinement: health.capabilities.confinement, journal: health.journal } },
@@ -41,7 +43,7 @@ export class KernelDiagnosticContributor implements KoggDiagnosticContributor {
         { id: 'kernel.recovery', ...state('operation.reconcile') },
         { id: 'operations.ranex-owner', status: 'pass', summary: 'Ranex evidence and gate facts replay from the verified authoritative journal.', details: { sourceEventCount: ranexOwner.sourceEventCount, projectedEventCount: ranexOwner.projectedEventCount } },
         { id: 'operations.check-owner', status: 'pass', summary: 'Authoritative check outcomes replay from the verified Ranex journal.', details: { sourceEventCount: checkOwner.sourceEventCount, projectedEventCount: checkOwner.projectedEventCount } },
-        { id: 'kernel.source-maps', status: 'pass', summary: 'Kernel TypeScript and Python adapter sources remain directly debugger-reachable.' }
+        { id: 'kernel.source-maps', status: sourceMaps.missingCount === 0 ? 'pass' : 'fail', summary: sourceMaps.missingCount === 0 ? 'Every kernel TypeScript failure boundary and the Python adapter remain debugger-reachable.' : 'One or more kernel TypeScript maps or the Python adapter source is missing.', details: { ...sourceMaps } }
       ];
     } catch (error) {
       console.error('[kogg:kernel:diagnostics] health.failed', { errorType: errorName(error) });
