@@ -718,9 +718,12 @@ async function exerciseTasks(page) {
         assert.equal(check?.status, 'fail');
         assert.equal(check?.details?.safeCode, 'CLAUDE_LEGAL_APPROVAL_REQUIRED');
     }
-    for (const id of ['claude.processes', 'claude.cleanup', 'claude.recovery', 'claude.source-maps']) {
-        assert.equal(supportReport.checks.find(check => check.id === id)?.status, 'pass');
+    for (const id of ['claude.processes', 'claude.cleanup', 'claude.recovery']) {
+        const check = supportReport.checks.find(candidate => candidate.id === id);
+        assert.equal(check?.status, 'fail', id);
+        assert.equal(check?.details?.safeCode, 'CLAUDE_RECOVERY_REQUIRED', id);
     }
+    assert.equal(supportReport.checks.find(check => check.id === 'claude.source-maps')?.status, 'pass');
     for (const id of ['workflow.catalog', 'workflow.authority']) {
         assert.equal(supportReport.checks.find(check => check.id === id)?.status, 'fail', id);
     }
