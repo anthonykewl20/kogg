@@ -27,7 +27,7 @@ export class CodexProtocolFault extends Error { constructor(readonly code: Extra
 export class CodexProtocolCore {
   private bytes = Buffer.alloc(0); private phaseValue: CodexProtocolPhase = 'spawned'; private queuedBytes = 0;
   private readonly queue: Array<{ readonly bytes: number; readonly value: CodexSafeObservation }> = [];
-  private readonly requests = new Map<number, string>(); private readonly serverRequests = new Set<number>();
+  private readonly requests = new Map<number, string>(); private readonly abandonedRequests = new Map<number, string>(); private readonly serverRequests = new Set<number>();
   private threadCount = 0; private turnCount = 0; private terminalCount = 0; private shutdownCount = 0; private failed = false;
   constructor(private readonly schema: CodexFrameSchema, private readonly acceptedInboundMethods: Pick<ReadonlySet<string>, 'has'>, private readonly content: CodexContentRouter,
     private readonly privateFrames?: CodexPrivateFrameConsumer) {}
@@ -50,7 +50,7 @@ export class CodexProtocolCore {
     if (method !== 'initialized' || this.phaseValue !== 'initialize-replied') this.fault('CODEX_PROTOCOL_VIOLATION'); this.transition('initialized');
   }
 
-  beginCleanup(): void { this.guard(); this.transition('cleaning'); }
+  beginCleanup(): void { this.guard(); for (const [id, method] of this.requests) this.abandonedRequests.set(id, method); this.requests.clear(); this.serverRequests.clear(); this.transition('cleaning'); }
   resolveServerRequest(id: number): void { this.guard(); if (!validId(id) || !this.serverRequests.delete(id)) this.fault('CODEX_PROTOCOL_VIOLATION'); }
 
   async push(chunk: Uint8Array): Promise<void> {
@@ -71,11 +71,12 @@ export class CodexProtocolCore {
     let parsed: unknown; try { parsed = JSON.parse(DECODER.decode(line)); } catch { // observability-exempt: fault emits the closed refusal code and intentionally discards invalid UTF-8/JSON bytes.
       this.fault('CODEX_PROTOCOL_VIOLATION'); }
     if (!parsed || Array.isArray(parsed) || typeof parsed !== 'object') this.fault('CODEX_PROTOCOL_VIOLATION');
-    const candidate = parsed as Readonly<Record<string, unknown>>; const expectedRequest = typeof candidate.id === 'number' ? this.requests.get(candidate.id) : undefined;
+    const candidate = parsed as Readonly<Record<string, unknown>>; const expectedRequest = typeof candidate.id === 'number' ? this.requests.get(candidate.id) ?? this.abandonedRequests.get(candidate.id) : undefined;
     let validated: CodexValidatedFrame | undefined; try { validated = this.schema.validate(candidate, expectedRequest); } catch { // observability-exempt: The closed protocol refusal below replaces schema-validator details without echoing frame content.
       this.fault('CODEX_PROTOCOL_VIOLATION'); } if (!validated) this.fault('CODEX_PROTOCOL_VIOLATION');
     if (validated.kind !== 'response' && !this.acceptedInboundMethods.has(validated.method)) this.fault('CODEX_PROTOCOL_UNSUPPORTED');
     const contentBytes = validated.contentBytes ?? 0; if (!Number.isSafeInteger(contentBytes) || contentBytes < 0 || contentBytes > CODEX_PROTOCOL_LIMITS.contentBytes || (contentBytes === 0) !== (validated.content === undefined)) this.fault('CODEX_PROTOCOL_VIOLATION');
+    if (validated.kind === 'response' && this.abandonedRequests.delete(validated.id)) return;
     if (this.queue.length >= CODEX_PROTOCOL_LIMITS.queuedCount || this.queuedBytes + frameBytes > CODEX_PROTOCOL_LIMITS.queuedBytes) this.fault('CODEX_QUEUE_OVERFLOW');
     const observation = this.reduce(validated);
     if (contentBytes) { let accepted = false; try { accepted = await this.content.accept(validated.content, contentBytes); } catch { // observability-exempt: Content-router errors are normalized below and raw content/error data is intentionally discarded.

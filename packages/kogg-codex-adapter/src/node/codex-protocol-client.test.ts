@@ -56,6 +56,11 @@ test('closes content input on cleanup or protocol failure and fails a stalled co
   const stalled = create({ accept: async () => true, closeInput: () => undefined, drain: async () => false }); await assert.rejects(stalled.client.drainContent(10), fault('CODEX_CONTENT_BACKPRESSURE')); await assert.rejects(stalled.client.request('initialize', {}));
 });
 
+test('abandons a timed-out interrupt correlation during cleanup and validates a late reply without reviving it', async () => {
+  const { client } = create(); const initialize = client.request('initialize', {}); await client.push(line({ id: 1, outcome: 'result', result: {} })); await initialize; await client.initialized(); const thread = client.request('thread/start', {}); await client.push(line({ id: 2, outcome: 'result', result: {} })); await thread; const turn = client.request('turn/start', {}); await client.push(line({ id: 3, outcome: 'result', result: {} })); await turn; await client.push(line({ method: 'turn/started', lifecycle: 'turn-started' }));
+  const interrupt = client.request('turn/interrupt', {}); client.beginCleanup(); await assert.rejects(interrupt, fault('CODEX_CANCELLED')); await client.push(line({ id: 4, outcome: 'result', result: {} })); assert.equal(client.faulted(), false); const shutdown = client.request('shutdown', {}); await client.push(line({ id: 5, outcome: 'result', result: {} })); await shutdown;
+});
+
 test('owns split stdout through the protocol client while stderr remains discard-only', async () => {
   const value = create(); const stdout = new PassThrough(); const stderr = new PassThrough(); const faults: string[] = []; const draining = new CodexStdioDrainer(value.client, code => { faults.push(code); }).run(stdout, stderr);
   const initialize = value.client.request('initialize', {}); const response = line({ id: 1, outcome: 'result', result: { privateValue: true } }); stdout.write(response.subarray(0, 4)); stdout.write(response.subarray(4)); assert.deepEqual(await initialize, { privateValue: true });
