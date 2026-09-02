@@ -8,6 +8,7 @@ import os
 import platform
 import re
 import struct
+import subprocess
 import sys
 import unicodedata
 from datetime import datetime, timedelta
@@ -31,6 +32,7 @@ UUID = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-
 IMPLEMENTED_OPERATIONS = {"kernel.handshake": 2, "kernel.health": 1, "execution.qualify": 1, "task.bind": 1, "producer.dispatch": 1, "suite.freeze": 1, "suite.execute": 1, "evidence.admit": 1, "gate.evaluate": 1, "verdict.read": 1, "operation.reconcile": 1, "operation.cancel": 1}
 SYMBOLIC = re.compile(r"^[a-z0-9][a-z0-9._:-]{0,127}$")
 CHECK_KINDS = {"build", "unit", "integration", "visible-e2e", "observability", "diagnostics", "source-maps", "process-cleanup", "ranex-evidence"}
+_QUALIFICATION_CACHE: dict[str, dict[str, Any]] = {}
 
 
 class ProtocolRefusal(Exception):
@@ -101,6 +103,138 @@ def _journal_path() -> Path:
 
 def _adapter_digest() -> str:
     return "sha256:" + hashlib.sha256(Path(__file__).read_bytes()).hexdigest()
+
+
+def _utc_timestamp(value: datetime) -> str:
+    return value.strftime("%Y-%m-%dT%H:%M:%S.") + f"{value.microsecond // 1000:03d}Z"
+
+
+def _qualification_refusal(operation_id: str, target_id: str, code: str) -> dict[str, Any]:
+    now = datetime.utcnow()
+    return {
+        "schemaVersion": 1, "qualificationId": operation_id, "targetId": target_id,
+        "architecture": "amd64", "profileId": "kogg-writable-agent-v1",
+        "profileDigest": "sha256:" + "0" * 64, "bootIdDigest": "sha256:" + "0" * 64,
+        "kernelRelease": platform.release()[:128], "landlockAbi": "0",
+        "cgroupProfileDigest": "sha256:" + "0" * 64, "mountQuotaDigest": "sha256:" + "0" * 64,
+        "launcherDigest": "sha256:" + "0" * 64, "bubblewrapDigest": "sha256:" + "0" * 64,
+        "seccompDigest": "sha256:" + "0" * 64, "brokerDigest": "sha256:" + "0" * 64,
+        "ranexCommit": _provenance()["commit"], "checkedAt": _utc_timestamp(now),
+        "expiresAt": _utc_timestamp(now + timedelta(minutes=1)), "status": "refused",
+        "refusalCodes": [code],
+    }
+
+
+def _read_closed_json(path: Path, fields: set[str]) -> dict[str, Any]:
+    value = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(value, dict) or set(value) != fields:
+        raise ProtocolRefusal("QUALIFICATION_ATTESTATION_INVALID")
+    return value
+
+
+def _execution_helper_probe() -> tuple[dict[str, Any], str]:
+    helper = Path(os.environ["KOGG_EXECUTION_HELPER"]).resolve(strict=True)
+    manifest_path = Path(os.environ["KOGG_EXECUTION_HELPER_MANIFEST"]).resolve(strict=True)
+    allocation_root = Path(os.environ["KOGG_EXECUTION_ALLOCATION_ROOT"]).resolve()
+    allocation_root.mkdir(parents=True, mode=0o700, exist_ok=True)
+    manifest = _read_closed_json(manifest_path, {"schemaVersion", "platform", "architecture", "sourceDigest", "artifactDigest"})
+    helper_digest = "sha256:" + hashlib.sha256(helper.read_bytes()).hexdigest()
+    if (manifest.get("schemaVersion") != 1 or manifest.get("platform") != "linux" or manifest.get("architecture") != "x64" \
+            or manifest.get("artifactDigest") != helper_digest or not DIGEST.fullmatch(str(manifest.get("sourceDigest", "")))):
+        raise ProtocolRefusal("QUALIFICATION_LAUNCHER_MISMATCH")
+    helper_stat, manifest_stat, root_stat = helper.stat(), manifest_path.stat(), allocation_root.stat()
+    if (helper_stat.st_uid != os.geteuid() or manifest_stat.st_uid != os.geteuid() or root_stat.st_uid != os.geteuid() \
+            or helper_stat.st_mode & 0o777 != 0o500 or manifest_stat.st_mode & 0o777 != 0o400 or root_stat.st_mode & 0o777 != 0o700):
+        raise ProtocolRefusal("QUALIFICATION_LAUNCHER_MISMATCH")
+    root_fd = os.open(allocation_root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        def place_root_descriptor() -> None:
+            if root_fd != 3:
+                os.dup2(root_fd, 3)
+        completed = subprocess.run(
+            [str(helper)], input=b'{"schemaVersion":1,"operation":"qualify"}\n',
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=10, check=False,
+            close_fds=True, pass_fds=(root_fd,), preexec_fn=place_root_descriptor,
+        )
+    finally:
+        os.close(root_fd)
+    if completed.returncode != 0 or completed.stderr or len(completed.stdout) > 4096:
+        raise ProtocolRefusal("QUALIFICATION_QUOTA_UNAVAILABLE")
+    try:
+        probe = json.loads(completed.stdout)
+    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise ProtocolRefusal("QUALIFICATION_ATTESTATION_INVALID") from error
+    expected = {"schemaVersion", "ok", "safeCode", "filesystemDevice", "filesystemInode", "ownerUid", "mode", "mountId", "rootProjectId", "quotaProbeProjectId"}
+    if not isinstance(probe, dict) or set(probe) != expected or probe.get("schemaVersion") != 1 or probe.get("ok") is not True \
+            or probe.get("safeCode") != "ALLOCATION_OK" or probe.get("mode") != "0700" \
+            or not all(isinstance(probe.get(field), str) and re.fullmatch(r"(?:0|[1-9][0-9]*)", probe[field]) for field in expected - {"schemaVersion", "ok", "safeCode", "mode"}):
+        raise ProtocolRefusal("QUALIFICATION_ATTESTATION_INVALID")
+    return probe, helper_digest
+
+
+def _qualified_projection(operation_id: str, target_id: str, report: dict[str, Any], helper_probe: dict[str, Any], helper_digest: str, *, profile: dict[str, Any] | None = None, boot_id: str | None = None) -> dict[str, Any]:
+    primitives = report.get("primitives")
+    open_objects = report.get("open_objects")
+    landlock = primitives.get("landlock") if isinstance(primitives, dict) else None
+    bubblewrap = open_objects.get("bubblewrap") if isinstance(open_objects, dict) else None
+    if report.get("schema") != "ranex-strict-local-qualification-v1" or report.get("qualified") is not True \
+            or not isinstance(landlock, dict) or landlock.get("available") is not True or not isinstance(landlock.get("abi"), int) \
+            or landlock["abi"] < 6 or not isinstance(bubblewrap, dict) or not re.fullmatch(r"[0-9a-f]{64}", str(bubblewrap.get("sha256", ""))):
+        raise ProtocolRefusal("QUALIFICATION_ATTESTATION_INVALID")
+    kernel = report.get("kernel")
+    if not isinstance(kernel, dict) or kernel.get("architecture") != "x86_64" or not isinstance(kernel.get("release"), str):
+        raise ProtocolRefusal("QUALIFICATION_KERNEL_UNSUPPORTED")
+    if profile is None:
+        profile = _read_closed_json(Path(os.environ["KOGG_RANEX_QUALIFICATION_ROOT"]) / "governance/confinement/strict-local-v1.json", {"schema", "profile", "mandatory_layers", "landlock_abi_minimum", "seccomp", "cgroup", "mounts", "output_resolution"})
+    if boot_id is None:
+        boot_id = Path("/proc/sys/kernel/random/boot_id").read_text(encoding="ascii").strip()
+    now = datetime.utcnow()
+    return {
+        "schemaVersion": 1, "qualificationId": operation_id, "targetId": target_id,
+        "architecture": "amd64", "profileId": "kogg-writable-agent-v1",
+        "profileDigest": _domain_digest("execution-profile", {"ranex": profile, "helper": helper_digest}),
+        "bootIdDigest": _domain_digest("boot-id", boot_id), "kernelRelease": kernel["release"][:128],
+        "landlockAbi": str(landlock["abi"]),
+        "cgroupProfileDigest": _domain_digest("cgroup-profile", {"cgroup": report.get("cgroup"), "delegation": report.get("delegation"), "hostState": report.get("host_state")}),
+        "mountQuotaDigest": _domain_digest("mount-quota", helper_probe), "launcherDigest": helper_digest,
+        "bubblewrapDigest": "sha256:" + bubblewrap["sha256"],
+        "seccompDigest": _domain_digest("seccomp", {"policy": profile["seccomp"], "observed": {"filter": primitives.get("seccomp_filter"), "noNewPrivileges": primitives.get("no_new_privs")}}),
+        "brokerDigest": _domain_digest("broker", report.get("delegation", {}).get("broker")),
+        "ranexCommit": _provenance()["commit"], "checkedAt": _utc_timestamp(now),
+        "expiresAt": _utc_timestamp(now + timedelta(minutes=4)), "status": "qualified", "refusalCodes": [],
+    }
+
+
+def _qualify_execution(operation_id: str, target_id: str) -> dict[str, Any]:
+    if platform.system() != "Linux" or platform.machine() not in {"x86_64", "amd64"}:
+        return _qualification_refusal(operation_id, target_id, "QUALIFICATION_PLATFORM_UNSUPPORTED")
+    cached = _QUALIFICATION_CACHE.get(target_id)
+    if cached is not None and datetime.strptime(cached["expiresAt"], "%Y-%m-%dT%H:%M:%S.%fZ") > datetime.utcnow() + timedelta(seconds=15):
+        return dict(cached)
+    root = Path(os.environ["KOGG_RANEX_QUALIFICATION_ROOT"]).resolve()
+    try:
+        from ranex.cli.host_confinement import HostConfinementError, qualify
+    except (ImportError, OSError):
+        return _qualification_refusal(operation_id, target_id, "QUALIFICATION_PROFILE_UNAVAILABLE")
+    try:
+        qualify(root, "governance/confinement/strict-local-host-v1.json", ".local/ranex/libexec/strict-local-v1/ranex-worker-launcher", "governance/confinement/native-launcher-build-v1.json", ".local/ranex/qualification/strict-local-v1.json")
+        report = _read_closed_json(root / ".local/ranex/qualification/strict-local-v1.json", {"schema", "qualified", "refusal", "kernel", "primitives", "cgroup", "open_objects", "digests", "delegation", "host_state"})
+        helper_probe, helper_digest = _execution_helper_probe()
+        projection = _qualified_projection(operation_id, target_id, report, helper_probe, helper_digest)
+        _QUALIFICATION_CACHE[target_id] = projection
+        return dict(projection)
+    except ProtocolRefusal as error:
+        return _qualification_refusal(operation_id, target_id, error.safe_code)
+    except HostConfinementError as error:
+        mapping = {
+            "E-C17-ARCH-UNSUPPORTED": "QUALIFICATION_PLATFORM_UNSUPPORTED",
+            "E-C17-CGROUP-DELEGATION": "QUALIFICATION_CGROUP_UNAVAILABLE",
+            "E-C17-EXEC-OBJECT-DRIFT": "QUALIFICATION_LAUNCHER_MISMATCH",
+            "E-C17-HOST-FACT-MISSING": "QUALIFICATION_LANDLOCK_UNAVAILABLE",
+        }
+        return _qualification_refusal(operation_id, target_id, mapping.get(error.code, "QUALIFICATION_PROFILE_UNAVAILABLE"))
+    except (OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError):
+        return _qualification_refusal(operation_id, target_id, "QUALIFICATION_PROFILE_UNAVAILABLE")
 
 
 def _journal_state() -> str:
@@ -932,7 +1066,11 @@ def _cancel_operation(request: dict[str, Any], body: dict[str, Any]) -> tuple[di
 
 def _capabilities() -> dict[str, Any]:
     provenance = _provenance()
-    qualified = platform.system() == "Linux"
+    qualified = any(
+        value.get("status") == "qualified"
+        and datetime.strptime(value["expiresAt"], "%Y-%m-%dT%H:%M:%S.%fZ") > datetime.utcnow()
+        for value in _QUALIFICATION_CACHE.values()
+    )
     journal = _journal_state()
     degradation_codes: list[str] = []
     if not qualified:
@@ -1016,20 +1154,7 @@ def _dispatch(request: dict[str, Any]) -> tuple[dict[str, Any], dict[str, str] |
         target_id = body.get("targetId")
         if set(body) != {"targetId"} or not isinstance(target_id, str) or not SYMBOLIC.fullmatch(target_id):
             raise ProtocolRefusal("KERNEL_PROTOCOL_INVALID")
-        # The pinned Ranex revision has no qualified writable-agent profile. This exact
-        # closed refusal prevents host platform alone from becoming execution authority.
-        return {
-            "schemaVersion": 1, "qualificationId": request["operationId"], "targetId": target_id,
-            "architecture": "amd64", "profileId": "kogg-writable-agent-v1",
-            "profileDigest": "sha256:" + "0" * 64, "bootIdDigest": "sha256:" + "0" * 64,
-            "kernelRelease": platform.release()[:128], "landlockAbi": "0",
-            "cgroupProfileDigest": "sha256:" + "0" * 64, "mountQuotaDigest": "sha256:" + "0" * 64,
-            "launcherDigest": "sha256:" + "0" * 64, "bubblewrapDigest": "sha256:" + "0" * 64,
-            "seccompDigest": "sha256:" + "0" * 64, "brokerDigest": "sha256:" + "0" * 64,
-            "ranexCommit": _provenance()["commit"], "checkedAt": "1970-01-01T00:00:00.000Z",
-            "expiresAt": "1970-01-01T00:00:00.000Z", "status": "refused",
-            "refusalCodes": ["QUALIFICATION_PROFILE_UNAVAILABLE"],
-        }, None
+        return _qualify_execution(request["operationId"], target_id), None
     if operation == "task.bind":
         return _bind_task(request, body)
     if operation == "producer.dispatch":

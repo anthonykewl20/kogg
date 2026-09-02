@@ -26,6 +26,9 @@ test('builds a pinned Linux helper and refuses malformed or unqualified allocati
     const malformed = invoke(rootFd, '{}\n');
     assert.equal(malformed.status, 1); assert.deepEqual(JSON.parse(malformed.stdout), { schemaVersion: 1, ok: false, safeCode: 'ALLOCATION_PROTOCOL_INVALID' });
     assert.equal(malformed.stderr, '');
+    const qualification = invoke(rootFd, '{"schemaVersion":1,"operation":"qualify"}\n');
+    assert.equal(qualification.status, 1); assert.deepEqual(JSON.parse(qualification.stdout), { schemaVersion: 1, ok: false, safeCode: 'ALLOCATION_QUALIFICATION_INVALID' });
+    assert.equal(qualification.stderr, '');
 
     const allocationName = 'r-abcdefghijklmnopqrstuvwxyz';
     const request = JSON.stringify({
