@@ -13,6 +13,8 @@ import { modeAuthorityLabel, modeBlockedExplanation, modeSelectionAllowed } from
 // diagnostic-coverage: interaction-modes.authority, interaction-modes.transitions, interaction-modes.operations, interaction-modes.restoration, interaction-modes.accessibility, interaction-modes.source-maps
 const STATUS_ID = 'kogg.interaction-mode';
 const BROADCAST_NAME = 'kogg:interaction-modes:v1';
+export const KOGG_INTERACTION_MODE_UI_EVENT = 'kogg:interaction-mode-ui';
+export const KOGG_INTERACTION_MODE_UI_REQUEST_EVENT = 'kogg:interaction-mode-ui-request';
 const SELECT_MODE: Command = { id: 'kogg.interaction-mode.select', label: 'Kogg: Select Interaction Mode' };
 const MODE_LABEL: Readonly<Record<InteractionModeV1, string>> = { plan: 'Plan', build: 'Build', kogg: 'Kogg' };
 const MODE_DETAIL: Readonly<Record<InteractionModeV1, string>> = {
@@ -31,6 +33,7 @@ export class InteractionModeFrontendContribution implements FrontendApplicationC
   private readonly focusListener = () => void this.refresh();
   private readonly taskListener = () => void this.refresh();
   private readonly broadcastListener = () => void this.refresh();
+  private readonly uiRequestListener = () => void this.render(this.projection ? 'ready' : this.task ? 'loading' : 'no-task');
   constructor(
     @inject(StatusBar) private readonly statusBar: StatusBar,
     @inject(QuickInputService) private readonly quickInput: QuickInputService,
@@ -43,16 +46,20 @@ export class InteractionModeFrontendContribution implements FrontendApplicationC
     console.info('[kogg:ui:mode-selector] selector.started');
     void this.render('loading'); void this.refresh(); window.addEventListener('focus', this.focusListener);
     window.addEventListener(KOGG_TASKS_CHANGED_EVENT, this.taskListener);
+    window.addEventListener(KOGG_INTERACTION_MODE_UI_REQUEST_EVENT, this.uiRequestListener);
     this.broadcast.addEventListener('message', this.broadcastListener);
   }
   onStop(): void {
     window.removeEventListener('focus', this.focusListener);
     window.removeEventListener(KOGG_TASKS_CHANGED_EVENT, this.taskListener);
+    window.removeEventListener(KOGG_INTERACTION_MODE_UI_REQUEST_EVENT, this.uiRequestListener);
     this.broadcast.removeEventListener('message', this.broadcastListener); this.broadcast.close();
     console.info('[kogg:ui:mode-selector] selector.stopped');
     void this.statusBar.removeElement(STATUS_ID);
   }
-  registerCommands(commands: CommandRegistry): void { commands.registerCommand(SELECT_MODE, { execute: () => this.selectMode() }); }
+  registerCommands(commands: CommandRegistry): void {
+    commands.registerCommand(SELECT_MODE, { execute: (requested?: unknown) => this.selectMode(isInteractionMode(requested) ? requested : undefined) });
+  }
 
   private async refresh(): Promise<void> {
     try {
@@ -79,9 +86,13 @@ export class InteractionModeFrontendContribution implements FrontendApplicationC
       command: SELECT_MODE.id, tooltip: `${label}. ${projection ? modeBlockedExplanation(projection) : 'Create an active task to establish task-scoped authority.'}`,
       accessibilityInformation: { label }
     });
+    window.dispatchEvent(new CustomEvent(KOGG_INTERACTION_MODE_UI_EVENT, { detail: {
+      state, selectedMode: projection?.selectedMode ?? 'plan', activeStage: projection?.activeStage,
+      authority, taskId: this.task?.taskId
+    } }));
   }
 
-  private async selectMode(): Promise<void> {
+  private async selectMode(requested?: InteractionModeV1): Promise<void> {
     await this.refresh();
     if (!this.task || !this.projection) { await this.messages.warn('Create an active governed task before selecting an interaction mode.'); return; }
     if (this.projection.state === 'transition-pending') { await this.handlePending(); return; }
@@ -93,7 +104,9 @@ export class InteractionModeFrontendContribution implements FrontendApplicationC
       description: mode === this.projection!.selectedMode ? 'Current task mode' : transitionDescription(this.projection!.selectedMode, mode),
       detail: MODE_DETAIL[mode], ariaLabel: `${MODE_LABEL[mode]}. ${MODE_DETAIL[mode]}`, value: mode
     }));
-    const selected = await this.quickInput.showQuickPick(choices, { placeholder: `Task ${this.task.taskId.slice(0, 8)} — choose an authority-bounded mode` });
+    const selected = requested
+      ? choices.find(choice => choice.value === requested)
+      : await this.quickInput.showQuickPick(choices, { placeholder: `Task ${this.task.taskId.slice(0, 8)} — choose an authority-bounded mode` });
     if (!selected || selected.value === this.projection.selectedMode) return;
     const consequence = `${transitionDescription(this.projection.selectedMode, selected.value)} ${MODE_DETAIL[selected.value]}`;
     if (await this.messages.warn(consequence, 'Request switch', 'Cancel') !== 'Request switch') return;
@@ -182,6 +195,7 @@ function configurationSummary(configuration: ModeTransitionConfigurationV1): str
   return `${configuration.adapterKey}@${configuration.adapterVersion} · ${configuration.providerId}/${configuration.modelId} · ${configuration.targetId}`;
 }
 function transitionDescription(from: InteractionModeV1, to: InteractionModeV1): string { const order = { plan: 0, build: 1, kogg: 2 }; return order[to] > order[from] ? 'Authority expansion requires explicit confirmation and fresh owner qualification.' : 'Authority reduction requires active-work cancellation and externally proved cleanup.'; }
+function isInteractionMode(value: unknown): value is InteractionModeV1 { return value === 'plan' || value === 'build' || value === 'kogg'; }
 class ModeUiError extends Error { constructor(readonly code: string) { super(code); this.name = 'ModeUiError'; } }
 function safeCode(error: unknown): string { return error instanceof ModeUiError ? error.code : 'MODE_REGISTRY_UNAVAILABLE'; }
 function errorName(error: unknown): string { return error instanceof Error ? error.name : 'UnknownError'; }

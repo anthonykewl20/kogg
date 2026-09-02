@@ -37,6 +37,7 @@ export class KoggFrontendContribution implements FrontendApplicationContribution
     document.title = 'Kogg';
     document.documentElement.dataset.kogg = 'true';
     document.body.classList.add('kogg-application');
+    console.info('[kogg:ui:shell] theme.applied', { themeVersion: 2 });
     this.installBrowserAuthenticationGuard();
     this.removeStockAgentCommands();
   }

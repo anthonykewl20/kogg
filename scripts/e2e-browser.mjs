@@ -31,6 +31,7 @@ const appUrl = `http://127.0.0.1:${browserPort}`;
 const token = 'kogg-disposable-e2e-token';
 const masterKey = 'kogg-disposable-e2e-master-key';
 const providerSecret = 'kogg-disposable-provider-secret';
+const providerAccount = 'e2e-browser';
 const logs = [];
 const processes = new HarnessProcessRegistry({ logger: line => logs.push(line) });
 const run = await HarnessRunManifest.create({ root: resultRoot, runtime: 'browser', capabilities: platformCapabilities('browser'), logger: line => logs.push(line) });
@@ -70,7 +71,9 @@ try {
 
     await page.goto(appUrl);
     await page.waitForURL('**/kogg/auth/login');
-    assert.equal(await page.locator('h1').innerText(), 'Kogg');
+    assert.equal(await page.locator('h1').innerText(), 'Welcome back');
+    await page.getByText('Kogg', { exact: true }).waitFor();
+    await page.getByLabel('Access token').waitFor();
     await page.getByRole('textbox').fill('invalid');
     await page.getByRole('button', { name: 'Open Kogg' }).click();
     await page.getByText('Invalid Kogg access token.').waitFor();
@@ -159,6 +162,9 @@ try {
 
     await marketplace.getByLabel('Search Kogg Marketplace').fill('kogg');
     await marketplace.getByRole('button', { name: 'Search' }).click();
+    await marketplace.getByRole('button', { name: 'Reinstall' }).click();
+    await marketplace.getByText('kogg.fixture 0.1.0').last().waitFor();
+    await clearNotifications(page);
     await marketplace.getByRole('button', { name: 'Update' }).waitFor();
     await marketplace.getByRole('button', { name: 'Update' }).click();
     await marketplace.getByText('kogg.fixture 0.2.0').last().waitFor();
@@ -176,31 +182,44 @@ try {
     await marketplace.getByText('kogg.fixture 0.1.0').last().waitFor();
     await clearNotifications(page);
 
-    await openCommand(page, 'View: Toggle Kogg AI');
-    const provider = page.locator('.kogg-provider-widget');
-    await provider.getByLabel('Provider').selectOption('openai');
+    let provider = page.locator('.kogg-provider-widget:visible');
+    if (!await provider.count()) {
+        await openCommand(page, 'View: Toggle Kogg AI');
+        provider = page.locator('.kogg-provider-widget:visible');
+    }
+    await provider.getByText('Kogg AI').first().waitFor();
+    await provider.getByLabel('Message Kogg').waitFor({ state: 'visible' });
+    assert.equal(await provider.getByLabel('Message Kogg').isDisabled(), true);
+    const chatModes = provider.getByRole('group', { name: 'Chat mode' });
+    for (const mode of ['Plan', 'Build', 'Kogg']) await chatModes.getByRole('button', { name: mode, exact: true }).waitFor();
+    await provider.getByRole('button', { name: 'Connect a provider' }).click();
+    await provider.locator('[data-provider-option="openai"]').click();
+    await provider.getByLabel('Account').fill(providerAccount);
     await provider.getByRole('button', { name: 'Test connection' }).click();
-    await provider.getByText('Credential is not configured').waitFor();
-    await provider.getByLabel('Credential').fill(providerSecret);
+    const missingCredential = provider.getByText('Credential is not configured');
+    await missingCredential.scrollIntoViewIfNeeded();
+    await missingCredential.waitFor();
+    await provider.getByLabel('API key').fill(providerSecret);
     await provider.getByRole('button', { name: 'Save credential' }).click();
-    await provider.getByText('openai / default').waitFor();
+    await provider.getByText(`openai / ${providerAccount}`).waitFor();
     assert.doesNotMatch(await provider.innerText(), new RegExp(providerSecret, 'u'));
-    await provider.getByLabel('Provider').selectOption('llamafile');
+    await provider.locator('[data-provider-option="llamafile"]').click();
     await provider.getByLabel('Endpoint (optional)').fill('http://127.0.0.1:1/models');
     await provider.getByRole('button', { name: 'Test connection' }).click();
     await provider.getByText(/fetch failed|Connection failed/iu).waitFor();
     await provider.getByLabel('Endpoint (optional)').fill(`${registryUrl}/provider/v1/models`);
     await provider.getByRole('button', { name: 'Discover models' }).click();
     await provider.getByText('Discovered 1 model(s).').waitFor();
-    await provider.getByLabel('Advisory prompt').fill('Verify the disposable provider path.');
-    await provider.getByRole('button', { name: 'Send advisory request' }).click();
+    await provider.getByLabel('Message Kogg').fill('Verify the disposable provider path.');
+    await provider.getByRole('button', { name: 'Send message' }).click();
     await provider.getByText('Kogg provider fixture responded successfully.').waitFor();
     assert.match(await provider.innerText(), /Advisory only.*governed mutation blocked/isu);
-    await provider.locator('li').filter({ hasText: 'openai / default' }).getByRole('button', { name: 'Delete' }).click();
+    await provider.locator('li').filter({ hasText: `openai / ${providerAccount}` }).getByRole('button', { name: 'Delete' }).click();
     await provider.getByText('None. Secret values are never displayed.').waitFor();
     const encryptedCredentialFile = await readFile(path.join(state, 'credentials', 'browser.enc.json'), 'utf8');
     assert.equal(encryptedCredentialFile.includes(providerSecret), false);
     assert.equal(logs.join('\n').includes(providerSecret), false);
+    await assertNoHorizontalOverflow(provider);
 
     await openCommand(page, 'View: Toggle Explorer');
     const explorer = page.getByRole('tabpanel', { name: /Explorer/u });
@@ -262,6 +281,7 @@ try {
     await exerciseTasks(page);
     await createInteractionModeFixture(page);
     await exerciseInteractionModes(page);
+    await exerciseTaskArchive(page);
     await exerciseOperations(page);
     await exerciseOperationsStream(page);
     await exerciseVerdictMerge(page);
@@ -288,7 +308,9 @@ try {
     processes.ready(backend);
     await page.goto(appUrl, { waitUntil: 'domcontentloaded' });
     await page.waitForURL('**/kogg/auth/login', { timeout: 15_000 });
-    assert.equal((await page.locator('h1').innerText()), 'Kogg');
+    assert.equal((await page.locator('h1').innerText()), 'Welcome back');
+    await page.getByText('Kogg', { exact: true }).waitFor();
+    await page.getByLabel('Access token').waitFor();
 
     completionMessage = 'Kogg browser E2E passed: auth, branding, marketplace, provider, Git, debug, projects, restoration, and 25 reconnect cycles.';
 } catch (error) {
@@ -434,13 +456,9 @@ async function openCommand(page, label) {
         option = page.locator('[role="option"]:visible').filter({ hasText: label }).first();
         await option.waitFor();
     }
-    await option.click({ timeout: 2_000 }).catch(async () => {
-        // The virtualized command row can be replaced between resolution and
-        // click while the palette filters. A closed palette means the command
-        // already activated; otherwise Enter activates the focused exact match.
-        if (!await input.isVisible().catch(() => false)) return;
-        await input.press('Enter');
-    });
+    // Monaco virtualizes command results; dispatch through the confirmed row
+    // so deeply scrolled workbench content cannot invalidate pointer geometry.
+    await option.evaluate(element => element.click());
 }
 
 async function clearNotifications(page) {
@@ -492,6 +510,7 @@ async function initializeGitRepository(repository, subject, separateGitDirectory
 }
 
 async function exerciseProjects(page) {
+    await closeBottomPanel(page);
     assert.equal(spawnSync('git', ['-C', await realpath(workspace), 'rev-parse', '--is-inside-work-tree'], { encoding: 'utf8' }).stdout.trim(), 'true');
     let projects = await ensureProjectsWidget(page);
     await createProjectThroughPicker(page, projects, 'Alpha', workspace);
@@ -540,7 +559,8 @@ async function exerciseProjects(page) {
     await page.reload({ waitUntil: 'domcontentloaded' });
     await page.locator('body.kogg-application').waitFor({ timeout: 20_000 });
     projects = await ensureProjectsWidget(page);
-    await projects.locator('[data-project-row]').filter({ hasText: 'Alpha' }).getByRole('button', { name: 'Manage' }).click();
+    const manageAlpha = projects.locator('[data-project-row]').filter({ hasText: 'Alpha' }).getByRole('button', { name: 'Manage' });
+    if (await manageAlpha.isEnabled()) await manageAlpha.click();
     await waitForProjectText(projects, /worker → ollama:default \/ fixture-model/u);
     await waitForProjectText(projects, /task-alpha → Alpha/u);
     await projects.locator('[data-project-row]').filter({ hasText: 'Alpha' }).getByRole('button', { name: 'Switch' }).click();
@@ -561,7 +581,7 @@ async function exerciseProjects(page) {
     await page.reload({ waitUntil: 'domcontentloaded' });
     await page.locator('body.kogg-application').waitFor({ timeout: 20_000 });
     projects = await ensureProjectsWidget(page);
-    const unavailableBeta = projects.locator('[data-project-row]').filter({ hasText: 'Beta' });
+    let unavailableBeta = projects.locator('[data-project-row]').filter({ hasText: 'Beta' });
     await waitForProjectText(unavailableBeta, /unavailable/u);
     assert.equal(await unavailableBeta.locator('button[data-switch]').evaluate(button => button.disabled), true);
     assert.equal(await projects.locator('[data-project-row]').filter({ hasText: 'Alpha' }).locator('button[data-remove-project]').evaluate(button => button.disabled), true);
@@ -583,6 +603,8 @@ async function exerciseProjects(page) {
     assert.match(logs.join('\n'), /repository\.revalidation\.completed/iu);
     assert.match(logs.join('\n'), /repository\.process\.cleanup\.completed/iu);
 
+    projects = await ensureProjectsWidget(page);
+    unavailableBeta = projects.locator('[data-project-row]').filter({ hasText: 'Beta' });
     await unavailableBeta.getByRole('button', { name: 'Manage' }).click();
     await Promise.all([
         chooseFolder(page, relocatedRepository),
@@ -599,6 +621,43 @@ async function exerciseProjects(page) {
     projects = await ensureProjectsWidget(page);
     await waitForProjectText(projects, /Alpha[\s\S]*Active/u);
     await waitForProjectText(projects.locator('[data-project-row]').filter({ hasText: 'Beta' }), /· available/u);
+
+    // Exercise every remaining Projects mutation with reversible fixture data.
+    const manageActiveAlpha = projects.locator('[data-project-row]').filter({ hasText: 'Alpha' }).getByRole('button', { name: 'Manage' });
+    if (await manageActiveAlpha.isEnabled()) await manageActiveAlpha.click();
+    await projects.getByLabel('Project name', { exact: true }).fill('Alpha renamed');
+    await projects.getByRole('button', { name: 'Rename' }).click();
+    await waitForProjectText(projects, /Alpha renamed/u);
+    await projects.getByLabel('Project name', { exact: true }).fill('Alpha');
+    await projects.getByRole('button', { name: 'Rename' }).click();
+    await waitForProjectText(projects, /Manage Alpha/u);
+    await projects.locator('li').filter({ hasText: /worker →/u }).getByRole('button', { name: 'Clear' }).click();
+    await waitForProjectText(projects, /No role assignments/u);
+    await projects.getByLabel('Role').selectOption('worker');
+    await projects.getByLabel('Provider configuration').fill('ollama:default');
+    await projects.getByLabel('Model').fill('fixture-model');
+    await projects.getByRole('button', { name: 'Assign role' }).click();
+    await waitForProjectText(projects, /worker → ollama:default/u);
+    await projects.locator('li').filter({ hasText: /task-alpha →/u }).getByRole('button', { name: 'Clear' }).click();
+    await waitForProjectText(projects, /No task repository bindings/u);
+    const sharedRepository = projects.locator('article').filter({ hasText: /Shared tools/u });
+    await sharedRepository.getByRole('button', { name: 'Remove' }).click();
+    await acceptConfirmation(page, /Remove repository from project/iu);
+    await waitForProjectText(projects, /1 repository · available/u);
+    const beta = projects.locator('[data-project-row]').filter({ hasText: 'Beta' });
+    await beta.getByRole('button', { name: 'Remove' }).click();
+    await acceptConfirmation(page, /Remove project from Kogg/iu);
+    await beta.waitFor({ state: 'detached', timeout: 10_000 });
+}
+
+async function closeBottomPanel(page) {
+    const bottom = page.locator('#theia-bottom-content-panel');
+    if (!await bottom.count()) return;
+    const height = await bottom.evaluate(element => element.getBoundingClientRect().height);
+    if (height > 40) {
+        await page.getByRole('button', { name: 'Toggle Bottom Panel' }).click();
+        await page.waitForTimeout(250);
+    }
 }
 
 async function renameWhenReleased(source, destination) {
@@ -633,8 +692,12 @@ async function trustWorkspace(page) {
 async function ensureProjectsWidget(page) {
     const widgets = page.locator('.kogg-projects-widget');
     if (!await widgets.count()) {
-        await openCommand(page, 'View: Toggle Kogg Projects');
-        await widgets.first().waitFor({ state: 'attached', timeout: 10_000 });
+        for (let attempt = 0; attempt < 3 && !await widgets.count(); attempt++) {
+            await openCommand(page, 'View: Toggle Kogg Projects');
+            await widgets.first().waitFor({ state: 'attached', timeout: 10_000 }).catch(() => undefined);
+            if (!await widgets.count()) await page.waitForTimeout(500);
+        }
+        await widgets.first().waitFor({ state: 'attached', timeout: 30_000 });
     }
     let active = await renderedWidget(widgets);
     if (active.area === 0) {
@@ -864,6 +927,8 @@ async function exerciseAgents(page, admissionId) {
     await waitForAgentIdle(agents);
     const currentParent = agents.locator(`[data-attempt="${parentAttemptId}"]`); await currentParent.filter({ hasText: /children 1.*resources 1/iu }).waitFor(); await currentParent.getByRole('button', { name: 'Cancel' }).click();
     await agents.locator(`[data-attempt="${parentAttemptId}"]`).filter({ hasText: /cleaned · CANCELLED.*children 1.*resources 0/iu }).waitFor({ timeout: 15_000 });
+    await agents.getByRole('button', { name: 'Refresh' }).click();
+    await agents.getByRole('status').filter({ hasText: /Agent registry ready/iu }).waitFor();
 }
 
 async function roleOptionValue(agents, roleKey, excluded = new Set()) {
@@ -1020,10 +1085,13 @@ async function exerciseVerdictMerge(page) {
 async function exerciseInteractionModes(page) {
     const selector = page.getByLabel(/Mode: Plan; authority: \d+ bounded capabilities; stage: research/u);
     await selector.waitFor({ state: 'visible', timeout: 15_000 });
-    await selector.click();
-    const build = page.getByRole('option', { name: /Build\./u });
-    await build.waitFor({ state: 'visible', timeout: 10_000 });
-    await build.click();
+    let provider = page.locator('.kogg-provider-widget:visible');
+    if (!await provider.count()) {
+        await openCommand(page, 'View: Toggle Kogg AI');
+        provider = page.locator('.kogg-provider-widget:visible');
+    }
+    const chatModes = provider.getByRole('group', { name: 'Chat mode' });
+    await chatModes.getByRole('button', { name: 'Build', exact: true }).click();
     await page.getByRole('button', { name: 'Request switch' }).click();
     const pending = page.getByLabel(/Mode: Plan; authority: disabled during transition/u);
     const unavailable = page.getByText(/Mode switch unavailable: no current Build owner configuration is qualified/u).first();
@@ -1048,6 +1116,17 @@ async function exerciseInteractionModes(page) {
     assert.match(logs.join('\n'), /\[kogg:ui:mode-selector\] mode\.transition-requested/u);
     assert.match(logs.join('\n'), /\[kogg:interaction-modes:service\] mode\.transition\.restored/u);
     assert.match(logs.join('\n'), /\[kogg:interaction-modes:service\] mode\.transition\.cancelled/u);
+}
+
+async function exerciseTaskArchive(page) {
+    const tasks = await ensureTasksWidget(page);
+    await tasks.getByLabel('Initial specification').fill('Disposable archive-control acceptance fixture.');
+    await tasks.getByRole('button', { name: 'Create task' }).click();
+    const detail = tasks.locator('[data-task-detail]');
+    await detail.getByRole('button', { name: 'Archive task' }).waitFor({ timeout: 10_000 });
+    await detail.getByRole('button', { name: 'Archive task' }).click();
+    await detail.getByText(/archived · draft/iu).waitFor({ timeout: 10_000 });
+    assert.equal(await detail.getByRole('button', { name: 'Archive task' }).count(), 0);
 }
 
 async function createInteractionModeFixture(page) {
@@ -1091,13 +1170,44 @@ async function exerciseOperations(page) {
     await operations.getByText('Admission: enabled').waitFor({ timeout: 10_000 });
     await operations.getByText('ranex-bridge').first().waitFor({ timeout: 10_000 });
     await operations.getByText('repository-probe').first().waitFor({ timeout: 10_000 });
-    await operations.locator('[data-operation-row]').filter({ hasText: 'provider-connection' }).filter({ hasText: 'OWNER_UNAVAILABLE' }).first().waitFor({ timeout: 10_000 });
+    await operations.locator('[data-operation-row]').filter({ hasText: 'provider-connection' }).filter({ hasText: 'OPERATIONS_OK' }).first().waitFor({ timeout: 10_000 });
     await operations.locator('[data-operation-row]').filter({ hasText: 'repository-probe' }).filter({ hasText: 'PROCESS_EXIT_NONZERO' }).first().waitFor({ timeout: 10_000 });
     const visibleOperations = await operations.innerText();
     for (const kind of ['marketplace', 'provider-connection', 'provider-session', 'project-mutation', 'project-switch', 'diagnostics', 'support-export']) {
         assert.match(visibleOperations, new RegExp(kind, 'u'));
     }
     assert.doesNotMatch(visibleOperations, /pid|argv|environment|prompt|source code/iu);
+    await assertNoHorizontalOverflow(operations);
+
+    const diagnostics = operations.getByRole('button', { name: 'Run Diagnostics' });
+    if (await diagnostics.count()) {
+        await diagnostics.click();
+        await page.getByText(/Diagnostics: (?:PASS|WARN|FAIL)/u).first().waitFor({ timeout: 15_000 });
+        await page.keyboard.press('Escape');
+    }
+    await operations.getByRole('button', { name: 'Export safe support bundle' }).click();
+    const exportAction = page.locator('button[data-action="Export bundle"]:visible').first();
+    await exportAction.waitFor({ state: 'visible', timeout: 10_000 });
+    const download = page.waitForEvent('download');
+    await exportAction.click();
+    const artifact = await download;
+    assert.match(artifact.suggestedFilename(), /^kogg-operations-support-.*\.json$/u);
+    await clearNotifications(page);
+}
+
+async function acceptConfirmation(page, title) {
+    const dialog = page.locator('.dialogBlock').filter({ hasText: title });
+    await dialog.waitFor({ state: 'visible', timeout: 10_000 });
+    await dialog.getByRole('button', { name: /OK|Remove/iu }).click();
+    await dialog.waitFor({ state: 'hidden', timeout: 10_000 });
+}
+
+async function assertNoHorizontalOverflow(surface) {
+    const overflow = await surface.locator('.kogg-panel').evaluate(element => ({
+        clientWidth: element.clientWidth,
+        scrollWidth: element.scrollWidth
+    }));
+    assert(overflow.scrollWidth <= overflow.clientWidth + 1, `Horizontal overflow: ${overflow.scrollWidth}px > ${overflow.clientWidth}px`);
 }
 
 async function exerciseExecution(page) {

@@ -40,6 +40,11 @@ test('browser authentication protects HTTP and WebSocket access with hardened co
   const unauthorized = await fetch(`${base}/protected`, { redirect: 'manual' });
   assert.equal(unauthorized.status, 303);
   assert.equal(unauthorized.headers.get('location'), '/kogg/auth/login');
+  const loginPage = await fetch(`${base}/kogg/auth/login`);
+  const loginHtml = await loginPage.text();
+  assert.match(loginHtml, /<label for="token">Access token<\/label>/u);
+  assert.match(loginHtml, /prefers-reduced-motion/u);
+  assert.match(loginHtml, /Local, encrypted session/u);
 
   const invalid = await fetch(`${base}/kogg/auth/login`, {
     method: 'POST', redirect: 'manual',

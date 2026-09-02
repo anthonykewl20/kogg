@@ -17,7 +17,7 @@ export class ProjectsContribution extends AbstractViewContribution<ProjectsWidge
     super({
       widgetId: ProjectsWidget.ID,
       widgetName: ProjectsWidget.LABEL,
-      defaultWidgetOptions: { area: 'left', rank: 100 },
+      defaultWidgetOptions: { area: 'main', rank: 100 },
       toggleCommandId: 'kogg.projects.open'
     });
   }

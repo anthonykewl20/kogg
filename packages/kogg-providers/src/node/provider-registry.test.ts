@@ -48,3 +48,23 @@ test('uses the Google API-key header for discovery and advisory chat without exp
         globalThis.fetch = originalFetch;
     }
 });
+
+test('returns an actionable negative connection result without misclassifying it as an operation failure', async () => {
+    const events: string[] = [];
+    const missingCredentials: CredentialStore = {
+        set: async () => undefined, get: async () => undefined, delete: async () => false, listMetadata: async () => []
+    };
+    const observedOperations = {
+        startOperation: async () => ({
+            id: 'negative-provider-test', cancellable: false, start() { events.push('start'); }, active() { events.push('active'); },
+            waiting() {}, activity() {}, refuse() {}, complete() { events.push('complete'); }, fail() { events.push('fail'); },
+            timeout() {}, cancel: async () => undefined, cleanup: async () => { events.push('cleanup'); },
+            registerProcess() { throw new Error('No process is expected in this provider test'); }
+        })
+    } as unknown as OperationRegistryApi;
+    const service = new KoggProviderServiceImpl(new KoggProviderRegistry(missingCredentials), missingCredentials, observedOperations);
+
+    assert.deepEqual(await service.testConnection('openai', 'default'), { ok: false, detail: 'Credential is not configured' });
+    assert.equal(events.includes('complete'), true);
+    assert.equal(events.includes('fail'), false);
+});

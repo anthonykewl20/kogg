@@ -24,9 +24,10 @@ export class KoggProviderServiceImpl implements KoggProviderService {
     credentialStatus(provider: string, account: string) { return this.connection(() => this.providers.credentialStatus(provider, account)); }
     discoverModels(provider: string, account: string, endpoint?: string) { return this.connection(() => this.providers.discoverModels(provider, account, endpoint)); }
     testConnection(provider: string, account: string, endpoint?: string) {
-        return runOperation(this.operations, 'provider-connection', () => this.providers.testConnection(provider, account, endpoint), {
-            failureCode: 'OWNER_UNAVAILABLE', resultFailed: result => !result.ok, resultFailureType: 'ProviderConnectionError'
-        });
+        // A reachable service returning a negative connection result (including
+        // a missing credential) is a completed diagnostic, not an operational
+        // failure. Preserve the actionable provider detail for the UI.
+        return runOperation(this.operations, 'provider-connection', () => this.providers.testConnection(provider, account, endpoint));
     }
 
     async advisoryChat(request: AdvisoryChatRequest): Promise<string> {

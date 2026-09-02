@@ -7,5 +7,5 @@ import { AgentsWidget } from './agents-widget';
 
 @injectable()
 export class AgentsContribution extends AbstractViewContribution<AgentsWidget> {
-  constructor() { super({ widgetId: AgentsWidget.ID, widgetName: AgentsWidget.LABEL, defaultWidgetOptions: { area: 'left', rank: 120 }, toggleCommandId: 'kogg.agents.open' }); }
+  constructor() { super({ widgetId: AgentsWidget.ID, widgetName: AgentsWidget.LABEL, defaultWidgetOptions: { area: 'main', rank: 120 }, toggleCommandId: 'kogg.agents.open' }); }
 }
