@@ -1082,9 +1082,34 @@ async function exerciseVerdictMerge(page) {
     assert.match(logs.join('\n'), /\[kogg:verdict:service\] candidates\.completed/u);
 }
 
+async function exerciseHostileModeTransitions(page) {
+    // A manipulated frontend holding a fully valid session must still be
+    // refused at the backend authority boundary.
+    const refusals = await page.evaluate(async () => {
+        const csrfResponse = await fetch('/kogg/auth/csrf', { cache: 'no-store', credentials: 'same-origin' });
+        const csrfToken = csrfResponse.ok ? String((await csrfResponse.json()).csrfToken ?? '') : '';
+        const post = async (path, body) => {
+            const response = await fetch(path, { method: 'POST', credentials: 'same-origin', headers: { 'content-type': 'application/json', 'x-kogg-csrf': csrfToken }, body: JSON.stringify(body) });
+            return { status: response.status, error: String((await response.json().catch(() => ({}))).error ?? '') };
+        };
+        const digest = `sha256:${'0'.repeat(64)}`;
+        const invalidMode = await post('/kogg/modes/transitions/request', { transitionId: crypto.randomUUID(), requestId: crypto.randomUUID(), taskId: crypto.randomUUID(), expectedSequence: '0', fromMode: 'plan', toMode: 'override', requestedConfigurationDigest: digest });
+        const unknownTask = await post('/kogg/modes/transitions/request', { transitionId: crypto.randomUUID(), requestId: crypto.randomUUID(), taskId: crypto.randomUUID(), expectedSequence: '0', fromMode: 'plan', toMode: 'build', requestedConfigurationDigest: digest });
+        const configuration = { schemaVersion: 1, kind: 'build', roleRevisionId: crypto.randomUUID(), providerId: 'fixture', modelId: 'fixture.echo', adapterKey: 'kogg.fixture', adapterVersion: '1.0.0', deadlinePolicyId: 'standard', targetId: 'qualified-linux' };
+        const fabricatedConfirm = await post('/kogg/modes/transitions/confirm', { requestId: crypto.randomUUID(), transitionId: crypto.randomUUID(), taskId: crypto.randomUUID(), explicitGesture: true, configuration });
+        return { invalidMode, unknownTask, fabricatedConfirm };
+    });
+    assert.equal(`${refusals.invalidMode.status}:${refusals.invalidMode.error}`, '400:MODE_PROTOCOL_INVALID');
+    assert.equal(`${refusals.unknownTask.status}:${refusals.unknownTask.error}`, '503:MODE_TASK_UNAVAILABLE');
+    assert.equal(`${refusals.fabricatedConfirm.status}:${refusals.fabricatedConfirm.error}`, '409:MODE_TRANSITION_CONFLICT');
+    assert.match(logs.join('\n'), /\[kogg:interaction-modes:http\] transition\.request\.failed[\s\S]*?safeCode: 'MODE_PROTOCOL_INVALID'/u);
+    assert.match(logs.join('\n'), /\[kogg:interaction-modes:http\] transition\.confirm\.failed[\s\S]*?safeCode: 'MODE_TRANSITION_CONFLICT'/u);
+}
+
 async function exerciseInteractionModes(page) {
     const selector = page.getByLabel(/Mode: Plan; authority: \d+ bounded capabilities; stage: research/u);
     await selector.waitFor({ state: 'visible', timeout: 15_000 });
+    await exerciseHostileModeTransitions(page);
     let provider = page.locator('.kogg-provider-widget:visible');
     if (!await provider.count()) {
         await openCommand(page, 'View: Toggle Kogg AI');

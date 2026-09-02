@@ -618,9 +618,25 @@ async function exerciseElectronWorkflowEditor(page, electronApplication) {
     assert.doesNotMatch(await widget.innerText(), /configurationDigest|requestedEffects|graphDigest|catalogDigest/u);
 }
 
+async function exerciseElectronHostileModeTransitions(page) {
+    // The desktop renderer exposes no HTTP mutation surface at all; a
+    // manipulated frontend cannot reach the transition endpoints, and
+    // authority flows only through the governed desktop path.
+    const unreachable = await page.evaluate(async () => {
+        try {
+            await fetch('/kogg/modes/transitions/request', { method: 'POST', credentials: 'same-origin', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ transitionId: crypto.randomUUID(), requestId: crypto.randomUUID(), taskId: crypto.randomUUID(), expectedSequence: '0', fromMode: 'plan', toMode: 'build', requestedConfigurationDigest: `sha256:${'0'.repeat(64)}` }) });
+            return false;
+        } catch {
+            return true;
+        }
+    });
+    assert(unreachable, 'Expected no reachable HTTP mutation surface in the desktop renderer');
+}
+
 async function exerciseElectronInteractionModes(page) {
     const selector = page.getByLabel(/Mode: Plan; authority: \d+ bounded capabilities; stage: research/u);
     await selector.waitFor({ state: 'visible', timeout: 15_000 });
+    await exerciseElectronHostileModeTransitions(page);
     let provider = page.locator('.kogg-provider-widget:visible');
     if (!await provider.count()) {
         await openCommand(page, 'View: Toggle Kogg AI');
