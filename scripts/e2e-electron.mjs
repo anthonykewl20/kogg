@@ -494,6 +494,7 @@ async function exerciseElectronTasks(page, electronApplication) {
     const admission = tasks.locator('[data-admission-id]'); await admission.waitFor();
     const admissionId = (await admission.innerText()).match(/[0-9a-f-]{36}/u)?.[0]; assert.ok(admissionId);
     await exerciseElectronAgents(page, electronApplication, admissionId);
+    assert.match(logs.join('\n'), /\[kogg:interaction-modes:service\] mode\.operation\.approved[\s\S]*?operation: 'research'/u);
     await openCommand(page, 'View: Toggle Kogg Tasks', electronApplication);
     await tasks.getByRole('button', { name: /Revoke approval/u }).click();
     assert.equal(logs.join('\n').includes(canary), false);
@@ -609,12 +610,14 @@ async function exerciseElectronWorkflowEditor(page, electronApplication) {
         assert.match(await admissionChoices.nth(1).innerText(), /Task [0-9a-f]{8} · run [0-9a-f]{8}/u);
         await widget.getByRole('button', { name: 'Start governed workflow' }).click();
         await widget.getByText(/Workflow operation failed safely: WORKFLOW_AUTHORITY_EXPANSION/u).waitFor({ timeout: 10_000 });
+        assert.match(logs.join('\n'), /\[kogg:interaction-modes:service\] mode\.operation\.refused[\s\S]*?operation: 'governed-entry'/u);
     }
     await page.reload({ waitUntil: 'domcontentloaded' });
     await page.locator('body.kogg-application').waitFor({ timeout: 20_000 });
     widget = page.locator('.kogg-workflow-editor-widget:visible').filter({ hasText: 'Workflow version 1 is current.' }).first();
     await widget.waitFor({ state: 'visible', timeout: 15_000 });
     assert.match(logs.join('\n'), /\[kogg:workflow:editor\] ui\.operation\.completed/u);
+    assert.match(logs.join('\n'), /\[kogg:interaction-modes:service\] mode\.selected[\s\S]*?selectedMode: 'plan'/u);
     assert.doesNotMatch(await widget.innerText(), /configurationDigest|requestedEffects|graphDigest|catalogDigest/u);
 }
 
