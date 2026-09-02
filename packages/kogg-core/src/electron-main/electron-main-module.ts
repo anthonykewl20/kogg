@@ -5,6 +5,16 @@ import path from 'node:path';
 
 // diagnostic-coverage: core.runtime
 
+// Branding runs only inside a real Electron main process; the module is also
+// imported by plain-Node unit tests where the electron export carries no app.
+if (typeof app?.getName === 'function') {
+  if (app.getName() !== 'Kogg') {
+    app.setName('Kogg');
+    console.info('[kogg:core:electron-main] application-name.applied', { applicationName: 'Kogg' });
+  }
+  if (process.platform === 'darwin') app.setAboutPanelOptions({ applicationName: 'Kogg' });
+}
+
 class KoggElectronMainProcessArgv extends ElectronMainProcessArgv {
   override get isBundledElectronApp(): boolean {
     // Electron's process.defaultApp is unset and app.isPackaged can be true for

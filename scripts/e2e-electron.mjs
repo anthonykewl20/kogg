@@ -31,6 +31,7 @@ const run = await HarnessRunManifest.create({ root: results, runtime: 'electron'
 await run.starting();
 const providerSecret = randomBytes(24).toString('base64url');
 const credentialService = `Kogg AI Providers E2E ${randomBytes(16).toString('hex')}`;
+const providerAccount = `e2e-${randomBytes(8).toString('hex')}`;
 let registry;
 let application;
 let completionMessage;
@@ -95,6 +96,7 @@ try {
         return 'positional';
     }));
     logs.push(`[electron] [kogg:e2e:electron] argv.shape ${JSON.stringify(argumentShape)}`);
+    assert.equal(await application.evaluate(({ app }) => app.getName()), 'Kogg');
     await application.firstWindow({ timeout: 30_000 });
     const page = await waitForKoggWindow(application);
     processes.ready(application.process());
@@ -161,6 +163,9 @@ try {
     await openCommand(page, 'Kogg: Open Marketplace', application);
     const marketplace = page.locator('.kogg-marketplace-widget');
     await marketplace.getByText('Kogg Marketplace').first().waitFor();
+    const activeMarketplaceTab = page.locator('.lm-TabBar-tab.lm-mod-current').filter({ hasText: 'Kogg Marketplace' }).first();
+    await activeMarketplaceTab.waitFor();
+    await assertReadableTabContrast(activeMarketplaceTab, 'active editor tab');
     await marketplace.getByLabel('Search Kogg Marketplace').fill('kogg');
     await marketplace.getByRole('button', { name: 'Search' }).click();
     await marketplace.getByText('kogg.fixture').waitFor();
@@ -187,27 +192,53 @@ try {
     await marketplace.getByText('None').waitFor();
     await page.keyboard.press('Escape');
     await clearNotifications(page);
-    await openCommand(page, 'View: Toggle Kogg AI', application);
-    const provider = page.locator('.kogg-provider-widget');
+    let provider = page.locator('.kogg-provider-widget:visible');
+    if (!await provider.count()) {
+        await openCommand(page, 'View: Toggle Kogg AI', application);
+        provider = page.locator('.kogg-provider-widget:visible');
+    }
+    await provider.getByText('Kogg AI').first().waitFor();
+    await provider.getByLabel('Message Kogg').waitFor({ state: 'visible' });
+    assert.equal(await provider.getByLabel('Message Kogg').isDisabled(), true);
+    const chatModes = provider.getByRole('group', { name: 'Chat mode' });
+    await chatModes.getByRole('button', { name: 'Plan', exact: true }).waitFor();
+    await assertReadableContrast(chatModes.getByRole('button', { name: 'Plan', exact: true }), 'selected chat mode');
+    await chatModes.getByRole('button', { name: 'Build', exact: true }).hover();
+    await assertReadableContrast(chatModes.getByRole('button', { name: 'Build', exact: true }), 'hovered chat mode');
+    await assertWidgetContainedAboveStatusBar(page, provider, 'Kogg AI');
+    await provider.getByRole('button', { name: 'Connect a provider' }).click();
+    const openAiProvider = provider.locator('[data-provider-option="openai"]');
+    await openAiProvider.click();
+    await provider.getByLabel('Account').fill(providerAccount);
+    await assertReadableContrast(openAiProvider, 'selected provider');
+    const hoveredProvider = provider.locator('[data-provider-option="google"]');
+    await hoveredProvider.hover();
+    assert.equal(await hoveredProvider.evaluate(element => element.matches(':hover')), true);
+    await assertReadableContrast(hoveredProvider, 'hovered provider');
+    await assertReadableContrast(provider.getByText('Kogg AI').first(), 'selected text', '::selection');
     await provider.getByText('Advisory only').waitFor();
-    await provider.getByLabel('Provider').selectOption('openai');
     await provider.getByRole('button', { name: 'Test connection' }).click();
-    await provider.getByText('Credential is not configured').waitFor();
-    await provider.getByLabel('Credential').fill(providerSecret);
+    const connectionStatus = provider.locator('.kogg-connection-status', { hasText: 'Credential is not configured' });
+    await connectionStatus.waitFor({ timeout: 10_000 }).catch(async error => {
+        const actual = await provider.locator('.kogg-connection-status').allInnerTexts();
+        throw new Error(`Provider connection status did not update: ${JSON.stringify(actual)}`, { cause: error });
+    });
+    assert.match(await connectionStatus.innerText(), /Credential is not configured/u);
+    await provider.getByLabel('API key').fill(providerSecret);
     await provider.getByRole('button', { name: 'Save credential' }).click();
-    await provider.getByText('openai / default').waitFor();
+    await provider.getByText(`openai / ${providerAccount}`).waitFor();
     assert.doesNotMatch(await provider.innerText(), new RegExp(providerSecret, 'u'));
-    await provider.getByLabel('Provider').selectOption('llamafile');
+    await provider.locator('[data-provider-option="llamafile"]').click();
     await provider.getByLabel('Endpoint (optional)').fill('http://127.0.0.1:1/models');
     await provider.getByRole('button', { name: 'Test connection' }).click();
     await provider.getByText(/fetch failed|Connection failed/iu).waitFor();
     await provider.getByLabel('Endpoint (optional)').fill(`${registryUrl}/provider/v1/models`);
     await provider.getByRole('button', { name: 'Discover models' }).click();
     await provider.getByText('Discovered 1 model(s).').waitFor();
-    await provider.getByLabel('Advisory prompt').fill('Verify the Electron provider path.');
-    await provider.getByRole('button', { name: 'Send advisory request' }).click();
+    await provider.getByLabel('Message Kogg').fill('Verify the Electron provider path.');
+    await provider.getByRole('button', { name: 'Send message' }).click();
     await provider.getByText('Kogg provider fixture responded successfully.').waitFor();
-    await provider.locator('li').filter({ hasText: 'openai / default' }).getByRole('button', { name: 'Delete' }).click();
+    await provider.locator('li').filter({ hasText: `openai / ${providerAccount}` }).getByRole('button', { name: 'Delete' }).click();
     await provider.getByText('None. Secret values are never displayed.').waitFor();
     assert.equal(logs.join('\n').includes(providerSecret), false);
 
@@ -321,7 +352,7 @@ async function openCommand(page, label, electronApplication, query = label, opti
         option = page.locator('[role="option"]:visible').filter({ hasText: label }).first();
         await option.waitFor({ timeout: optionTimeout });
     }
-    await option.click();
+    await option.evaluate(element => element.click());
 }
 
 async function openCommandWithRetry(page, label, electronApplication, query) {
@@ -337,6 +368,60 @@ async function openCommandWithRetry(page, label, electronApplication, query) {
         }
     }
     throw lastError;
+}
+
+async function assertWidgetContainedAboveStatusBar(page, widget, label) {
+    const statusBar = page.locator('#theia-statusBar');
+    const [widgetBox, statusBox, scrollPort] = await Promise.all([
+        widget.boundingBox(),
+        statusBar.boundingBox(),
+        widget.locator(':scope > .kogg-panel').evaluate(element => ({
+            clientHeight: element.clientHeight,
+            overflowY: getComputedStyle(element).overflowY,
+            scrollHeight: element.scrollHeight
+        }))
+    ]);
+    assert.ok(widgetBox && statusBox, `${label} and the Electron status bar must be measurable`);
+    assert.ok(widgetBox.y + widgetBox.height <= statusBox.y + 1,
+        `${label} must remain contained above the Electron status bar`);
+    assert.ok(scrollPort.clientHeight > 0, `${label} must expose a usable scroll viewport`);
+    assert.match(scrollPort.overflowY, /auto|scroll/u, `${label} must scroll within its widget`);
+    assert.ok(scrollPort.scrollHeight >= scrollPort.clientHeight,
+        `${label} scroll content must stay inside its viewport`);
+}
+
+async function assertReadableContrast(locator, label, pseudo = null) {
+    const colors = await locator.evaluate((element, pseudoElement) => {
+        const style = getComputedStyle(element, pseudoElement);
+        return { background: style.backgroundColor, foreground: style.color };
+    }, pseudo);
+    const ratio = contrastRatio(parseCssColor(colors.foreground), parseCssColor(colors.background));
+    assert.ok(ratio >= 4.5, `${label} contrast ${ratio.toFixed(2)} (${colors.foreground} on ${colors.background}) must meet WCAG AA`);
+}
+
+async function assertReadableTabContrast(locator, label) {
+    const colors = await locator.evaluate(element => ({
+        background: getComputedStyle(element).backgroundColor,
+        foreground: getComputedStyle(element.querySelector('.lm-TabBar-tabLabel')).color
+    }));
+    const ratio = contrastRatio(parseCssColor(colors.foreground), parseCssColor(colors.background));
+    assert.ok(ratio >= 4.5, `${label} contrast ${ratio.toFixed(2)} (${colors.foreground} on ${colors.background}) must meet WCAG AA`);
+}
+
+function parseCssColor(value) {
+    const channels = value.match(/[\d.]+/gu)?.map(Number) ?? [];
+    assert.ok(channels.length >= 3, `Expected an RGB color, received ${value}`);
+    const alpha = channels[3] ?? 1;
+    return channels.slice(0, 3).map(channel => channel * alpha + 11 * (1 - alpha));
+}
+
+function contrastRatio(first, second) {
+    const luminance = color => {
+        const channels = color.map(value => value / 255).map(value => value <= 0.04045 ? value / 12.92 : ((value + 0.055) / 1.055) ** 2.4);
+        return 0.2126 * channels[0] + 0.7152 * channels[1] + 0.0722 * channels[2];
+    };
+    const values = [luminance(first), luminance(second)].sort((left, right) => right - left);
+    return (values[0] + 0.05) / (values[1] + 0.05);
 }
 
 async function initializeGitRepository(repository, subject) {
@@ -370,10 +455,13 @@ async function exerciseElectronProjects(page, electronApplication) {
 
 async function ensureElectronProjectsWidget(page, electronApplication) {
     const widget = page.locator('.kogg-projects-widget').last();
-    if (!await widget.count()) {
+    for (let attempt = 0; attempt < 4 && !await widget.count(); attempt += 1) {
         await openCommand(page, 'View: Toggle Kogg Projects', electronApplication);
-        await widget.waitFor({ state: 'attached', timeout: 10_000 });
+        if (await widget.waitFor({ state: 'attached', timeout: 3_000 }).then(() => true, () => false)) break;
+        await page.keyboard.press('Escape').catch(() => undefined);
+        await page.waitForTimeout(500);
     }
+    await widget.waitFor({ state: 'attached', timeout: 10_000 });
     const deadline = Date.now() + 10_000;
     while (/Loading projects/iu.test(await widget.textContent().catch(() => 'Loading projects')) && Date.now() < deadline) {
         await new Promise(resolve => setTimeout(resolve, 50));
@@ -411,132 +499,16 @@ async function exerciseElectronTasks(page, electronApplication) {
     assert.equal(logs.join('\n').includes(canary), false);
 }
 
-async function createElectronWorkflowAdmissionFixture(page, electronApplication) {
-    let tasks = page.locator('.kogg-tasks-widget:visible').first();
-    if (!await tasks.count()) {
-        await openCommand(page, 'View: Toggle Kogg Tasks', electronApplication);
-        tasks = page.locator('.kogg-tasks-widget:visible').first();
-        await tasks.waitFor({ state: 'visible', timeout: 30_000 });
-    }
-    await tasks.getByLabel('Initial specification').fill('Authorize the exact Electron workflow UI admission fixture.');
-    await tasks.getByRole('button', { name: 'Create task' }).click();
-    await tasks.getByText(/Revision 1 · active · draft/iu).waitFor({ timeout: 10_000 });
-    await tasks.getByRole('button', { name: 'Freeze exact revision' }).click();
-    await tasks.getByRole('button', { name: 'Review for approval' }).click();
-    await tasks.getByRole('button', { name: 'Approve this exact revision' }).click();
-    await tasks.getByLabel('Existing run ID').fill('57575757-5757-4757-8757-575757575757');
-    await tasks.getByRole('button', { name: 'Authorize exact task admission' }).click();
-    await tasks.locator('[data-admission-id]').waitFor({ timeout: 10_000 });
-}
-
-function repositorySnapshot(repository) {
-    const refs = spawnSync('git', ['-C', repository, 'for-each-ref', '--format=%(refname):%(objectname)'], { encoding: 'utf8' });
-    const status = spawnSync('git', ['-C', repository, 'status', '--porcelain=v2', '--branch'], { encoding: 'utf8' });
-    assert.equal(refs.status, 0); assert.equal(status.status, 0); return `${refs.stdout}\n${status.stdout}`;
-}
-
-async function exerciseElectronAgents(page, electronApplication, admissionId) {
-    const agents = page.locator('.kogg-agents-widget').last();
-    if (!await agents.count()) {
-        await openCommand(page, 'View: Toggle Kogg Agents', electronApplication);
-        await agents.waitFor({ state: 'attached', timeout: 30_000 });
-    }
-    await agents.getByRole('button', { name: 'Save immutable revision' }).click();
-    await agents.locator('section').filter({ hasText: 'Role Revisions' }).locator('li').filter({ hasText: /implementer · [0-9a-f-]{36}/u }).waitFor();
-    await waitForEnabled(agents.getByRole('button', { name: 'Confirm and start exact attempt' }));
-    await agents.getByLabel('Task admission ID').fill(admissionId);
-    const roleOption = agents.getByLabel('Role revision').locator('option').filter({ hasText: /^implementer ·/u }).first(); const roleRevisionId = await roleOption.getAttribute('value'); assert.ok(roleRevisionId); await agents.getByLabel('Role revision').selectOption(roleRevisionId);
-    await agents.getByLabel('Exact adapter and version').fill('kogg.fixture@1.0.0'); await agents.getByLabel('Provider', { exact: true }).fill('kogg.fixture'); await agents.getByLabel('Model', { exact: true }).fill('fixture.echo'); await agents.getByLabel('Deadline policy').fill('interactive-v1'); assert.equal(await agents.locator('form[data-start]').evaluate(form => form.checkValidity()), true);
-    await agents.getByRole('button', { name: 'Confirm and start exact attempt' }).click();
-    await agents.getByText(/cleaned · AGENT_OK.*deadline policy interactive-v1.*activity 1.*usage complete\/provider-cumulative.*resources 0/iu).waitFor({ timeout: 15_000 });
-}
-
-async function waitForEnabled(locator, timeout = 30_000) {
-    const deadline = Date.now() + timeout;
-    while (Date.now() < deadline) { if (await locator.isEnabled().catch(() => false)) return; await new Promise(resolve => setTimeout(resolve, 50)); }
-    throw new Error('Timed out waiting for enabled control');
-}
-
-async function exerciseElectronWorkflowEditor(page, electronApplication) {
-    let widget = page.locator('.kogg-workflow-editor-widget:visible').first();
-    if (!await widget.count()) {
-        await openCommand(page, 'View: Toggle Kogg Workflow Editor', electronApplication);
-        widget = page.locator('.kogg-workflow-editor-widget:visible').first();
-    }
-    await widget.getByText('Structured workflow outline ready.').waitFor({ timeout: 15_000 });
-    assert.equal(await widget.locator('[data-workflow-node]').count(), 2);
-    await widget.getByRole('button', { name: 'Show spatial canvas' }).click();
-    assert.equal(await widget.locator('[data-workflow-canvas-node]').count(), 2);
-    await widget.getByLabel('Node kind').selectOption('check.deterministic');
-    await widget.getByRole('button', { name: 'Add node' }).click();
-    await widget.getByRole('button', { name: 'Move check.deterministic earlier on canvas' }).click();
-    await widget.getByRole('button', { name: 'Configure check.deterministic on canvas' }).click();
-    let configuration = widget.locator('[data-config]');
-    await configuration.getByLabel('Closed check ID').fill('suite.required-v1'); await configuration.getByLabel('External configuration digest').fill('a'.repeat(64));
-    await configuration.getByRole('button', { name: 'Apply exact configuration' }).click();
-    await widget.getByRole('button', { name: 'Configure implementation.agent on canvas' }).click();
-    configuration = widget.locator('[data-config]');
-    await configuration.getByLabel('Role revision ID').fill('60000000-0000-4000-8000-000000000001');
-    await configuration.getByLabel('Provider ID').fill('kogg.fixture'); await configuration.getByLabel('Model ID').fill('fixture.echo');
-    await configuration.getByLabel('Adapter key').fill('kogg.fixture'); await configuration.getByLabel('Adapter version').fill('1.0.0'); await configuration.getByLabel('Deadline policy').fill('interactive-v1');
-    await configuration.getByRole('button', { name: 'Apply exact configuration' }).click();
-    await widget.getByRole('button', { name: 'Configure research.agent on canvas' }).click(); configuration = widget.locator('[data-config]');
-    await configuration.getByLabel('Role revision ID').fill('60000000-0000-4000-8000-000000000002'); await configuration.getByLabel('Provider ID').fill('kogg.fixture.read'); await configuration.getByLabel('Model ID').fill('fixture.research');
-    await configuration.getByLabel('Adapter key').fill('kogg.fixture'); await configuration.getByLabel('Adapter version').fill('1.0.0'); await configuration.getByLabel('Deadline policy').fill('research-v1'); await configuration.getByLabel('Maximum attempts').selectOption('2'); await configuration.getByLabel('Retry backoff').selectOption('1000'); await configuration.getByLabel('Retry side-effect policy').selectOption('fresh-authority'); await configuration.getByRole('button', { name: 'Apply exact configuration' }).click();
-    await widget.getByRole('button', { name: 'Show structured outline' }).click();
-    assert.equal(await widget.locator('[data-workflow-node]').count(), 3);
-    assert.match(await widget.locator('[data-workflow-node]').nth(1).innerText(), /check\.deterministic/u);
-    configuration = widget.locator('[data-config]'); assert.equal(await configuration.getByLabel('Role revision ID').inputValue(), '60000000-0000-4000-8000-000000000002'); assert.equal(await configuration.getByLabel('Maximum attempts').inputValue(), '2'); assert.equal(await configuration.getByLabel('Retry backoff').inputValue(), '1000'); assert.equal(await configuration.getByLabel('Retry side-effect policy').inputValue(), 'fresh-authority');
-    await widget.getByRole('button', { name: 'Configure check.deterministic' }).click(); configuration = widget.locator('[data-config]'); assert.equal(await configuration.getByLabel('Closed check ID').inputValue(), 'suite.required-v1'); assert.equal(await configuration.getByLabel('External configuration digest').inputValue(), 'a'.repeat(64));
-    await widget.getByRole('button', { name: 'Disconnect connection 1' }).click();
-    await widget.getByRole('button', { name: 'Disconnect connection 1' }).click();
-    const connection = widget.locator('[data-connect]');
-    await connection.getByLabel('Source node').selectOption({ label: '1. research.agent' });
-    await connection.getByLabel('Source outcome').selectOption('failure');
-    await connection.getByLabel('Target node').selectOption({ label: '2. check.deterministic' });
-    await connection.getByRole('button', { name: 'Connect nodes' }).click();
-    await connection.getByLabel('Source node').selectOption({ label: '2. check.deterministic' });
-    await connection.getByLabel('Source outcome').selectOption('success');
-    await connection.getByLabel('Target node').selectOption({ label: '3. implementation.agent' });
-    await connection.getByRole('button', { name: 'Connect nodes' }).click();
-    const failureRoute = widget.getByLabel('Route 1. research.agent to 2. check.deterministic');
-    await failureRoute.selectOption('failure');
-    await widget.getByRole('button', { name: 'Apply connection outcomes' }).click();
-    await widget.getByText('Connection outcomes applied; validate before saving.').waitFor();
-    assert.equal(await failureRoute.inputValue(), 'failure');
-    await widget.getByRole('button', { name: 'Add parallel fork and join' }).click();
-    await widget.getByText('Two-branch parallel fork and exact join added; configure branches and validate before saving.').waitFor();
-    assert.equal(await widget.locator('[data-workflow-node]').count(), 7);
-    await widget.getByRole('button', { name: 'Group selected with previous node' }).click();
-    await widget.getByText('Visual group created with two explicit members; execution graph is unchanged.').waitFor();
-    assert.match(await widget.getByLabel('Workflow visual groups').innerText(), /2 visible members/u);
-    await widget.getByRole('button', { name: 'Validate workflow' }).click();
-    await widget.getByText(/Workflow valid: 7 nodes and 7 edges/u).waitFor({ timeout: 10_000 });
-    await widget.getByRole('button', { name: 'Save immutable version' }).click();
-    await widget.getByText('Workflow version 1 saved immutably.').waitFor({ timeout: 10_000 });
-    await widget.getByRole('button', { name: 'Compile current version' }).click();
-    await widget.getByText(/Compiled plan [0-9a-f]{8} with 9 mandatory anchors/u).waitFor({ timeout: 10_000 });
-    const admissionChoices = widget.getByLabel('Task admission').locator('option');
-    if (await admissionChoices.count() > 1) {
-        assert.match(await admissionChoices.nth(1).innerText(), /Task [0-9a-f]{8} · run [0-9a-f]{8}/u);
-        await widget.getByRole('button', { name: 'Start governed workflow' }).click();
-        await widget.getByText(/Workflow operation failed safely: WORKFLOW_AUTHORITY_EXPANSION/u).waitFor({ timeout: 10_000 });
-    }
-    await page.reload({ waitUntil: 'domcontentloaded' });
-    await page.locator('body.kogg-application').waitFor({ timeout: 20_000 });
-    widget = page.locator('.kogg-workflow-editor-widget:visible').filter({ hasText: 'Workflow version 1 is current.' }).first();
-    await widget.waitFor({ state: 'visible', timeout: 15_000 });
-    assert.match(logs.join('\n'), /\[kogg:workflow:editor\] ui\.operation\.completed/u);
-    assert.doesNotMatch(await widget.innerText(), /configurationDigest|requestedEffects|graphDigest|catalogDigest/u);
-}
-
 async function exerciseElectronInteractionModes(page) {
     const selector = page.getByLabel(/Mode: Plan; authority: \d+ bounded capabilities; stage: research/u);
     await selector.waitFor({ state: 'visible', timeout: 15_000 });
-    await selector.click();
-    const build = page.getByRole('option', { name: /Build\./u });
-    await build.waitFor({ state: 'visible', timeout: 10_000 });
-    await build.click();
+    let provider = page.locator('.kogg-provider-widget:visible');
+    if (!await provider.count()) {
+        await openCommand(page, 'View: Toggle Kogg AI');
+        provider = page.locator('.kogg-provider-widget:visible');
+    }
+    const chatModes = provider.getByRole('group', { name: 'Chat mode' });
+    await chatModes.getByRole('button', { name: 'Build', exact: true }).click();
     await page.getByRole('button', { name: 'Request switch' }).click();
     let pending = page.getByLabel(/Mode: Plan; authority: disabled during transition/u);
     const unavailable = page.getByText(/Mode switch unavailable: no current Build owner configuration is qualified/u).first();
@@ -570,7 +542,7 @@ async function exerciseElectronOperations(page, electronApplication) {
     if (process.env.KOGG_E2E_OPERATIONS_ONLY !== '1') {
         await widget.getByText('ranex-bridge').first().waitFor({ timeout: 10_000 });
         await widget.getByText('repository-probe').first().waitFor({ timeout: 10_000 });
-        await widget.locator('[data-operation-row]').filter({ hasText: 'provider-connection' }).filter({ hasText: 'OWNER_UNAVAILABLE' }).first().waitFor({ timeout: 10_000 });
+        await widget.locator('[data-operation-row]').filter({ hasText: 'provider-connection' }).filter({ hasText: 'OPERATIONS_OK' }).first().waitFor({ timeout: 10_000 });
         for (const kind of ['marketplace', 'provider-connection', 'provider-session', 'project-mutation', 'project-switch']) {
             assert.match(visibleOperations, new RegExp(kind, 'u'));
         }

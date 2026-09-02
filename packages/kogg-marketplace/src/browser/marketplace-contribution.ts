@@ -11,7 +11,7 @@ export class KoggMarketplaceContribution extends AbstractViewContribution<KoggMa
         super({
             widgetId: KoggMarketplaceWidget.ID,
             widgetName: KoggMarketplaceWidget.LABEL,
-            defaultWidgetOptions: { area: 'left', rank: 450 },
+            defaultWidgetOptions: { area: 'main', rank: 450 },
             toggleCommandId: 'kogg.marketplace.open'
         });
     }

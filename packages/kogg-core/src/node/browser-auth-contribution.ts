@@ -159,6 +159,30 @@ export class BrowserAuthContribution implements BackendApplicationContribution {
   }
 
   private loginPage(error = ''): string {
-    return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>Kogg Sign In</title><style>body{margin:0;background:#0b1020;color:#eef2ff;font:16px system-ui;display:grid;place-items:center;min-height:100vh}main{width:min(28rem,calc(100% - 3rem));padding:2rem;background:#151c31;border:1px solid #2d3858;border-radius:16px}input,button{box-sizing:border-box;width:100%;padding:.8rem;margin-top:.8rem;border-radius:8px}button{background:#7c5cff;color:white;border:0;font-weight:700}.error{color:#ff9f9f}</style></head><body><main><h1>Kogg</h1><p>Enter the single-user access token for this Kogg workspace.</p>${error ? `<p class="error">${error}</p>` : ''}<form method="post" action="/kogg/auth/login"><input name="token" type="password" autocomplete="current-password" required autofocus><button type="submit">Open Kogg</button></form></main></body></html>`;
+    return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width"><meta name="color-scheme" content="dark"><title>Kogg Sign In</title><style>
+      :root{color-scheme:dark;font-family:Inter,ui-sans-serif,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
+      *{box-sizing:border-box}body{margin:0;min-height:100vh;display:grid;place-items:center;overflow:hidden;background:#0b0b0e;color:#f4f4f5;-webkit-font-smoothing:antialiased}
+      body:before,body:after{content:"";position:fixed;pointer-events:none;border-radius:999px;filter:blur(1px)}
+      body:before{width:42rem;height:42rem;top:-24rem;right:-12rem;background:radial-gradient(circle,rgba(139,92,246,.16),transparent 68%)}
+      body:after{width:34rem;height:34rem;bottom:-25rem;left:-10rem;background:radial-gradient(circle,rgba(91,33,182,.1),transparent 68%)}
+      .noise{position:fixed;inset:0;pointer-events:none;opacity:.16;background-image:url("data:image/svg+xml,%3Csvg viewBox='0 0 180 180' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.9' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='.09'/%3E%3C/svg%3E")}
+      main{position:relative;width:min(25rem,calc(100% - 2rem));padding:1px;border-radius:18px;background:linear-gradient(145deg,rgba(255,255,255,.15),rgba(255,255,255,.035));box-shadow:0 32px 100px rgba(0,0,0,.55)}
+      .card{padding:30px;border-radius:17px;background:linear-gradient(150deg,rgba(24,24,30,.97),rgba(16,16,20,.98));backdrop-filter:blur(20px)}
+      .brand{display:flex;align-items:center;gap:10px;margin-bottom:32px;color:#d9d9e0;font-size:13px;font-weight:650;letter-spacing:-.01em}
+      .mark{display:grid;place-items:center;width:29px;height:29px;border:1px solid rgba(167,139,250,.34);border-radius:9px;background:rgba(139,92,246,.13);box-shadow:inset 0 1px rgba(255,255,255,.08),0 0 24px rgba(139,92,246,.12)}
+      .mark:before{content:"";width:9px;height:9px;border:2px solid #a78bfa;border-radius:3px;transform:rotate(45deg)}
+      .eyebrow{margin:0 0 9px;color:#8b5cf6;font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.12em}
+      h1{margin:0 0 10px;font-size:25px;line-height:1.15;letter-spacing:-.035em;font-weight:680}
+      .intro{margin:0 0 24px;color:#9696a1;font-size:13px;line-height:1.6}
+      label{display:block;margin-bottom:7px;color:#b6b6bf;font-size:11px;font-weight:620;letter-spacing:.015em}
+      input,button{width:100%;height:42px;border-radius:9px;font:inherit;outline:0;transition:border-color .15s ease,box-shadow .15s ease,background .15s ease,transform .15s cubic-bezier(.2,.8,.2,1)}
+      input{padding:0 12px;color:#f4f4f5;background:rgba(0,0,0,.25);border:1px solid rgba(255,255,255,.12)}
+      input:hover{border-color:rgba(255,255,255,.2)}input:focus{border-color:rgba(139,92,246,.85);box-shadow:0 0 0 3px rgba(139,92,246,.15)}
+      button{margin-top:11px;color:white;background:#8b5cf6;border:1px solid rgba(255,255,255,.1);font-weight:630;cursor:pointer;box-shadow:inset 0 1px rgba(255,255,255,.14),0 5px 18px rgba(91,33,182,.22)}
+      button:hover{background:#9d75f7;transform:translateY(-1px)}button:active{transform:translateY(0) scale(.99)}
+      .error{margin:0 0 15px;padding:9px 11px;color:#fda4af;background:rgba(251,113,133,.08);border:1px solid rgba(251,113,133,.2);border-radius:8px;font-size:12px}
+      .meta{display:flex;align-items:center;gap:7px;margin:18px 0 0;color:#666672;font-size:10px}.meta:before{content:"";width:6px;height:6px;border-radius:50%;background:#42d392;box-shadow:0 0 10px rgba(66,211,146,.5)}
+      @media(prefers-reduced-motion:reduce){*{transition:none!important}}@media(max-width:420px){.card{padding:24px}.brand{margin-bottom:26px}}
+    </style></head><body><div class="noise"></div><main><div class="card"><div class="brand"><span class="mark" aria-hidden="true"></span>Kogg</div><p class="eyebrow">Private workspace</p><h1>Welcome back</h1><p class="intro">Enter the single-user access token to open your governed engineering workspace.</p>${error ? `<p class="error" role="alert">${error}</p>` : ''}<form method="post" action="/kogg/auth/login"><label for="token">Access token</label><input id="token" name="token" type="password" autocomplete="current-password" placeholder="Enter workspace token" required autofocus><button type="submit">Open Kogg</button></form><p class="meta">Local, encrypted session</p></div></main></body></html>`;
   }
 }

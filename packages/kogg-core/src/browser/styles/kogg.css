@@ -1,22 +1,545 @@
-.kogg-panel { box-sizing: border-box; height: 100%; overflow: auto; padding: 16px; color: var(--theia-foreground); background: var(--theia-editor-background); }
-.kogg-panel header { border-bottom: 1px solid var(--theia-panel-border); margin-bottom: 16px; }
-.kogg-panel h2, .kogg-panel h3 { margin: 0 0 8px; }
-.kogg-panel p { line-height: 1.45; }
-.kogg-panel form, .kogg-actions { display: flex; gap: 8px; margin: 12px 0; }
-.kogg-panel input, .kogg-panel select, .kogg-panel textarea { box-sizing: border-box; width: 100%; margin-top: 4px; padding: 7px 8px; color: var(--theia-input-foreground); background: var(--theia-input-background); border: 1px solid var(--theia-input-border, transparent); }
-.kogg-panel button { padding: 7px 12px; color: var(--theia-button-foreground); background: var(--theia-button-background); border: 0; cursor: pointer; }
-.kogg-panel button:disabled { cursor: default; opacity: .55; }
-.kogg-package-list article { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 8px; padding: 12px 0; border-bottom: 1px solid var(--theia-panel-border); }
-.kogg-package-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; }
-.kogg-package-list article p { margin: 4px 0 0; color: var(--theia-descriptionForeground); }
-.kogg-form-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px; }
-.kogg-form-grid label, .kogg-panel > label { display: block; margin: 10px 0; }
-.kogg-workflow-view-switch { display: flex; gap: 8px; margin: 12px 0; }
-.kogg-workflow-view-switch [aria-pressed="true"] { outline: 2px solid var(--theia-focusBorder); outline-offset: 2px; }
-.kogg-workflow-canvas { display: flex; align-items: stretch; gap: 24px; overflow-x: auto; padding: 12px 2px 18px; }
-.kogg-workflow-canvas article { position: relative; box-sizing: border-box; flex: 0 0 240px; min-height: 150px; padding: 14px; border: 1px solid var(--theia-panel-border); border-radius: 6px; background: var(--theia-sideBar-background); }
-.kogg-workflow-canvas article:not(:last-child)::after { content: '→'; position: absolute; right: -19px; top: 58px; color: var(--theia-descriptionForeground); }
-.kogg-workflow-canvas article > span, .kogg-workflow-canvas article > strong { display: block; margin-bottom: 8px; }
-.kogg-workflow-canvas article:focus { outline: 2px solid var(--theia-focusBorder); outline-offset: 2px; }
-.kogg-blocked { color: var(--theia-notificationsWarningIcon-foreground); }
-.kogg-advisory-reply pre { white-space: pre-wrap; font-family: var(--theia-ui-font-family); }
+/* Kogg visual system: quiet density, precise hierarchy, and restrained motion. */
+:root[data-kogg='true'],
+body.kogg-application {
+  color-scheme: dark;
+  --kogg-canvas: #0b0b0e;
+  --kogg-raised: #101014;
+  --kogg-surface: rgba(255, 255, 255, 0.032);
+  --kogg-hover: rgba(255, 255, 255, 0.055);
+  --kogg-border: rgba(255, 255, 255, 0.075);
+  --kogg-border-strong: rgba(255, 255, 255, 0.13);
+  --kogg-text: #f4f4f5;
+  --kogg-muted: #9b9ba6;
+  --kogg-faint: #858593;
+  --kogg-accent: #7c3aed;
+  --kogg-accent-hover: #6d28d9;
+  --kogg-accent-soft: rgba(139, 92, 246, 0.16);
+  --kogg-warning: #f5b942;
+  --kogg-danger: #fb7185;
+  --kogg-radius-sm: 7px;
+  --kogg-radius-md: 10px;
+  --kogg-radius-lg: 14px;
+  --kogg-shadow: 0 24px 80px rgba(0, 0, 0, 0.48), 0 0 0 1px rgba(255, 255, 255, 0.06);
+  --kogg-ease: cubic-bezier(0.2, 0.8, 0.2, 1);
+
+  --theia-editor-background: var(--kogg-canvas);
+  --theia-editor-foreground: #d9d9df;
+  --theia-sideBar-background: #0f0f13;
+  --theia-sideBar-foreground: var(--kogg-muted);
+  --theia-sideBar-border: var(--kogg-border);
+  --theia-activityBar-background: #0c0c0f;
+  --theia-activityBar-foreground: var(--kogg-text);
+  --theia-activityBar-inactiveForeground: #656570;
+  --theia-activityBar-activeBackground: var(--kogg-hover);
+  --theia-activityBar-activeBorder: var(--kogg-accent);
+  --theia-activityBar-border: var(--kogg-border);
+  --theia-titleBar-activeBackground: #0c0c0f;
+  --theia-titleBar-activeForeground: var(--kogg-muted);
+  --theia-titleBar-inactiveBackground: #0c0c0f;
+  --theia-titleBar-border: var(--kogg-border);
+  --theia-statusBar-background: #0c0c0f;
+  --theia-statusBar-foreground: #8b8b96;
+  --theia-statusBar-border: var(--kogg-border);
+  --theia-panel-background: #0e0e12;
+  --theia-panel-border: var(--kogg-border);
+  --theia-tab-activeBackground: var(--kogg-canvas);
+  --theia-tab-inactiveBackground: var(--kogg-raised);
+  --theia-tab-activeForeground: var(--kogg-text);
+  --theia-tab-inactiveForeground: #74747f;
+  --theia-tab-border: transparent;
+  --theia-input-background: rgba(255, 255, 255, 0.045);
+  --theia-input-foreground: var(--kogg-text);
+  --theia-input-border: var(--kogg-border-strong);
+  --theia-input-placeholderForeground: #858593;
+  --theia-button-background: var(--kogg-accent);
+  --theia-button-hoverBackground: var(--kogg-accent-hover);
+  --theia-button-foreground: #fff;
+  --theia-button-secondaryBackground: rgba(255, 255, 255, 0.065);
+  --theia-button-secondaryHoverBackground: rgba(255, 255, 255, 0.1);
+  --theia-button-secondaryForeground: #d8d8df;
+  --theia-focusBorder: rgba(139, 92, 246, 0.9);
+  --theia-list-hoverBackground: var(--kogg-hover);
+  --theia-list-activeSelectionBackground: var(--kogg-accent-soft);
+  --theia-list-activeSelectionForeground: var(--kogg-text);
+  --theia-list-inactiveSelectionBackground: rgba(139, 92, 246, .12);
+  --theia-list-inactiveSelectionForeground: var(--kogg-text);
+  --theia-list-focusBackground: #332254;
+  --theia-list-focusForeground: #fff;
+  --theia-list-inactiveFocusBackground: #271d3a;
+  --theia-quickInputList-focusBackground: #332254;
+  --theia-quickInputList-focusForeground: #fff;
+  --theia-dropdown-background: #18181e;
+  --theia-dropdown-border: var(--kogg-border-strong);
+  --theia-menu-background: rgba(21, 21, 27, 0.97);
+  --theia-menu-foreground: #d7d7dd;
+  --theia-menu-selectionBackground: var(--kogg-accent-soft);
+  --theia-menu-selectionForeground: #fff;
+  --theia-menubar-selectionBackground: #332254;
+  --theia-menubar-selectionForeground: #fff;
+  --theia-widget-shadow: var(--kogg-shadow);
+  --theia-descriptionForeground: var(--kogg-muted);
+  --theia-notifications-background: #18181e;
+  --theia-notifications-foreground: var(--kogg-text);
+  --theia-notifications-border: var(--kogg-border);
+  --theia-notificationToast-border: var(--kogg-border-strong);
+  --theia-notificationCenter-border: var(--kogg-border-strong);
+  --theia-notificationCenterHeader-background: #1d1d24;
+  --theia-notificationCenterHeader-foreground: var(--kogg-text);
+  --theia-notificationLink-foreground: #a78bfa;
+  --theia-notificationsInfoIcon-foreground: #60a5fa;
+  --theia-notificationsWarningIcon-foreground: var(--kogg-warning);
+  --theia-notificationsErrorIcon-foreground: var(--kogg-danger);
+}
+
+body.kogg-application {
+  background: var(--kogg-canvas);
+  color: var(--kogg-text);
+  font-family: Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  font-size: 13px;
+  letter-spacing: -0.006em;
+  -webkit-font-smoothing: antialiased;
+}
+body.kogg-application *, body.kogg-application *::before, body.kogg-application *::after { box-sizing: border-box; }
+body.kogg-application button, body.kogg-application input,
+body.kogg-application select, body.kogg-application textarea { font: inherit; }
+
+/* Product chrome */
+body.kogg-application #theia-top-panel {
+  min-height: 35px;
+  background: var(--kogg-canvas);
+  border-bottom: 1px solid var(--kogg-border);
+}
+body.kogg-application .p-MenuBar, body.kogg-application .lm-MenuBar {
+  min-height: 34px; padding: 0 9px; background: transparent;
+}
+body.kogg-application .p-MenuBar-item, body.kogg-application .lm-MenuBar-item {
+  margin: 4px 1px; padding: 0 9px; border-radius: 6px;
+  color: var(--kogg-muted); font-size: 12px;
+  transition: color 120ms ease, background 120ms ease;
+}
+body.kogg-application .p-MenuBar-item.p-mod-active,
+body.kogg-application .lm-MenuBar-item.lm-mod-active,
+body.kogg-application .p-MenuBar-item:hover,
+body.kogg-application .lm-MenuBar-item:hover { color: var(--kogg-text); background: var(--kogg-hover); }
+
+body.kogg-application #theia-left-content-panel,
+body.kogg-application #theia-right-content-panel,
+body.kogg-application #theia-bottom-content-panel { border-color: var(--kogg-border); }
+body.kogg-application .theia-app-sidebar-container { padding: 5px 4px; gap: 3px; }
+body.kogg-application .theia-app-sidebar .p-TabBar-tab,
+body.kogg-application .theia-app-sidebar .lm-TabBar-tab {
+  width: 40px; height: 40px; margin: 2px 0; border-radius: 9px; opacity: .78;
+  transition: opacity 140ms ease, background 140ms ease, transform 140ms var(--kogg-ease);
+}
+body.kogg-application .theia-app-sidebar .p-TabBar-tab:hover,
+body.kogg-application .theia-app-sidebar .lm-TabBar-tab:hover {
+  opacity: 1; transform: translateY(-1px); background: var(--kogg-hover);
+}
+body.kogg-application .theia-app-sidebar .p-TabBar-tab.p-mod-current,
+body.kogg-application .theia-app-sidebar .lm-TabBar-tab.lm-mod-current {
+  opacity: 1; color: #fff; background: var(--kogg-accent-soft);
+  box-shadow: inset 2px 0 var(--kogg-accent);
+}
+body.kogg-application .p-TabBar, body.kogg-application .lm-TabBar {
+  background: var(--kogg-raised); border-color: var(--kogg-border);
+}
+body.kogg-application .p-TabBar-tab, body.kogg-application .lm-TabBar-tab {
+  min-height: 35px; border: 0; transition: background 120ms ease, color 120ms ease;
+}
+body.kogg-application .p-TabBar-tab.p-mod-current,
+body.kogg-application .lm-TabBar-tab.lm-mod-current {
+  color: #fff !important; background: #17171d !important;
+  box-shadow: inset 0 -2px var(--kogg-accent);
+}
+body.kogg-application .p-TabBar-tab.p-mod-current .p-TabBar-tabLabel,
+body.kogg-application .lm-TabBar-tab.lm-mod-current .lm-TabBar-tabLabel,
+body.kogg-application .p-TabBar-tab.p-mod-current .p-TabBar-tabCloseIcon,
+body.kogg-application .lm-TabBar-tab.lm-mod-current .lm-TabBar-tabCloseIcon { color: #fff !important; }
+body.kogg-application .p-TabBar-tab:not(.p-mod-current):hover,
+body.kogg-application .lm-TabBar-tab:not(.lm-mod-current):hover {
+  color: #fff; background: #23232c;
+}
+body.kogg-application .p-TabBar-tabLabel, body.kogg-application .lm-TabBar-tabLabel {
+  font-size: 12px; font-weight: 520;
+}
+body.kogg-application #theia-statusBar {
+  --theia-statusBar-height: 25px; padding: 0 4px;
+  border-top: 1px solid var(--kogg-border); font-variant-numeric: tabular-nums;
+}
+body.kogg-application #theia-statusBar .area .element {
+  margin: 2px 1px; padding: 0 7px; border-radius: 5px;
+  transition: color 120ms ease, background 120ms ease;
+}
+body.kogg-application #theia-statusBar .area .element.hasCommand:hover {
+  color: var(--kogg-text); background: var(--kogg-hover);
+}
+
+/* Floating surfaces */
+body.kogg-application .p-Menu, body.kogg-application .lm-Menu,
+body.kogg-application .quick-input-widget,
+body.kogg-application #theia-dialog-shell .dialogBlock {
+  overflow: hidden; border: 1px solid var(--kogg-border-strong);
+  border-radius: var(--kogg-radius-lg); background: rgba(20, 20, 26, .96);
+  box-shadow: var(--kogg-shadow); backdrop-filter: blur(18px) saturate(130%);
+}
+body.kogg-application .p-Menu-item, body.kogg-application .lm-Menu-item {
+  margin: 2px 5px; border-radius: 6px;
+}
+body.kogg-application .quick-input-widget { padding: 8px; }
+body.kogg-application .quick-input-widget .quick-input-box { border-radius: 9px; }
+body.kogg-application .theia-notifications-container {
+  width: min(440px, calc(100vw - 24px));
+}
+body.kogg-application .theia-notifications-container.theia-notification-toasts .theia-notification-list-item,
+body.kogg-application .theia-notifications-container.theia-notification-center {
+  color: var(--kogg-text);
+  border-radius: var(--kogg-radius-md);
+  box-shadow: var(--kogg-shadow);
+}
+body.kogg-application .theia-notification-list-item {
+  color: var(--kogg-text);
+  background: #18181e;
+}
+body.kogg-application .theia-notification-message { line-height: 1.5; }
+body.kogg-application #theia-dialog-shell {
+  background: rgba(0, 0, 0, .58);
+  backdrop-filter: blur(4px);
+}
+body.kogg-application .dialogTitle {
+  min-height: 40px; padding: 0 14px; color: var(--kogg-text);
+  background: var(--kogg-surface); border-bottom: 1px solid var(--kogg-border); font-weight: 600;
+}
+body.kogg-application .dialogContent { padding: 20px; }
+body.kogg-application .dialogControl { padding: 12px 20px 18px; }
+body.kogg-application .workspace-trust-dialog { width: min(520px, calc(100vw - 40px)); }
+body.kogg-application .workspace-trust-dialog .workspace-trust-title { font-size: 15px; line-height: 1.4; }
+body.kogg-application .workspace-trust-dialog .workspace-trust-description {
+  color: var(--kogg-muted); line-height: 1.65;
+}
+body.kogg-application .workspace-trust-dialog .workspace-trust-folder {
+  border: 1px solid var(--kogg-border); border-radius: var(--kogg-radius-sm); background: rgba(0, 0, 0, .22);
+}
+body.kogg-application .theia-button.secondary {
+  color: #d5d5dc;
+  background: rgba(255, 255, 255, .065);
+  border-color: var(--kogg-border-strong);
+  box-shadow: inset 0 1px rgba(255, 255, 255, .04);
+}
+body.kogg-application .theia-button.secondary:hover:not(:disabled) {
+  background: rgba(255, 255, 255, .1);
+  box-shadow: inset 0 1px rgba(255, 255, 255, .06);
+}
+
+/* Shared Kogg workspace panels */
+.kogg-marketplace-widget,
+.kogg-projects-widget,
+.kogg-provider-widget,
+.kogg-execution-widget,
+.kogg-tasks-widget,
+.kogg-agents-widget,
+.kogg-operations-widget {
+  min-height: 0;
+  overflow: hidden;
+}
+.kogg-marketplace-widget > .kogg-panel,
+.kogg-projects-widget > .kogg-panel,
+.kogg-provider-widget > .kogg-panel,
+.kogg-execution-widget > .kogg-panel,
+.kogg-tasks-widget > .kogg-panel,
+.kogg-agents-widget > .kogg-panel,
+.kogg-operations-widget > .kogg-panel {
+  height: 100%;
+  min-height: 0;
+}
+.kogg-panel {
+  box-sizing: border-box; overflow: auto;
+  padding: clamp(18px, 2.5vw, 30px); color: var(--kogg-text);
+  background: radial-gradient(circle at 75% -10%, rgba(139, 92, 246, .07), transparent 28rem), var(--kogg-canvas);
+  scrollbar-gutter: stable; container-type: inline-size;
+}
+.kogg-panel > header {
+  position: relative; margin: 0 0 22px; padding: 0 0 20px 14px;
+  border-bottom: 1px solid var(--kogg-border);
+}
+.kogg-panel > header::before {
+  content: ''; position: absolute; top: 3px; bottom: 21px; left: 0; width: 3px;
+  border-radius: 3px; background: linear-gradient(180deg, #a78bfa, #6d28d9);
+  box-shadow: 0 0 18px rgba(139, 92, 246, .38);
+}
+.kogg-panel h2, .kogg-panel h3, .kogg-panel h4 { color: var(--kogg-text); letter-spacing: -.025em; }
+.kogg-panel h2 { margin: 0 0 5px; font-size: 20px; font-weight: 650; line-height: 1.25; }
+.kogg-panel h3 { margin: 0 0 14px; font-size: 13px; font-weight: 650; }
+.kogg-panel h4 {
+  margin: 18px 0 10px; color: var(--kogg-muted); font-size: 11px;
+  font-weight: 650; text-transform: uppercase; letter-spacing: .07em;
+}
+.kogg-panel p { margin: 7px 0; color: var(--kogg-muted); line-height: 1.55; }
+.kogg-panel > header p { max-width: 68ch; margin: 0; }
+.kogg-panel strong { color: var(--kogg-text); font-weight: 620; }
+.kogg-panel section {
+  margin: 16px 0; padding: 17px; border: 1px solid var(--kogg-border);
+  border-radius: var(--kogg-radius-lg);
+  background: linear-gradient(145deg, rgba(255, 255, 255, .032), rgba(255, 255, 255, .012));
+  box-shadow: inset 0 1px rgba(255, 255, 255, .025), 0 8px 32px rgba(0, 0, 0, .08);
+}
+.kogg-panel form, .kogg-actions {
+  display: flex; align-items: flex-end; gap: 8px; margin: 14px 0;
+}
+.kogg-form-grid {
+  display: grid !important; grid-template-columns: repeat(auto-fit, minmax(min(220px, 100%), 1fr));
+  align-items: end; gap: 12px !important;
+}
+.kogg-form-grid label, .kogg-panel > label {
+  display: block; min-width: 0; margin: 8px 0; color: #aaaab4;
+  font-size: 11px; font-weight: 600; letter-spacing: .025em;
+}
+.kogg-panel input, .kogg-panel select, .kogg-panel textarea {
+  box-sizing: border-box; width: 100%; min-height: 36px; margin-top: 6px; padding: 8px 10px;
+  color: var(--kogg-text); background: rgba(0, 0, 0, .22);
+  border: 1px solid var(--kogg-border-strong); border-radius: var(--kogg-radius-sm); outline: none;
+  transition: border-color 140ms ease, box-shadow 140ms ease, background 140ms ease;
+}
+.kogg-panel textarea { min-height: 104px; resize: vertical; line-height: 1.5; }
+.kogg-panel input:hover, .kogg-panel select:hover, .kogg-panel textarea:hover {
+  border-color: rgba(255, 255, 255, .19);
+}
+.kogg-panel input:focus, .kogg-panel select:focus, .kogg-panel textarea:focus {
+  border-color: rgba(139, 92, 246, .78); background: rgba(0, 0, 0, .3);
+  box-shadow: 0 0 0 3px rgba(139, 92, 246, .14);
+}
+.kogg-panel button, body.kogg-application .theia-button {
+  min-height: 34px; padding: 7px 12px; color: #fff; background: var(--kogg-accent);
+  border: 1px solid rgba(255, 255, 255, .08); border-radius: var(--kogg-radius-sm);
+  box-shadow: inset 0 1px rgba(255, 255, 255, .12), 0 1px 2px rgba(0, 0, 0, .24);
+  cursor: pointer; font-weight: 590; white-space: nowrap;
+  transition: transform 140ms var(--kogg-ease), background 140ms ease, box-shadow 140ms ease;
+}
+.kogg-panel button:hover:not(:disabled), body.kogg-application .theia-button:hover:not(:disabled) {
+  transform: translateY(-1px); background: var(--kogg-accent-hover);
+  box-shadow: inset 0 1px rgba(255, 255, 255, .15), 0 5px 15px rgba(91, 33, 182, .24);
+}
+.kogg-panel button:active:not(:disabled), body.kogg-application .theia-button:active:not(:disabled) {
+  transform: translateY(0) scale(.985);
+}
+.kogg-panel button:disabled { cursor: not-allowed; opacity: .66; filter: saturate(.65); }
+
+.kogg-panel button[data-refresh], .kogg-panel button[data-support],
+.kogg-panel button[data-diagnostics], .kogg-panel button[data-action='revocations'],
+.kogg-panel button[data-update], .kogg-panel button[data-rollback],
+.kogg-panel button[data-remove], .kogg-panel button[data-relocate],
+.kogg-panel button[data-remove-repository], .kogg-panel button[data-delete-provider] {
+  color: #d5d5dc; background: rgba(255, 255, 255, .055);
+  border-color: var(--kogg-border-strong); box-shadow: inset 0 1px rgba(255, 255, 255, .035);
+}
+.kogg-panel button[data-remove], .kogg-panel button[data-remove-repository],
+.kogg-panel button[data-delete-provider], .kogg-panel button[data-cancel] { color: #fda4af; }
+
+.kogg-package-list { display: grid; gap: 8px; }
+.kogg-package-list article, .kogg-panel > ul > li, .kogg-panel section > ul > li {
+  display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 12px;
+  min-height: 48px; padding: 11px 12px; border: 1px solid var(--kogg-border);
+  border-radius: var(--kogg-radius-md); background: rgba(255, 255, 255, .018);
+  transition: border-color 140ms ease, background 140ms ease, transform 140ms var(--kogg-ease);
+}
+.kogg-package-list article:hover, .kogg-panel section > ul > li:hover {
+  border-color: var(--kogg-border-strong); background: var(--kogg-hover); transform: translateY(-1px);
+}
+.kogg-panel ul { margin: 10px 0 0; padding: 0; list-style: none; }
+.kogg-panel li + li { margin-top: 7px; }
+.kogg-package-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 7px; }
+.kogg-package-list article p { margin: 3px 0 0; font-size: 12px; }
+.kogg-panel [role='status'] {
+  display: inline-flex; align-items: center; min-height: 30px; margin: 4px 6px 4px 0; padding: 6px 9px;
+  border: 1px solid var(--kogg-border); border-radius: 999px; background: rgba(255, 255, 255, .025);
+  color: var(--kogg-muted); font-size: 11px; font-variant-numeric: tabular-nums;
+}
+.kogg-blocked { color: var(--kogg-warning) !important; }
+.kogg-operation-warning {
+  border-color: rgba(245, 185, 66, .27) !important; background: rgba(245, 185, 66, .04) !important;
+}
+.kogg-empty {
+  padding: 28px 16px; border: 1px dashed var(--kogg-border-strong);
+  border-radius: var(--kogg-radius-md); text-align: center;
+}
+.kogg-panel table { width: 100%; border-collapse: separate; border-spacing: 0; font-size: 12px; }
+.kogg-panel th {
+  padding: 9px 10px; color: var(--kogg-faint); background: rgba(255, 255, 255, .025);
+  border-bottom: 1px solid var(--kogg-border); text-align: left; text-transform: uppercase;
+  letter-spacing: .055em; font-size: 10px; font-weight: 650;
+}
+.kogg-panel td { padding: 10px; border-bottom: 1px solid var(--kogg-border); color: var(--kogg-muted); }
+.kogg-panel tr:last-child td { border-bottom: 0; }
+.kogg-panel tbody tr { transition: background 120ms ease; }
+.kogg-panel tbody tr:hover { background: rgba(255, 255, 255, .025); }
+.kogg-panel td button { min-height: 27px; padding: 3px 8px; }
+.kogg-ai-panel { display: flex; min-height: 100%; flex-direction: column; }
+.kogg-ai-settings {
+  margin-bottom: 16px; border: 1px solid var(--kogg-border); border-radius: var(--kogg-radius-md);
+  background: rgba(255, 255, 255, .022);
+}
+.kogg-ai-settings > summary {
+  display: flex; min-height: 42px; align-items: center; justify-content: space-between; gap: 10px;
+  padding: 9px 12px; cursor: pointer; color: var(--kogg-muted); font-size: 12px; list-style: none;
+}
+.kogg-ai-settings > summary::-webkit-details-marker { display: none; }
+.kogg-ai-settings > summary::before { content: '›'; color: var(--kogg-faint); transition: transform 140ms var(--kogg-ease); }
+.kogg-ai-settings[open] > summary::before { transform: rotate(90deg); }
+.kogg-ai-settings > summary span { flex: 1; }
+.kogg-ai-settings > summary strong { overflow: hidden; color: var(--kogg-text); text-overflow: ellipsis; white-space: nowrap; }
+.kogg-ai-settings > summary strong.ready { color: var(--kogg-success); }
+.kogg-ai-settings[open] > summary { border-bottom: 1px solid var(--kogg-border); }
+.kogg-ai-settings > .kogg-form-grid, .kogg-ai-settings > .kogg-actions,
+.kogg-ai-settings > p, .kogg-ai-settings > section, .kogg-ai-settings > label { margin: 12px; }
+.kogg-provider-step { display: flex; gap: 10px; align-items: flex-start; margin: 16px 12px 9px; }
+.kogg-provider-step > span {
+  display: grid; width: 21px; height: 21px; flex: 0 0 21px; place-items: center;
+  border: 1px solid rgba(139, 92, 246, .32); border-radius: 50%; color: #c4b5fd;
+  background: rgba(139, 92, 246, .1); font-size: 10px; font-weight: 700;
+}
+.kogg-provider-step strong { display: block; color: var(--kogg-text); font-size: 12px; }
+.kogg-provider-step p { margin: 2px 0 0; font-size: 11px; line-height: 1.45; }
+.kogg-provider-cards { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 7px; margin: 0 12px 16px; }
+.kogg-provider-cards button {
+  display: grid; min-width: 0; min-height: 58px; grid-template-columns: 28px minmax(0, 1fr) 7px;
+  align-items: center; gap: 8px; padding: 8px; color: var(--kogg-muted); text-align: left;
+  border: 1px solid var(--kogg-border); background: rgba(255, 255, 255, .02); box-shadow: none;
+}
+.kogg-panel .kogg-provider-cards button:hover:not(:disabled) {
+  color: #fff; border-color: rgba(167, 139, 250, .5); background: #332254; transform: none;
+  box-shadow: inset 0 0 0 1px rgba(167, 139, 250, .08);
+}
+.kogg-panel .kogg-provider-cards button:active:not(:disabled) { color: #fff; background: #291b48; transform: none; }
+.kogg-provider-cards button.selected {
+  color: #fff; border-color: rgba(167, 139, 250, .62); background: #29203d;
+  box-shadow: inset 0 0 0 1px rgba(139, 92, 246, .08);
+}
+.kogg-provider-cards button[aria-checked='true']:focus-visible { color: #fff; background: #332254; }
+.kogg-provider-monogram {
+  display: grid; width: 28px; height: 28px; place-items: center; border-radius: 8px;
+  color: #ddd6fe; background: rgba(139, 92, 246, .14); font-size: 11px; font-weight: 700;
+}
+.kogg-provider-cards button > span:nth-child(2) { min-width: 0; }
+.kogg-provider-cards button strong, .kogg-provider-cards button small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.kogg-provider-cards button strong { color: inherit; font-size: 11px; }
+.kogg-provider-cards button small { margin-top: 2px; color: var(--kogg-faint); font-size: 9px; }
+.kogg-provider-cards i, .kogg-connection-status i {
+  width: 7px; height: 7px; border-radius: 50%; background: var(--kogg-faint); box-shadow: 0 0 0 3px rgba(255, 255, 255, .025);
+}
+.kogg-provider-cards i.connected, .kogg-connection-status i.connected { background: var(--kogg-success); box-shadow: 0 0 0 3px rgba(52, 211, 153, .09); }
+.kogg-panel .kogg-connection-status { display: flex; }
+.kogg-chat-thread {
+  display: flex; min-height: 220px; flex: 1; flex-direction: column; justify-content: center;
+  padding: 4px 2px 18px;
+}
+.kogg-chat-empty { margin: auto; max-width: 300px; text-align: center; }
+.kogg-chat-empty .kogg-chat-mark {
+  display: grid; width: 42px; height: 42px; margin: 0 auto 14px; place-items: center;
+  border: 1px solid rgba(167, 139, 250, .32); border-radius: 13px;
+  color: #ddd6fe; background: linear-gradient(145deg, rgba(139, 92, 246, .25), rgba(139, 92, 246, .08));
+  box-shadow: 0 12px 32px rgba(76, 29, 149, .22); font-size: 17px; font-weight: 700;
+}
+.kogg-chat-empty h3 { margin-bottom: 5px; font-size: 15px; }
+.kogg-chat-empty button { margin-top: 12px; }
+.kogg-chat-message { margin-bottom: 14px; }
+.kogg-chat-message > span {
+  display: block; margin: 0 0 6px 2px; color: var(--kogg-faint); font-size: 10px;
+  font-weight: 650; text-transform: uppercase; letter-spacing: .07em;
+}
+.kogg-chat-message p, .kogg-chat-message pre {
+  margin: 0; padding: 12px 13px; border: 1px solid var(--kogg-border); border-radius: 12px;
+  color: var(--kogg-text); background: rgba(255, 255, 255, .035); white-space: pre-wrap;
+  font: inherit; font-size: 12px; line-height: 1.6;
+}
+.kogg-chat-message.user p { margin-left: 18px; border-color: rgba(139, 92, 246, .2); background: rgba(139, 92, 246, .09); }
+.kogg-chat-modes {
+  display: flex; align-items: center; gap: 4px; margin: 0 2px 7px; padding: 4px;
+  border: 1px solid var(--kogg-border); border-radius: 10px; background: rgba(255, 255, 255, .018);
+}
+.kogg-chat-modes > span {
+  padding: 0 5px; color: var(--kogg-faint); font-size: 9px; font-weight: 700;
+  letter-spacing: .07em; text-transform: uppercase;
+}
+.kogg-panel .kogg-chat-modes button {
+  min-height: 27px; padding: 3px 8px; border-color: transparent; border-radius: 7px;
+  color: var(--kogg-muted); background: transparent; box-shadow: none; font-size: 10px;
+}
+.kogg-panel .kogg-chat-modes button:hover:not(:disabled) {
+  color: #fff; border-color: rgba(167, 139, 250, .34); background: #332254; transform: none;
+}
+.kogg-panel .kogg-chat-modes button.selected,
+.kogg-panel .kogg-chat-modes button[aria-pressed='true']:focus-visible {
+  color: #fff; border-color: rgba(167, 139, 250, .54); background: #29203d;
+}
+.kogg-chat-modes small {
+  min-width: 0; margin-left: auto; padding-right: 5px; overflow: hidden;
+  color: var(--kogg-faint); font-size: 9px; text-overflow: ellipsis; white-space: nowrap;
+}
+.kogg-chat-composer {
+  position: sticky; bottom: 0; z-index: 2; padding: 8px;
+  border: 1px solid var(--kogg-border-strong); border-radius: 14px;
+  background: rgba(24, 24, 29, .96); box-shadow: 0 12px 34px rgba(0, 0, 0, .3), inset 0 1px rgba(255, 255, 255, .035);
+  backdrop-filter: blur(18px);
+}
+.kogg-chat-composer label { display: block; }
+.kogg-chat-composer textarea {
+  width: 100%; min-height: 68px; padding: 9px; border: 0; background: transparent; box-shadow: none; resize: none;
+}
+.kogg-chat-composer textarea:focus { border: 0; box-shadow: none; }
+.kogg-chat-composer > div { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 4px 2px 0 8px; }
+.kogg-chat-composer > div > span { overflow: hidden; color: var(--kogg-faint); font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
+.kogg-chat-composer button { min-height: 29px; width: auto; padding: 4px 12px; }
+.theia-sr-only {
+  position: absolute !important; width: 1px !important; height: 1px !important; overflow: hidden !important;
+  clip: rect(0, 0, 0, 0) !important; white-space: nowrap !important;
+}
+
+body.kogg-application ::selection { color: #fff; background: #5b36a8; }
+body.kogg-application * { scrollbar-color: rgba(255, 255, 255, .16) transparent; scrollbar-width: thin; }
+body.kogg-application ::-webkit-scrollbar { width: 9px; height: 9px; }
+body.kogg-application ::-webkit-scrollbar-track { background: transparent; }
+body.kogg-application ::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, .15); background-clip: padding-box;
+  border: 3px solid transparent; border-radius: 10px;
+}
+body.kogg-application ::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, .24); background-clip: padding-box;
+}
+body.kogg-application :focus-visible {
+  outline: 2px solid rgba(167, 139, 250, .95) !important; outline-offset: 2px !important;
+}
+
+@media (max-width: 700px) {
+  .kogg-panel { padding: 16px; }
+  .kogg-panel section { padding: 14px; }
+  .kogg-panel form:not(.kogg-form-grid), .kogg-actions { align-items: stretch; flex-direction: column; }
+  .kogg-panel button { width: 100%; }
+  .kogg-package-list article { grid-template-columns: 1fr; }
+  .kogg-package-actions { justify-content: flex-start; }
+}
+@container (max-width: 360px) {
+  .kogg-panel { padding: 16px; }
+  .kogg-panel > header { margin-bottom: 16px; }
+  .kogg-panel h2 { font-size: 18px; }
+  .kogg-panel section { padding: 13px; }
+  .kogg-panel form:not(.kogg-form-grid), .kogg-panel .kogg-actions {
+    align-items: stretch; flex-direction: column;
+  }
+  .kogg-panel .kogg-form-grid { grid-template-columns: minmax(0, 1fr); }
+  .kogg-panel button { width: 100%; white-space: normal; }
+  .kogg-panel .kogg-package-list article { grid-template-columns: 1fr; }
+  .kogg-panel .kogg-package-actions { justify-content: stretch; }
+  .kogg-panel [role='status'] { display: flex; border-radius: var(--kogg-radius-sm); }
+  .kogg-panel .kogg-chat-composer button { width: auto; }
+  .kogg-panel .kogg-chat-modes > span, .kogg-panel .kogg-chat-modes small { display: none; }
+  .kogg-panel .kogg-chat-modes button {
+    width: auto; min-width: 0; flex: 1 1 0; padding-inline: 4px; white-space: nowrap;
+  }
+  .kogg-panel .kogg-provider-cards { grid-template-columns: minmax(0, 1fr); }
+  .kogg-panel .kogg-provider-cards button { width: 100%; }
+}
+@media (prefers-reduced-motion: reduce) {
+  body.kogg-application *, body.kogg-application *::before, body.kogg-application *::after {
+    scroll-behavior: auto !important; transition-duration: .01ms !important;
+    animation-duration: .01ms !important; animation-iteration-count: 1 !important;
+  }
+}

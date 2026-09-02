@@ -1,4 +1,5 @@
 import { injectable } from '@theia/core/shared/inversify';
+import { FrontendApplication } from '@theia/core/lib/browser';
 import { AbstractViewContribution } from '@theia/core/lib/browser/shell/view-contribution';
 import { KoggProviderWidget } from './provider-widget';
 
@@ -14,5 +15,9 @@ export class KoggProviderContribution extends AbstractViewContribution<KoggProvi
             defaultWidgetOptions: { area: 'right', rank: 400 },
             toggleCommandId: 'kogg.ai.open'
         });
+    }
+
+    async initializeLayout(_application: FrontendApplication): Promise<void> {
+        await this.openView({ activate: false, reveal: true });
     }
 }
