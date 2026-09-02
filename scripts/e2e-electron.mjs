@@ -499,6 +499,125 @@ async function exerciseElectronTasks(page, electronApplication) {
     assert.equal(logs.join('\n').includes(canary), false);
 }
 
+async function createElectronWorkflowAdmissionFixture(page, electronApplication) {
+    let tasks = page.locator('.kogg-tasks-widget:visible').first();
+    if (!await tasks.count()) {
+        await openCommand(page, 'View: Toggle Kogg Tasks', electronApplication);
+        tasks = page.locator('.kogg-tasks-widget:visible').first();
+        await tasks.waitFor({ state: 'visible', timeout: 30_000 });
+    }
+    await tasks.getByLabel('Initial specification').fill('Authorize the exact Electron workflow UI admission fixture.');
+    await tasks.getByRole('button', { name: 'Create task' }).click();
+    await tasks.getByText(/Revision 1 · active · draft/iu).waitFor({ timeout: 10_000 });
+    await tasks.getByRole('button', { name: 'Freeze exact revision' }).click();
+    await tasks.getByRole('button', { name: 'Review for approval' }).click();
+    await tasks.getByRole('button', { name: 'Approve this exact revision' }).click();
+    await tasks.getByLabel('Existing run ID').fill('57575757-5757-4757-8757-575757575757');
+    await tasks.getByRole('button', { name: 'Authorize exact task admission' }).click();
+    await tasks.locator('[data-admission-id]').waitFor({ timeout: 10_000 });
+}
+
+function repositorySnapshot(repository) {
+    const refs = spawnSync('git', ['-C', repository, 'for-each-ref', '--format=%(refname):%(objectname)'], { encoding: 'utf8' });
+    const status = spawnSync('git', ['-C', repository, 'status', '--porcelain=v2', '--branch'], { encoding: 'utf8' });
+    assert.equal(refs.status, 0); assert.equal(status.status, 0); return `${refs.stdout}\n${status.stdout}`;
+}
+
+async function exerciseElectronAgents(page, electronApplication, admissionId) {
+    const agents = page.locator('.kogg-agents-widget').last();
+    if (!await agents.count()) {
+        await openCommand(page, 'View: Toggle Kogg Agents', electronApplication);
+        await agents.waitFor({ state: 'attached', timeout: 30_000 });
+    }
+    await agents.getByRole('button', { name: 'Save immutable revision' }).click();
+    await agents.locator('section').filter({ hasText: 'Role Revisions' }).locator('li').filter({ hasText: /implementer · [0-9a-f-]{36}/u }).waitFor();
+    await waitForEnabled(agents.getByRole('button', { name: 'Confirm and start exact attempt' }));
+    await agents.getByLabel('Task admission ID').fill(admissionId);
+    const roleOption = agents.getByLabel('Role revision').locator('option').filter({ hasText: /^implementer ·/u }).first(); const roleRevisionId = await roleOption.getAttribute('value'); assert.ok(roleRevisionId); await agents.getByLabel('Role revision').selectOption(roleRevisionId);
+    await agents.getByLabel('Exact adapter and version').fill('kogg.fixture@1.0.0'); await agents.getByLabel('Provider', { exact: true }).fill('kogg.fixture'); await agents.getByLabel('Model', { exact: true }).fill('fixture.echo'); await agents.getByLabel('Deadline policy').fill('interactive-v1'); assert.equal(await agents.locator('form[data-start]').evaluate(form => form.checkValidity()), true);
+    await agents.getByRole('button', { name: 'Confirm and start exact attempt' }).click();
+    await agents.getByText(/cleaned · AGENT_OK.*deadline policy interactive-v1.*activity 1.*usage complete\/provider-cumulative.*resources 0/iu).waitFor({ timeout: 15_000 });
+}
+
+async function waitForEnabled(locator, timeout = 30_000) {
+    const deadline = Date.now() + timeout;
+    while (Date.now() < deadline) { if (await locator.isEnabled().catch(() => false)) return; await new Promise(resolve => setTimeout(resolve, 50)); }
+    throw new Error('Timed out waiting for enabled control');
+}
+
+async function exerciseElectronWorkflowEditor(page, electronApplication) {
+    let widget = page.locator('.kogg-workflow-editor-widget:visible').first();
+    if (!await widget.count()) {
+        await openCommand(page, 'View: Toggle Kogg Workflow Editor', electronApplication);
+        widget = page.locator('.kogg-workflow-editor-widget:visible').first();
+    }
+    await widget.getByText('Structured workflow outline ready.').waitFor({ timeout: 15_000 });
+    assert.equal(await widget.locator('[data-workflow-node]').count(), 2);
+    await widget.getByRole('button', { name: 'Show spatial canvas' }).click();
+    assert.equal(await widget.locator('[data-workflow-canvas-node]').count(), 2);
+    await widget.getByLabel('Node kind').selectOption('check.deterministic');
+    await widget.getByRole('button', { name: 'Add node' }).click();
+    await widget.getByRole('button', { name: 'Move check.deterministic earlier on canvas' }).click();
+    await widget.getByRole('button', { name: 'Configure check.deterministic on canvas' }).click();
+    let configuration = widget.locator('[data-config]');
+    await configuration.getByLabel('Closed check ID').fill('suite.required-v1'); await configuration.getByLabel('External configuration digest').fill('a'.repeat(64));
+    await configuration.getByRole('button', { name: 'Apply exact configuration' }).click();
+    await widget.getByRole('button', { name: 'Configure implementation.agent on canvas' }).click();
+    configuration = widget.locator('[data-config]');
+    await configuration.getByLabel('Role revision ID').fill('60000000-0000-4000-8000-000000000001');
+    await configuration.getByLabel('Provider ID').fill('kogg.fixture'); await configuration.getByLabel('Model ID').fill('fixture.echo');
+    await configuration.getByLabel('Adapter key').fill('kogg.fixture'); await configuration.getByLabel('Adapter version').fill('1.0.0'); await configuration.getByLabel('Deadline policy').fill('interactive-v1');
+    await configuration.getByRole('button', { name: 'Apply exact configuration' }).click();
+    await widget.getByRole('button', { name: 'Configure research.agent on canvas' }).click(); configuration = widget.locator('[data-config]');
+    await configuration.getByLabel('Role revision ID').fill('60000000-0000-4000-8000-000000000002'); await configuration.getByLabel('Provider ID').fill('kogg.fixture.read'); await configuration.getByLabel('Model ID').fill('fixture.research');
+    await configuration.getByLabel('Adapter key').fill('kogg.fixture'); await configuration.getByLabel('Adapter version').fill('1.0.0'); await configuration.getByLabel('Deadline policy').fill('research-v1'); await configuration.getByLabel('Maximum attempts').selectOption('2'); await configuration.getByLabel('Retry backoff').selectOption('1000'); await configuration.getByLabel('Retry side-effect policy').selectOption('fresh-authority'); await configuration.getByRole('button', { name: 'Apply exact configuration' }).click();
+    await widget.getByRole('button', { name: 'Show structured outline' }).click();
+    assert.equal(await widget.locator('[data-workflow-node]').count(), 3);
+    assert.match(await widget.locator('[data-workflow-node]').nth(1).innerText(), /check\.deterministic/u);
+    configuration = widget.locator('[data-config]'); assert.equal(await configuration.getByLabel('Role revision ID').inputValue(), '60000000-0000-4000-8000-000000000002'); assert.equal(await configuration.getByLabel('Maximum attempts').inputValue(), '2'); assert.equal(await configuration.getByLabel('Retry backoff').inputValue(), '1000'); assert.equal(await configuration.getByLabel('Retry side-effect policy').inputValue(), 'fresh-authority');
+    await widget.getByRole('button', { name: 'Configure check.deterministic' }).click(); configuration = widget.locator('[data-config]'); assert.equal(await configuration.getByLabel('Closed check ID').inputValue(), 'suite.required-v1'); assert.equal(await configuration.getByLabel('External configuration digest').inputValue(), 'a'.repeat(64));
+    await widget.getByRole('button', { name: 'Disconnect connection 1' }).click();
+    await widget.getByRole('button', { name: 'Disconnect connection 1' }).click();
+    const connection = widget.locator('[data-connect]');
+    await connection.getByLabel('Source node').selectOption({ label: '1. research.agent' });
+    await connection.getByLabel('Source outcome').selectOption('failure');
+    await connection.getByLabel('Target node').selectOption({ label: '2. check.deterministic' });
+    await connection.getByRole('button', { name: 'Connect nodes' }).click();
+    await connection.getByLabel('Source node').selectOption({ label: '2. check.deterministic' });
+    await connection.getByLabel('Source outcome').selectOption('success');
+    await connection.getByLabel('Target node').selectOption({ label: '3. implementation.agent' });
+    await connection.getByRole('button', { name: 'Connect nodes' }).click();
+    const failureRoute = widget.getByLabel('Route 1. research.agent to 2. check.deterministic');
+    await failureRoute.selectOption('failure');
+    await widget.getByRole('button', { name: 'Apply connection outcomes' }).click();
+    await widget.getByText('Connection outcomes applied; validate before saving.').waitFor();
+    assert.equal(await failureRoute.inputValue(), 'failure');
+    await widget.getByRole('button', { name: 'Add parallel fork and join' }).click();
+    await widget.getByText('Two-branch parallel fork and exact join added; configure branches and validate before saving.').waitFor();
+    assert.equal(await widget.locator('[data-workflow-node]').count(), 7);
+    await widget.getByRole('button', { name: 'Group selected with previous node' }).click();
+    await widget.getByText('Visual group created with two explicit members; execution graph is unchanged.').waitFor();
+    assert.match(await widget.getByLabel('Workflow visual groups').innerText(), /2 visible members/u);
+    await widget.getByRole('button', { name: 'Validate workflow' }).click();
+    await widget.getByText(/Workflow valid: 7 nodes and 7 edges/u).waitFor({ timeout: 10_000 });
+    await widget.getByRole('button', { name: 'Save immutable version' }).click();
+    await widget.getByText('Workflow version 1 saved immutably.').waitFor({ timeout: 10_000 });
+    await widget.getByRole('button', { name: 'Compile current version' }).click();
+    await widget.getByText(/Compiled plan [0-9a-f]{8} with 9 mandatory anchors/u).waitFor({ timeout: 10_000 });
+    const admissionChoices = widget.getByLabel('Task admission').locator('option');
+    if (await admissionChoices.count() > 1) {
+        assert.match(await admissionChoices.nth(1).innerText(), /Task [0-9a-f]{8} · run [0-9a-f]{8}/u);
+        await widget.getByRole('button', { name: 'Start governed workflow' }).click();
+        await widget.getByText(/Workflow operation failed safely: WORKFLOW_AUTHORITY_EXPANSION/u).waitFor({ timeout: 10_000 });
+    }
+    await page.reload({ waitUntil: 'domcontentloaded' });
+    await page.locator('body.kogg-application').waitFor({ timeout: 20_000 });
+    widget = page.locator('.kogg-workflow-editor-widget:visible').filter({ hasText: 'Workflow version 1 is current.' }).first();
+    await widget.waitFor({ state: 'visible', timeout: 15_000 });
+    assert.match(logs.join('\n'), /\[kogg:workflow:editor\] ui\.operation\.completed/u);
+    assert.doesNotMatch(await widget.innerText(), /configurationDigest|requestedEffects|graphDigest|catalogDigest/u);
+}
+
 async function exerciseElectronInteractionModes(page) {
     const selector = page.getByLabel(/Mode: Plan; authority: \d+ bounded capabilities; stage: research/u);
     await selector.waitFor({ state: 'visible', timeout: 15_000 });
@@ -611,6 +730,13 @@ async function electronStreamSequence(widget) {
 async function exerciseElectronGovernedRunDetails(widget) {
     const row = widget.locator('[data-projected-run]').filter({ hasText: /failed|completed/u }).last();
     await row.waitFor({ state: 'visible', timeout: 15_000 });
+    // A terminal governed run must hold no live processes; a completed run
+    // must additionally show zero abnormal process state.
+    const rowCells = row.locator('td');
+    const lifecycle = (await rowCells.nth(1).innerText()).trim();
+    assert.match(lifecycle, /failed|completed/u);
+    assert.equal((await rowCells.nth(4).innerText()).trim(), '0');
+    if (/completed/u.test(lifecycle)) assert.equal((await rowCells.nth(5).innerText()).trim(), '0');
     await row.getByRole('button').click();
     const tabs = widget.getByRole('tablist', { name: 'Governed run details' });
     await tabs.waitFor({ state: 'visible', timeout: 10_000 });
@@ -621,7 +747,15 @@ async function exerciseElectronGovernedRunDetails(widget) {
         await widget.getByRole('tabpanel', { name: `${name} details` }).waitFor({ state: 'visible' });
     }
     await tabs.getByRole('tab', { name: 'Timeline' }).click();
-    await widget.getByRole('tabpanel', { name: 'Timeline details' }).getByRole('cell', { name: 'diagnostic', exact: true }).first().waitFor({ timeout: 10_000 });
+    const timeline = widget.getByRole('tabpanel', { name: 'Timeline details' });
+    await timeline.getByRole('cell', { name: 'diagnostic', exact: true }).first().waitFor({ timeout: 10_000 });
+    const timelineRows = timeline.locator('tbody').getByRole('row');
+    const events = [];
+    for (let index = 0; index < await timelineRows.count(); index += 1) events.push((await timelineRows.nth(index).innerText()).trim());
+    assert(events.length > 0, 'Expected safe timeline entries for the selected governed run');
+    assert.match(events[0], /requested|started/u);
+    assert(events.some(event => /completed|failed|cancelled|timeout/u.test(event)), 'Expected a terminal lifecycle event');
+    assert.match(events[events.length - 1], /completed|failed|cancelled|timeout|recovered/u);
 }
 
 async function synchronizeElectronStreamSequences(first, second) {

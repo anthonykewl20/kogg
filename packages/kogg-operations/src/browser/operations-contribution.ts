@@ -11,7 +11,7 @@ import { OperationsWidget } from './operations-widget';
 export class OperationsContribution extends AbstractViewContribution<OperationsWidget> implements FrontendApplicationContribution {
   static readonly SHOW: Command = { id: 'kogg.operations.show', label: 'Kogg: Show Operations' };
   constructor() {
-    super({ widgetId: OperationsWidget.ID, widgetName: OperationsWidget.LABEL, defaultWidgetOptions: { area: 'main', rank: 110 }, toggleCommandId: 'kogg.operations.open' });
+    super({ widgetId: OperationsWidget.ID, widgetName: OperationsWidget.LABEL, defaultWidgetOptions: { area: 'left', rank: 110 }, toggleCommandId: 'kogg.operations.open' });
   }
   onStart(): void {}
   override registerCommands(commands: CommandRegistry): void {

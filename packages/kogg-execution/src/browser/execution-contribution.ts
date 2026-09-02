@@ -7,6 +7,6 @@ import { ExecutionWidget } from './execution-widget';
 @injectable()
 export class ExecutionContribution extends AbstractViewContribution<ExecutionWidget> {
   constructor() {
-    super({ widgetId: ExecutionWidget.ID, widgetName: ExecutionWidget.LABEL, defaultWidgetOptions: { area: 'main', rank: 120 }, toggleCommandId: 'kogg.execution.open' });
+    super({ widgetId: ExecutionWidget.ID, widgetName: ExecutionWidget.LABEL, defaultWidgetOptions: { area: 'left', rank: 120 }, toggleCommandId: 'kogg.execution.open' });
   }
 }

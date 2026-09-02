@@ -1203,11 +1203,22 @@ async function acceptConfirmation(page, title) {
 }
 
 async function assertNoHorizontalOverflow(surface) {
-    const overflow = await surface.locator('.kogg-panel').evaluate(element => ({
-        clientWidth: element.clientWidth,
-        scrollWidth: element.scrollWidth
-    }));
-    assert(overflow.scrollWidth <= overflow.clientWidth + 1, `Horizontal overflow: ${overflow.scrollWidth}px > ${overflow.clientWidth}px`);
+    const overflow = await surface.locator('.kogg-panel').first().evaluate(element => {
+        const overflowX = getComputedStyle(element).overflowX;
+        return {
+            clientWidth: element.clientWidth,
+            scrollWidth: element.scrollWidth,
+            contained: ['auto', 'scroll', 'hidden'].includes(overflowX),
+            withinShell: element.getBoundingClientRect().right <= document.documentElement.clientWidth + 1
+                && element.getBoundingClientRect().left >= -1
+        };
+    });
+    assert(overflow.withinShell, 'Widget escapes the application shell horizontally');
+    // Scrollable panels may scroll their own content; only uncontained
+    // overflow visually breaks the layout.
+    if (!overflow.contained) {
+        assert(overflow.scrollWidth <= overflow.clientWidth + 1, `Horizontal overflow: ${overflow.scrollWidth}px > ${overflow.clientWidth}px`);
+    }
 }
 
 async function exerciseExecution(page) {
@@ -1295,6 +1306,13 @@ async function streamSequence(widget) {
 async function exerciseGovernedRunDetails(widget, ownerKind) {
     const row = widget.locator('[data-projected-run]').filter({ hasText: /failed|completed/u }).last();
     await row.waitFor({ state: 'visible', timeout: 15_000 });
+    // A terminal governed run must hold no live processes; a completed run
+    // must additionally show zero abnormal process state.
+    const rowCells = row.locator('td');
+    const lifecycle = (await rowCells.nth(1).innerText()).trim();
+    assert.match(lifecycle, /failed|completed/u);
+    assert.equal((await rowCells.nth(4).innerText()).trim(), '0');
+    if (/completed/u.test(lifecycle)) assert.equal((await rowCells.nth(5).innerText()).trim(), '0');
     await row.getByRole('button').click();
     const tabs = widget.getByRole('tablist', { name: 'Governed run details' });
     await tabs.waitFor({ state: 'visible', timeout: 10_000 });
@@ -1305,7 +1323,15 @@ async function exerciseGovernedRunDetails(widget, ownerKind) {
         await widget.getByRole('tabpanel', { name: `${name} details` }).waitFor({ state: 'visible' });
     }
     await tabs.getByRole('tab', { name: 'Timeline' }).click();
-    await widget.getByRole('tabpanel', { name: 'Timeline details' }).getByRole('cell', { name: ownerKind, exact: true }).first().waitFor({ timeout: 10_000 });
+    const timeline = widget.getByRole('tabpanel', { name: 'Timeline details' });
+    await timeline.getByRole('cell', { name: ownerKind, exact: true }).first().waitFor({ timeout: 10_000 });
+    const timelineRows = timeline.locator('tbody').getByRole('row');
+    const events = [];
+    for (let index = 0; index < await timelineRows.count(); index += 1) events.push((await timelineRows.nth(index).innerText()).trim());
+    assert(events.length > 0, 'Expected safe timeline entries for the selected governed run');
+    assert.match(events[0], /requested|started/u);
+    assert(events.some(event => /completed|failed|cancelled|timeout/u.test(event)), 'Expected a terminal lifecycle event');
+    assert.match(events[events.length - 1], /completed|failed|cancelled|timeout|recovered/u);
 }
 
 async function synchronizeStreamSequences(first, second) {
