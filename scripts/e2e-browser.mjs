@@ -1289,6 +1289,7 @@ async function exerciseOperationsStream(page) {
     await diagnosticMessage.waitFor({ timeout: 15_000 });
     assert.doesNotMatch(await diagnosticMessage.innerText(), /operations\.(?:projection|owners|correlations|timeline|stream|metrics|retention|support|actions|source-maps)/u);
     await exerciseGovernedRunDetails(first, 'diagnostic');
+    await auditRunDetailSurfaces(first);
     const beforeDiagnoseAction = await streamSequence(first);
     await first.getByRole('button', { name: 'Diagnose selected run' }).click();
     await page.getByText('Diagnostics completed for the selected run.').filter({ visible: true }).first().waitFor({ timeout: 20_000 });
@@ -1326,6 +1327,31 @@ async function streamSequence(widget) {
     const match = /sequence (\d+)/u.exec(status);
     assert(match, `Missing operations stream sequence in: ${status}`);
     return BigInt(match[1]);
+}
+
+async function auditRunDetailSurfaces(widget) {
+    // Closure audit: every run-detail tab renders only closed safe
+    // projections, and supervised process plus usage facts are visible
+    // across the projected governed runs.
+    const tabs = widget.getByRole('tablist', { name: 'Governed run details' });
+    const rows = widget.locator('[data-projected-run]');
+    await rows.first().waitFor({ state: 'visible', timeout: 15_000 });
+    const emptyMarker = 'No matching safe timeline entries.';
+    let sawProcesses = false;
+    for (let index = 0; index < Math.min(await rows.count(), 8) && !sawProcesses; index += 1) {
+        await rows.nth(index).getByRole('button').click();
+        await tabs.waitFor({ state: 'visible', timeout: 10_000 });
+        for (const name of ['Files / execution', 'Checks', 'Evidence / verdict', 'Merge', 'Usage', 'Processes']) {
+            await tabs.getByRole('tab', { name }).click();
+            const panel = widget.getByRole('tabpanel', { name: `${name} details` });
+            await panel.waitFor({ state: 'visible' });
+            const text = (await panel.innerText()).replace(/\s+/gu, ' ').trim();
+            assert(text.includes(emptyMarker) || /\bnone\b|\b[A-Z][A-Z_]{4,}\b/u.test(text), `Unexpected ${name} detail schema`);
+            assert.doesNotMatch(text, /pid|argv|environment|prompt|source code/iu);
+            if (name === 'Processes' && !text.includes(emptyMarker)) sawProcesses = true;
+        }
+    }
+    assert(sawProcesses, 'Expected supervised process facts in run details');
 }
 
 async function exerciseGovernedRunDetails(widget, ownerKind) {
