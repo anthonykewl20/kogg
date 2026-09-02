@@ -91,7 +91,7 @@ export class KernelBridgeImpl implements KernelBridge {
 
     const runtime = this.runtimePaths();
     const python = process.env.KOGG_PYTHON ?? runtime.python;
-    const { adapter, ranexSource, provenance } = runtime;
+    const { adapter, ranexSource, provenance, executionHelper, executionHelperManifest } = runtime;
     if (!existsSync(python) || !existsSync(adapter) || !existsSync(provenance)) {
       this.state = 'failed';
       await this.operation.cleanup();
@@ -111,7 +111,11 @@ export class KernelBridgeImpl implements KernelBridge {
         PATH: process.env.PATH ?? '',
         PYTHONPATH: ranexSource,
         KOGG_RANEX_JOURNAL: process.env.KOGG_RANEX_JOURNAL ?? path.join(this.stateRoot(), 'ranex', 'journal.sqlite3'),
-        KOGG_RANEX_PROVENANCE: provenance
+        KOGG_RANEX_PROVENANCE: provenance,
+        KOGG_RANEX_QUALIFICATION_ROOT: process.env.KOGG_RANEX_QUALIFICATION_ROOT ?? path.dirname(provenance),
+        KOGG_EXECUTION_HELPER: process.env.KOGG_EXECUTION_HELPER ?? executionHelper,
+        KOGG_EXECUTION_HELPER_MANIFEST: process.env.KOGG_EXECUTION_HELPER_MANIFEST ?? executionHelperManifest,
+        KOGG_EXECUTION_ALLOCATION_ROOT: process.env.KOGG_EXECUTION_ALLOCATION_ROOT ?? path.join(this.stateRoot(), 'execution', 'allocations')
       },
       stdio: ['pipe', 'pipe', 'pipe']
     });
@@ -305,7 +309,7 @@ export class KernelBridgeImpl implements KernelBridge {
     }
   }
 
-  private runtimePaths(): { python: string; adapter: string; ranexSource: string; provenance: string; workingDirectory: string } {
+  private runtimePaths(): { python: string; adapter: string; ranexSource: string; provenance: string; workingDirectory: string; executionHelper: string; executionHelperManifest: string } {
     const electronResources = (process as NodeJS.Process & { resourcesPath?: string }).resourcesPath;
     const packagedRoot = process.env.KOGG_PACKAGED_RUNTIME
       ?? (electronResources ? path.join(electronResources, 'kogg-runtime') : undefined);
@@ -317,7 +321,9 @@ export class KernelBridgeImpl implements KernelBridge {
         adapter: path.join(packagedRoot, 'adapter', 'kogg_ranex_adapter.py'),
         ranexSource: path.join(packagedRoot, 'ranex', 'src'),
         provenance: path.join(packagedRoot, 'ranex', 'PROVENANCE.json'),
-        workingDirectory: this.stateRoot()
+        workingDirectory: this.stateRoot(),
+        executionHelper: path.join(packagedRoot, 'execution', 'linux-x64', 'kogg-execution-helper'),
+        executionHelperManifest: path.join(packagedRoot, 'execution', 'linux-x64', 'manifest.json')
       };
     }
     return {
@@ -327,7 +333,9 @@ export class KernelBridgeImpl implements KernelBridge {
       adapter: path.join(this.root, 'packages', 'kogg-kernel', 'python', 'kogg_ranex_adapter.py'),
       ranexSource: path.join(this.root, 'vendor', 'ranex', 'src'),
       provenance: path.join(this.root, 'vendor', 'ranex', 'PROVENANCE.json'),
-      workingDirectory: this.root
+      workingDirectory: this.root,
+      executionHelper: path.join(this.root, 'packages', 'kogg-execution', 'native', 'bin', 'linux-x64', 'kogg-execution-helper'),
+      executionHelperManifest: path.join(this.root, 'packages', 'kogg-execution', 'native', 'bin', 'linux-x64', 'manifest.json')
     };
   }
 

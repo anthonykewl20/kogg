@@ -26,7 +26,11 @@ test('handshakes with the pinned Ranex kernel and fails closed on missing journa
     const capabilities = await bridge.start();
     assert.equal(capabilities.ranexCommit, KOGG_RANEX_COMMIT);
     assert.equal(capabilities.protocolVersion, KOGG_RANEX_PROTOCOL_VERSION);
+    assert.equal(capabilities.confinement, 'degraded');
     assert.deepEqual(capabilities.operations.map(operation => operation.operation), ['kernel.handshake', 'kernel.health', 'execution.qualify', 'task.bind', 'producer.dispatch', 'suite.freeze', 'suite.execute', 'evidence.admit', 'gate.evaluate', 'verdict.read', 'operation.reconcile', 'operation.cancel']);
+    const qualification = await bridge.qualifyExecution('local-qualified-linux');
+    if (qualification.status === 'qualified') assert.deepEqual(qualification.refusalCodes, []);
+    else { assert.equal(qualification.refusalCodes.length, 1); assert.match(qualification.refusalCodes[0]!, /^QUALIFICATION_/u); }
     const verification = await bridge.verifyJournal();
     assert.equal(verification.valid, false);
     assert.equal(verification.reason, 'missing');
@@ -280,6 +284,24 @@ test('rejects malformed gate digests in a journaled verdict projection', () => {
     cwd: root, encoding: 'utf8',
     env: { ...process.env, PYTHONPATH: path.join(root, 'vendor', 'ranex', 'src') }
   });
+  assert.equal(result.status, 0, result.stderr);
+});
+
+test('maps closed live qualification observations to fresh bound authority', () => {
+  const root = process.cwd();
+  const python = process.platform === 'win32' ? path.join(root, '.venv', 'Scripts', 'python.exe') : path.join(root, '.venv', 'bin', 'python');
+  const script = [
+    'import json, runpy',
+    "module = runpy.run_path('packages/kogg-kernel/python/kogg_ranex_adapter.py')",
+    "digest = 'sha256:' + 'a' * 64",
+    "report = {'schema':'ranex-strict-local-qualification-v1','qualified':True,'kernel':{'architecture':'x86_64','release':'6.6.1'},'primitives':{'landlock':{'available':True,'abi':6},'seccomp_filter':True,'no_new_privs':True},'open_objects':{'bubblewrap':{'sha256':'b'*64}},'cgroup':{'controllers':['cpu','memory','pids']},'delegation':{'broker':{'status':'available'}},'host_state':{'boot':'bound'}}",
+    "profile = {'schema':'ranex-strict-local-runtime-v1','profile':'strict-local-v1','mandatory_layers':{},'landlock_abi_minimum':6,'seccomp':{'architecture':'x86_64','policy':'default-deny-v1'},'cgroup':{},'mounts':{},'output_resolution':[]}",
+    "probe = {'schemaVersion':1,'ok':True,'safeCode':'ALLOCATION_OK','filesystemDevice':'1','filesystemInode':'2','ownerUid':'0','mode':'0700','mountId':'3','rootProjectId':'0','quotaProbeProjectId':'4294967294'}",
+    "value = module['_qualified_projection']('10000000-0000-4000-8000-000000000001','local-qualified-linux',report,probe,digest,profile=profile,boot_id='10000000-0000-4000-8000-000000000002')",
+    "assert value['status'] == 'qualified' and value['refusalCodes'] == [] and value['launcherDigest'] == digest and value['landlockAbi'] == '6'",
+    "assert value['profileDigest'].startswith('sha256:') and value['mountQuotaDigest'].startswith('sha256:')",
+  ].join('\n');
+  const result = spawnSync(python, ['-c', script], { cwd: root, encoding: 'utf8', env: { ...process.env, PYTHONPATH: path.join(root, 'vendor', 'ranex', 'src'), KOGG_RANEX_PROVENANCE: path.join(root, 'vendor', 'ranex', 'PROVENANCE.json') } });
   assert.equal(result.status, 0, result.stderr);
 });
 

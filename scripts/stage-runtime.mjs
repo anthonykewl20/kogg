@@ -22,6 +22,8 @@ await cp(
   path.join(destination, 'adapter'),
   { recursive: true }
 );
+const executionNative = path.join(root, 'packages', 'kogg-execution', 'native', 'bin');
+await cp(executionNative, path.join(destination, 'execution'), { recursive: true });
 await cp(
   process.env.KOGG_MARKETPLACE_PUBLIC_KEY ?? path.join(root, '.kogg', 'dev', 'marketplace-public.pem'),
   path.join(destination, 'marketplace-public.pem')

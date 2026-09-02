@@ -86,11 +86,12 @@ function validate(value: KernelExecutionQualification, targetId: string, now: nu
   if (value.schemaVersion !== 1 || !UUID.test(value.qualificationId) || value.targetId !== targetId || !SYMBOLIC.test(value.targetId)
     || value.architecture !== 'amd64' || value.profileId !== 'kogg-writable-agent-v1' || value.ranexCommit !== KOGG_RANEX_COMMIT
     || ![value.profileDigest, value.bootIdDigest, value.cgroupProfileDigest, value.mountQuotaDigest, value.launcherDigest, value.bubblewrapDigest, value.seccompDigest, value.brokerDigest].every(item => DIGEST.test(item))
-    || !DECIMAL.test(value.landlockAbi) || Number(value.landlockAbi) < 4 || !supportedKernel(value.kernelRelease)
+    || !DECIMAL.test(value.landlockAbi)
     || !Array.isArray(value.refusalCodes) || value.refusalCodes.length > REFUSALS.size || new Set(value.refusalCodes).size !== value.refusalCodes.length || value.refusalCodes.some(code => !REFUSALS.has(code))) return 'QUALIFICATION_PROTOCOL_INVALID';
-  if (value.status !== 'qualified' || value.refusalCodes.length) return 'QUALIFICATION_PROFILE_UNAVAILABLE';
   const checked = Date.parse(value.checkedAt); const expires = Date.parse(value.expiresAt);
   if (!Number.isFinite(checked) || !Number.isFinite(expires) || checked > now || expires <= now || expires - checked > 5 * 60_000) return 'QUALIFICATION_EXPIRED';
+  if (value.status === 'refused') return value.refusalCodes.length === 1 ? value.refusalCodes[0] : 'QUALIFICATION_PROTOCOL_INVALID';
+  if (value.status !== 'qualified' || value.refusalCodes.length || Number(value.landlockAbi) < 4 || !supportedKernel(value.kernelRelease)) return 'QUALIFICATION_PROTOCOL_INVALID';
   return undefined;
 }
 function supportedKernel(release: string): boolean { const match = /^(\d+)\.(\d+)(?:\.|$)/u.exec(release); if (!match) return false; const major = Number(match[1]); const minor = Number(match[2]); return Number.isSafeInteger(major) && Number.isSafeInteger(minor) && (major > 6 || (major === 6 && minor >= 6)); }

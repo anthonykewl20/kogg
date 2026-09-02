@@ -188,6 +188,31 @@ static bool quota_matches(uint32_t project_id, uint64_t bytes, uint64_t inodes) 
     && quota.d_ino_hardlimit == inodes && quota.d_ino_softlimit == inodes;
 }
 
+static void qualify(const struct object *request) {
+  const char *const keys[] = {"schemaVersion", "operation"};
+  if (!exact_fields(request, keys, 2) || !field(request, "schemaVersion")->number
+      || strcmp(field(request, "schemaVersion")->value, "1")
+      || field(request, "operation")->number || strcmp(field(request, "operation")->value, "qualify"))
+    fail("ALLOCATION_PROTOCOL_INVALID");
+  struct stat root, identity;
+  struct statx extended;
+  struct fsxattr attributes;
+  fs_disk_quota_t quota;
+  const uint32_t probe_project = UINT32_MAX - 1u;
+  memset(&extended, 0, sizeof(extended)); memset(&attributes, 0, sizeof(attributes)); memset(&quota, 0, sizeof(quota));
+  quota.d_version = FS_DQUOT_VERSION; quota.d_flags = FS_PROJ_QUOTA; quota.d_id = probe_project;
+  if (!root_qualified(&root) || fstat(ROOT_FD, &identity)
+      || syscall(SYS_statx, ROOT_FD, "", AT_EMPTY_PATH | AT_STATX_SYNC_AS_STAT, STATX_MNT_ID, &extended)
+      || ioctl(ROOT_FD, FS_IOC_FSGETXATTR, &attributes)
+      || syscall(SYS_quotactl_fd, ROOT_FD, Q_XGETQUOTA, probe_project, &quota)
+      || quota.d_bcount != 0 || quota.d_icount != 0
+      || quota.d_blk_hardlimit != 0 || quota.d_ino_hardlimit != 0)
+    fail("ALLOCATION_QUALIFICATION_INVALID");
+  dprintf(STDOUT_FILENO, "{\"schemaVersion\":1,\"ok\":true,\"safeCode\":\"ALLOCATION_OK\",\"filesystemDevice\":\"%ju\",\"filesystemInode\":\"%ju\",\"ownerUid\":\"%ju\",\"mode\":\"0700\",\"mountId\":\"%" PRIu64 "\",\"rootProjectId\":\"%u\",\"quotaProbeProjectId\":\"%u\"}\n",
+    (uintmax_t)identity.st_dev, (uintmax_t)identity.st_ino, (uintmax_t)identity.st_uid,
+    extended.stx_mnt_id, attributes.fsx_projid, probe_project);
+}
+
 static bool write_all(int fd, const char *value, size_t length) {
   size_t written = 0;
   while (written < length) {
@@ -333,7 +358,8 @@ int main(void) {
   if (!parse_object(input, &request)) fail("ALLOCATION_PROTOCOL_INVALID");
   const struct pair *operation = field(&request, "operation");
   if (!operation || operation->number) fail("ALLOCATION_PROTOCOL_INVALID");
-  if (!strcmp(operation->value, "allocate")) allocate(&request);
+  if (!strcmp(operation->value, "qualify")) qualify(&request);
+  else if (!strcmp(operation->value, "allocate")) allocate(&request);
   else if (!strcmp(operation->value, "cleanup")) cleanup(&request);
   else fail("ALLOCATION_PROTOCOL_INVALID");
   return 0;
