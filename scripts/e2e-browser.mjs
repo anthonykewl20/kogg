@@ -1059,12 +1059,14 @@ async function exerciseWorkflowEditor(page) {
         assert.match(await admissionChoices.nth(1).innerText(), /Task [0-9a-f]{8} · run [0-9a-f]{8}/u);
         await widget.getByRole('button', { name: 'Start governed workflow' }).click();
         await widget.getByText(/Workflow operation failed safely: WORKFLOW_AUTHORITY_EXPANSION/u).waitFor({ timeout: 10_000 });
+        assert.match(logs.join('\n'), /\[kogg:interaction-modes:service\] mode\.operation\.refused[\s\S]*?operation: 'governed-entry'/u);
     }
     await page.reload({ waitUntil: 'domcontentloaded' });
     await page.locator('body.kogg-application').waitFor({ timeout: 20_000 });
     widget = page.locator('.kogg-workflow-editor-widget:visible').filter({ hasText: 'Workflow version 1 is current.' }).first();
     await widget.waitFor({ state: 'visible', timeout: 15_000 });
     assert.match(logs.join('\n'), /\[kogg:workflow:editor\] ui\.operation\.completed/u);
+    assert.match(logs.join('\n'), /\[kogg:interaction-modes:service\] mode\.selected[\s\S]*?selectedMode: 'plan'/u);
     assert.doesNotMatch(await widget.innerText(), /configurationDigest|requestedEffects|graphDigest|catalogDigest/u);
 }
 
@@ -1110,6 +1112,7 @@ async function exerciseInteractionModes(page) {
     const selector = page.getByLabel(/Mode: Plan; authority: \d+ bounded capabilities; stage: research/u);
     await selector.waitFor({ state: 'visible', timeout: 15_000 });
     await exerciseHostileModeTransitions(page);
+    assert.match(logs.join('\n'), /\[kogg:interaction-modes:service\] mode\.operation\.approved[\s\S]*?operation: 'research'/u);
     let provider = page.locator('.kogg-provider-widget:visible');
     if (!await provider.count()) {
         await openCommand(page, 'View: Toggle Kogg AI');
