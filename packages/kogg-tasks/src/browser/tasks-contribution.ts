@@ -7,5 +7,5 @@ import { TasksWidget } from './tasks-widget';
 
 @injectable()
 export class TasksContribution extends AbstractViewContribution<TasksWidget> {
-  constructor() { super({ widgetId: TasksWidget.ID, widgetName: TasksWidget.LABEL, defaultWidgetOptions: { area: 'main', rank: 110 }, toggleCommandId: 'kogg.tasks.open' }); }
+  constructor() { super({ widgetId: TasksWidget.ID, widgetName: TasksWidget.LABEL, defaultWidgetOptions: { area: 'left', rank: 110 }, toggleCommandId: 'kogg.tasks.open' }); }
 }
