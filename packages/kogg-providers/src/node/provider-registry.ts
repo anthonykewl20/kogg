@@ -164,10 +164,10 @@ const ACCOUNT_MODEL_CATALOG: Readonly<Record<string, readonly string[]>> = {
     'claude-max': ['claude-sonnet-4-5', 'claude-opus-4-3', 'claude-haiku-4-5']
 };
 
-async function withRetries<T>(work: () => Promise<T>, attempts = 3): Promise<T> {
+async function withRetries<T>(work: () => Promise<T>, attempts = 5): Promise<T> {
     let lastError: unknown;
     for (let attempt = 0; attempt < attempts; attempt += 1) {
-        try { return await work(); } catch (error) { lastError = error; await new Promise(resolve => setTimeout(resolve, 800 * (attempt + 1))); }
+        try { return await work(); } catch (error) { lastError = error; await new Promise(resolve => setTimeout(resolve, 1_000 * (attempt + 1))); }
     }
     throw lastError;
 }
@@ -181,8 +181,12 @@ async function discoverAccountModels(providerId: string): Promise<readonly Model
                 signal: AbortSignal.timeout(10_000)
             }));
             if (response.ok) {
-                const payload = await response.json() as { models?: Array<{ slug?: unknown; display_name?: unknown }> };
-                const models = (payload.models ?? []).flatMap(item => typeof item?.slug === 'string' && item.slug ? [{ id: item.slug, name: String(item.display_name ?? item.slug), provider: providerId }] : []);
+                const payload = await response.json() as { models?: Array<{ slug?: unknown; display_name?: unknown; prefer_websockets?: unknown }> };
+                const models = (payload.models ?? []).flatMap(item => {
+                    if (typeof item?.slug !== 'string' || !item.slug) return [];
+                    if (item.prefer_websockets === true) return [];
+                    return [{ id: item.slug, name: String(item.display_name ?? item.slug), provider: providerId }];
+                });
                 if (models.length) return models;
             }
         } catch { /* observability-exempt: discovery falls back to the closed static catalog; the safe model list carries no provider content. */ }

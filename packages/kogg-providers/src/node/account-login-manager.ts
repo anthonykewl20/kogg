@@ -1,4 +1,7 @@
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
+import { readFileSync } from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { inject, injectable } from 'inversify';
 import { ProviderRegistryToken, type ProviderRegistry } from '@kogg/contracts';
 import { KoggOperationRegistry, type OperationRegistryApi } from '@kogg/operations/lib/common/operations-protocol';
@@ -115,6 +118,76 @@ export class AccountLoginManager {
     }
 
     async chat(providerId: string, model: string, prompt: string): Promise<string> {
+        // Evidence from this deployment: chatgpt.com/backend-api is reachable
+        // while api.openai.com (the CLI's transport) can be blocked on the same
+        // network. Direct streaming is therefore primary for Codex, with the
+        // CLI as fallback.
+        if (providerId === 'codex-plan') {
+            try {
+                return await this.directCodexChat(model, prompt);
+            } catch (error) {
+                console.warn('[kogg:providers:login] direct-chat.failed', { providerId, errorType: error instanceof Error ? error.name : 'UnknownError', message: error instanceof Error ? error.message.slice(0, 200) : 'UnknownError' });
+            }
+        }
+        return this.cliChat(providerId, model, prompt);
+    }
+
+    private async directCodexChat(model: string, prompt: string): Promise<string> {
+        const credential = readAccountCredentialFile('codex-plan');
+        if (!credential.accountId) throw new Error('The saved Codex account is missing its account id. Sign in again.');
+        const response = await fetch('https://chatgpt.com/backend-api/codex/responses', {
+            method: 'POST',
+            headers: {
+                'content-type': 'application/json',
+                authorization: `Bearer ${credential.accessToken}`,
+                'chatgpt-account-id': credential.accountId,
+                accept: 'text/event-stream'
+            },
+            body: JSON.stringify({
+                model,
+                instructions: 'You are the Kogg advisory assistant. Answer concisely.',
+                input: [{ type: 'message', role: 'user', content: [{ type: 'input_text', text: prompt }] }],
+                store: false,
+                stream: true
+            }),
+            signal: AbortSignal.timeout(180_000)
+        });
+        if (response.status === 400 || response.status === 403 || response.status === 404) {
+            const detail = await response.json().catch(() => undefined) as { detail?: unknown } | undefined;
+            const reason = typeof detail?.detail === 'string' && detail.detail ? `: ${detail.detail}` : '';
+            throw new Error(`Codex plan rejected the request with HTTP ${response.status}${reason}`);
+        }
+        if (!response.ok || !response.body) throw new Error(`Codex plan chat failed with HTTP ${response.status}.`);
+        const text = await response.text();
+        const parts: string[] = [];
+        let streamError = '';
+        for (const line of text.split(LINE)) {
+            if (!line.startsWith('data: ')) continue;
+            try {
+                const event = JSON.parse(line.slice(6)) as {
+                    type?: string; text?: unknown; response?: { output?: Array<{ type?: string; content?: Array<{ type?: string; text?: unknown }> }> };
+                    item?: { type?: string; message?: unknown };
+                };
+                if (event.type === 'response.failed' || event.item?.type === 'error') {
+                    streamError = typeof event.item?.message === 'string' ? event.item.message.slice(0, 200) : 'the model stream failed';
+                    continue;
+                }
+                // The backend emits delta-style events whose final text arrives
+                // per output part; response.completed may never appear.
+                if (event.type === 'response.output_text.done' && typeof event.text === 'string' && event.text.trim()) parts.push(event.text.trim());
+                if (event.type === 'response.completed') {
+                    const message = (event.response?.output ?? []).find(item => item.type === 'message');
+                    const output = (message?.content ?? []).find(item => item.type === 'output_text');
+                    if (typeof output?.text === 'string' && output.text.trim()) parts.push(output.text.trim());
+                }
+            } catch { /* skip malformed events */ }
+        }
+        if (parts.length) return parts.join('').trim();
+        if (streamError) throw new Error(`Codex plan stream failed: ${streamError}`);
+        throw new Error('Codex plan returned no advisory text.');
+    }
+
+    private async cliChat(providerId: string, model: string, prompt: string): Promise<string> {
         const command = chatCommand(providerId, model, prompt);
         console.info('[kogg:providers:login] cli-chat.started', { providerId, model });
         const operation = await this.operations.startOperation({ kind: 'provider-session', cancellable: false, absoluteTimeoutMs: 300_000 });
@@ -168,6 +241,24 @@ function loginCommand(providerId: string): readonly string[] {
 }
 
 const LINE = String.fromCharCode(10);
+
+function readAccountCredentialFile(providerId: string): { accessToken: string; accountId?: string } {
+    const registry = process.env.KOGG_PROVIDERS_REGISTRY_MODULE;
+    void registry;
+    // Reuse the registry's reader through a narrow re-implementation to avoid a circular import.
+    if (providerId === 'codex-plan') {
+        const file = process.env.KOGG_CODEX_AUTH_FILE ?? path.join(os.homedir(), '.codex', 'auth.json');
+        try {
+            const tokens = JSON.parse(readFileSync(file, 'utf8')) as { tokens?: { access_token?: unknown; account_id?: unknown } };
+            const accessToken = typeof tokens.tokens?.access_token === 'string' ? tokens.tokens.access_token : '';
+            if (!accessToken) throw new Error('empty');
+            return { accessToken, accountId: typeof tokens.tokens?.account_id === 'string' ? tokens.tokens.account_id : undefined };
+        } catch {
+            throw new Error('The Codex CLI sign-in could not be read. Run "codex login" again.');
+        }
+    }
+    throw new Error(`Unknown account provider ${providerId}`);
+}
 
 function chatCommand(providerId: string, model: string, prompt: string): readonly string[] {
     if (providerId === 'codex-plan') {
