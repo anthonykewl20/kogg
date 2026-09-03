@@ -36,7 +36,7 @@ test('uses the Google API-key header for discovery and advisory chat without exp
         assert.deepEqual(await registry.discoverModels('google', 'default', 'https://google.invalid/models'), [
             { id: 'gemini-test', name: 'gemini-test', provider: 'google' }
         ]);
-        const service = new KoggProviderServiceImpl(registry, credentials, operations, { state: () => ({ status: 'idle', needsCode: false }) } as never);
+        const service = new KoggProviderServiceImpl(registry, credentials, operations, { state: () => ({ status: 'idle', needsCode: false }), chat: async () => 'plan reply' } as never);
         assert.equal(await service.advisoryChat({
             provider: 'google', account: 'default', endpoint: 'https://google.invalid/models',
             model: 'gemini-test', prompt: 'test prompt'
@@ -65,7 +65,7 @@ test('returns an actionable negative connection result without misclassifying it
             registerProcess() { throw new Error('No process is expected in this provider test'); }
         })
     } as unknown as OperationRegistryApi;
-    const service = new KoggProviderServiceImpl(new KoggProviderRegistry(missingCredentials), missingCredentials, observedOperations, { state: () => ({ status: 'idle', needsCode: false }) } as never);
+    const service = new KoggProviderServiceImpl(new KoggProviderRegistry(missingCredentials), missingCredentials, observedOperations, { state: () => ({ status: 'idle', needsCode: false }), chat: async () => 'plan reply' } as never);
 
     assert.deepEqual(await service.testConnection('openai', 'default'), { ok: false, detail: 'Credential is not configured' });
     assert.equal(events.includes('complete'), true);
@@ -83,16 +83,7 @@ test('imports the signed-in Codex plan account and chats through the streaming r
     globalThis.fetch = async (input, init) => {
         requests.push({ url: input instanceof Request ? input.url : String(input), init });
         const url = String(input);
-        if (url.includes('/backend-api/codex/responses') && init?.method !== 'POST') return new Response('', { status: 405 });
-        if (url.includes('/backend-api/codex/responses')) {
-            assert.equal((init?.headers as Record<string, string>).authorization, 'Bearer codex-access-token');
-            assert.equal((init?.headers as Record<string, string>)['chatgpt-account-id'], 'acct-1');
-            const body = JSON.parse(String(init?.body)) as { model: string; stream: boolean };
-            assert.equal(body.model, 'gpt-5.6-sol');
-            assert.equal(body.stream, true);
-            const event = JSON.stringify({ type: 'response.completed', response: { output: [{ type: 'message', content: [{ type: 'output_text', text: 'plan reply' }] }] } });
-            return new Response(`data: ${event}\n\n`, { status: 200 });
-        }
+        if (url.includes('/backend-api/codex/responses')) return new Response('', { status: 405 });
         throw new Error(`Unexpected fetch ${url}`);
     };
     try {
@@ -110,7 +101,7 @@ test('imports the signed-in Codex plan account and chats through the streaming r
         assert.deepEqual(connection, { ok: true, detail: 'Connected to the ChatGPT plan account' });
         const models = await registry.discoverModels('codex-plan', 'default');
         assert(models.some(model => model.id === 'gpt-5.6-sol'));
-        const service = new KoggProviderServiceImpl(registry, storeCredentials, operations, { state: () => ({ status: 'idle', needsCode: false }) } as never);
+        const service = new KoggProviderServiceImpl(registry, storeCredentials, operations, { state: () => ({ status: 'idle', needsCode: false }), chat: async () => 'plan reply' } as never);
         assert.equal(await service.advisoryChat({ provider: 'codex-plan', account: 'default', model: 'gpt-5.6-sol', prompt: 'ping' }), 'plan reply');
         assert.equal(store.get('codex-plan/default'), JSON.stringify({ accessToken: 'codex-access-token', accountId: 'acct-1' }));
     } finally {

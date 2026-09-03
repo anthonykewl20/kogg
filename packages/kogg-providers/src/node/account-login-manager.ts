@@ -114,6 +114,38 @@ export class AccountLoginManager {
         return login.state;
     }
 
+    async chat(providerId: string, model: string, prompt: string): Promise<string> {
+        const command = chatCommand(providerId, model, prompt);
+        console.info('[kogg:providers:login] cli-chat.started', { providerId, model });
+        const operation = await this.operations.startOperation({ kind: 'provider-session', cancellable: false, absoluteTimeoutMs: 300_000 });
+        const lease = operation.registerProcess({ kind: 'provider-cli', owner: 'kogg-supervisor' });
+        operation.start(); lease.spawning();
+        const child = spawn(command[0]!, command.slice(1), { stdio: ['ignore', 'pipe', 'pipe'] });
+        lease.started(child.pid ?? -1);
+        return await new Promise<string>((resolve, reject) => {
+            const stdout: string[] = [];
+            const stderr: string[] = [];
+            child.stdout!.on('data', (chunk: Buffer) => { lease.activity(); operation.active(); stdout.push(chunk.toString('utf8')); });
+            child.stderr!.on('data', (chunk: Buffer) => { lease.activity(); stderr.push(chunk.toString('utf8')); });
+            child.once('error', error => {
+                lease.failed('PROCESS_SPAWN_FAILED', error.name); lease.cleanup(); void operation.cleanup();
+                operation.fail('PROCESS_SPAWN_FAILED', error.name);
+                reject(new Error(`The ${providerId === 'claude-max' ? 'claude' : 'codex'} CLI could not start: ${error.message}`));
+            });
+            child.once('exit', code => {
+                lease.exited(code === 0 ? 'zero' : code === null ? 'signal' : 'nonzero');
+                lease.cleanup(); void operation.cleanup();
+                const text = extractReply(stdout.join(''), providerId);
+                if (code === 0 && text) { operation.complete(); resolve(text); return; }
+                operation.fail('PROCESS_EXIT_NONZERO', 'NonZeroExit');
+                const reason = lastMeaningfulLine(stderr.join('')) ?? (text ? undefined : 'The CLI produced no reply.');
+                reject(new Error(providerId === 'claude-max'
+                    ? `Claude CLI did not complete${reason ? `: ${reason}` : '.'}`
+                    : `Codex CLI did not complete${reason ? `: ${reason}` : '.'}`));
+            });
+        });
+    }
+
     async cancel(providerId: string): Promise<AccountLoginState> {
         const login = this.logins.get(providerId);
         if (!login) return { status: 'idle', needsCode: false };
@@ -133,4 +165,45 @@ function loginCancel(providerId: string, logins: Map<string, ActiveLogin>): void
 function loginCommand(providerId: string): readonly string[] {
     if (providerId === 'codex-plan') return process.env.KOGG_CODEX_LOGIN_COMMAND?.split(' ') ?? ['codex', 'login'];
     return process.env.KOGG_CLAUDE_LOGIN_COMMAND?.split(' ') ?? ['claude', 'auth', 'login', '--claudeai'];
+}
+
+const LINE = String.fromCharCode(10);
+
+function chatCommand(providerId: string, model: string, prompt: string): readonly string[] {
+    if (providerId === 'codex-plan') {
+        const override = process.env.KOGG_CODEX_CHAT_COMMAND?.split(' ');
+        return override ?? ['codex', 'exec', '--json', '--skip-git-repo-check', '-s', 'read-only', '-m', model, prompt];
+    }
+    if (providerId === 'claude-max') {
+        const override = process.env.KOGG_CLAUDE_CHAT_COMMAND?.split(' ');
+        return override ?? ['claude', '-p', prompt, '--output-format', 'json', '--model', model];
+    }
+    throw new Error(`No CLI chat for ${providerId}`);
+}
+
+function extractReply(stdout: string, providerId: string): string | undefined {
+    if (providerId === 'claude-max') {
+        try {
+            const value = JSON.parse(stdout.trim().split(LINE).filter(Boolean).pop() ?? '') as { result?: unknown };
+            if (typeof value.result === 'string' && value.result.trim()) return value.result.trim();
+        } catch { /* fall through to JSONL extraction */ }
+    }
+    let agentMessage: string | undefined;
+    for (const line of stdout.split('\n')) {
+        const trimmed = line.trim();
+        if (!trimmed.startsWith('{')) continue;
+        try {
+            const event = JSON.parse(trimmed) as { type?: string; message?: unknown; item?: { type?: string; text?: unknown }; result?: unknown };
+            if (typeof event.result === 'string' && event.result.trim()) agentMessage = event.result.trim();
+            if (typeof event.message === 'string' && event.type === 'agent_message' && event.message.trim()) agentMessage = event.message.trim();
+            if (event.item?.type === 'agent_message' && typeof event.item.text === 'string' && event.item.text.trim()) agentMessage = event.item.text.trim();
+        } catch { /* skip non-JSON lines */ }
+    }
+    return agentMessage;
+}
+
+function lastMeaningfulLine(text: string): string | undefined {
+    const lines = text.split('\n').map(line => line.trim()).filter(line => line && !line.startsWith('Reading additional'));
+    const last = lines[lines.length - 1];
+    return last ? last.slice(0, 200) : undefined;
 }
