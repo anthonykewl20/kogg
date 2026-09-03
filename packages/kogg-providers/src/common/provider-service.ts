@@ -15,6 +15,7 @@ export interface KoggProviderService {
     listProviders(): Promise<readonly ProviderDescriptor[]>;
     listCredentialMetadata(): Promise<readonly CredentialMetadata[]>;
     configureCredential(provider: string, account: string, secret: string): Promise<void>;
+    importAccountCredential(provider: string, account: string): Promise<void>;
     deleteCredential(provider: string, account: string): Promise<boolean>;
     credentialStatus(provider: string, account: string): Promise<'configured' | 'missing'>;
     discoverModels(provider: string, account: string, endpoint?: string): Promise<readonly ModelDescriptor[]>;

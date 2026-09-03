@@ -22,6 +22,9 @@ export class KoggProviderServiceImpl implements KoggProviderService {
     configureCredential(provider: string, account: string, secret: string) { return this.connection(() => this.credentials.set(provider, account, secret)); }
     deleteCredential(provider: string, account: string) { return this.connection(() => this.credentials.delete(provider, account)); }
     credentialStatus(provider: string, account: string) { return this.connection(() => this.providers.credentialStatus(provider, account)); }
+    importAccountCredential(provider: string, account: string) {
+        return this.connection(() => this.providers.importAccountCredential(provider, account));
+    }
     discoverModels(provider: string, account: string, endpoint?: string) { return this.connection(() => this.providers.discoverModels(provider, account, endpoint)); }
     testConnection(provider: string, account: string, endpoint?: string) {
         // A reachable service returning a negative connection result (including
@@ -37,6 +40,7 @@ export class KoggProviderServiceImpl implements KoggProviderService {
             if (!descriptor) throw new Error(`Unknown Kogg provider ${request.provider}`);
             const secret = descriptor.configuration === 'local' ? undefined : await this.credentials.get(request.provider, request.account);
             if (descriptor.configuration !== 'local' && !secret) throw new Error('Configure this provider credential before starting advisory chat.');
+            if (descriptor.configuration === 'oauth-account') return await accountChat(request, secret!);
             const target = chatEndpoint(request.provider, request.endpoint, request.model);
             const headers: Record<string, string> = { 'content-type': 'application/json' };
             if (secret) headers.authorization = `Bearer ${secret}`;
@@ -95,4 +99,65 @@ function extractText(payload: unknown): string {
         ?? (Array.isArray(value) ? value[0]?.generated_text : undefined);
     if (typeof text !== 'string' || !text.trim()) throw new Error('Provider response contained no advisory text.');
     return text.trim();
+}
+
+async function accountChat(request: AdvisoryChatRequest, secret: string): Promise<string> {
+    let credential: { accessToken: string; accountId?: string };
+    try {
+        const parsed = JSON.parse(secret) as { accessToken?: unknown; accountId?: unknown };
+        if (typeof parsed.accessToken !== 'string' || !parsed.accessToken) throw new Error('invalid');
+        credential = { accessToken: parsed.accessToken, accountId: typeof parsed.accountId === 'string' ? parsed.accountId : undefined };
+    } catch { throw new Error('The saved account credential is invalid. Import the signed-in account again.'); }
+    if (request.provider === 'codex-plan') {
+        if (!credential.accountId) throw new Error('The saved Codex account is missing its account id. Import the signed-in account again.');
+        const response = await fetch('https://chatgpt.com/backend-api/codex/responses', {
+            method: 'POST',
+            headers: {
+                'content-type': 'application/json',
+                authorization: `Bearer ${credential.accessToken}`,
+                'chatgpt-account-id': credential.accountId,
+                accept: 'text/event-stream'
+            },
+            body: JSON.stringify({
+                model: request.model,
+                instructions: 'You are the Kogg advisory assistant. Answer concisely.',
+                input: [{ type: 'message', role: 'user', content: [{ type: 'input_text', text: request.prompt }] }],
+                store: false,
+                stream: true
+            }),
+            signal: AbortSignal.timeout(120_000)
+        });
+        if (!response.ok || !response.body) throw new Error(`Codex plan chat failed with HTTP ${response.status}. Run "codex login" and import the account again.`);
+        const text = await response.text();
+        for (const line of text.split('\n')) {
+            if (!line.startsWith('data: ')) continue;
+            try {
+                const event = JSON.parse(line.slice(6)) as { type?: string; response?: { output?: Array<{ type?: string; content?: Array<{ type?: string; text?: unknown }> }> } };
+                if (event.type !== 'response.completed') continue;
+                const message = (event.response?.output ?? []).find(item => item.type === 'message');
+                const output = (message?.content ?? []).find(item => item.type === 'output_text');
+                if (typeof output?.text === 'string' && output.text.trim()) return output.text.trim();
+            } catch { /* observability-exempt: malformed stream events are skipped; the terminal no-text refusal is the observable outcome. */ }
+        }
+        throw new Error('Codex plan returned no advisory text.');
+    }
+    if (request.provider === 'claude-max') {
+        const response = await fetch('https://api.anthropic.com/v1/messages', {
+            method: 'POST',
+            headers: {
+                'content-type': 'application/json',
+                authorization: `Bearer ${credential.accessToken}`,
+                'anthropic-beta': 'oauth-2025-04-20',
+                'anthropic-version': '2023-06-01'
+            },
+            body: JSON.stringify({ model: request.model, max_tokens: 2048, messages: [{ role: 'user', content: request.prompt }] }),
+            signal: AbortSignal.timeout(120_000)
+        });
+        if (!response.ok) throw new Error(`Claude Max chat failed with HTTP ${response.status}. Run "claude /login" and import the account again.`);
+        const result = await response.json() as { content?: Array<{ type?: string; text?: unknown }> };
+        const text = (result.content ?? []).find(item => item.type === 'text')?.text;
+        if (typeof text !== 'string' || !text.trim()) throw new Error('Claude Max returned no advisory text.');
+        return text.trim();
+    }
+    throw new Error(`No account chat for ${request.provider}`);
 }
