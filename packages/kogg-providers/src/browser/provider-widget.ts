@@ -77,6 +77,8 @@ export class KoggProviderWidget extends BaseWidget {
         // missed toggle event would otherwise collapse an open settings panel.
         const liveSettings = this.node.querySelector<HTMLDetailsElement>('.kogg-ai-settings');
         if (liveSettings) this.settingsOpen = liveSettings.open;
+        const liveModel = this.node.querySelector<HTMLSelectElement>('select[data-field="model"]')?.value ?? '';
+        if (!this.selectedModel && liveModel) this.selectedModel = liveModel;
         const descriptor = this.providers.find(item => item.id === this.provider);
         const chatReady = !!this.selectedModel;
         const credentialConfigured = descriptor?.configuration === 'local'
