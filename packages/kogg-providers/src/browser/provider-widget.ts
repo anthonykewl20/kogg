@@ -73,6 +73,10 @@ export class KoggProviderWidget extends BaseWidget {
     }
 
     private render(): void {
+        // Preserve the live details state: re-renders replace the DOM, and a
+        // missed toggle event would otherwise collapse an open settings panel.
+        const liveSettings = this.node.querySelector<HTMLDetailsElement>('.kogg-ai-settings');
+        if (liveSettings) this.settingsOpen = liveSettings.open;
         const descriptor = this.providers.find(item => item.id === this.provider);
         const chatReady = !!this.selectedModel;
         const credentialConfigured = descriptor?.configuration === 'local'
@@ -174,6 +178,10 @@ export class KoggProviderWidget extends BaseWidget {
 
     private readonly autoDiscovered = new Set<string>();
 
+    private async reloadCredentials(): Promise<void> {
+        this.credentials = await this.service.listCredentialMetadata();
+    }
+
     private isAccountConnected(): boolean {
         const descriptor = this.providers.find(item => item.id === this.provider);
         return descriptor?.configuration === 'oauth-account'
@@ -241,6 +249,8 @@ export class KoggProviderWidget extends BaseWidget {
             if (this.loginState.status !== previous?.status) this.render();
             if (this.loginState.status === 'succeeded') {
                 this.stopLoginPoll();
+                await this.reloadCredentials();
+                this.render();
                 await this.messages.info(`${this.provider === 'claude-max' ? 'Anthropic' : 'OpenAI'} account connected.`);
                 await this.testConnection();
                 await this.discoverModels();
@@ -260,9 +270,12 @@ export class KoggProviderWidget extends BaseWidget {
         console.info('[kogg:providers:widget] account.import.requested', { providerId: this.provider });
         await this.run(async () => {
             await this.service.importAccountCredential(this.provider, this.account || 'default');
+            await this.reloadCredentials();
             this.status = 'Signed-in account imported.';
         });
+        this.render();
         await this.testConnection();
+        await this.discoverModels();
     }
 
     private async saveCredential(): Promise<void> {
