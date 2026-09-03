@@ -68,6 +68,7 @@ export class KoggProviderWidget extends BaseWidget {
             console.error('[kogg:providers:widget] providers-load.failed', { errorType: errorName(error) });
             this.status = message(error);
         }
+        this.maybeAutoDiscover();
         this.render();
     }
 
@@ -132,6 +133,7 @@ export class KoggProviderWidget extends BaseWidget {
             this.selectedModel = '';
             this.status = 'Provider selected. Add its connection details, then test the connection.';
             this.render();
+            this.maybeAutoDiscover();
         }));
         this.node.querySelector<HTMLElement>('[data-open-settings]')?.addEventListener('click', () => {
             this.settingsOpen = true;
@@ -167,7 +169,21 @@ export class KoggProviderWidget extends BaseWidget {
         const read = (name: string) => (this.node.querySelector(`[data-field="${name}"]`) as HTMLInputElement | HTMLSelectElement | null)?.value ?? '';
         const changedProvider = read('provider') !== this.provider;
         this.provider = read('provider'); this.account = read('account'); this.endpoint = read('endpoint'); this.selectedModel = read('model'); this.promptDraft = read('prompt');
-        if (changedProvider) { this.models = []; this.selectedModel = ''; this.status = 'Provider changed. Test the connection.'; this.render(); }
+        if (changedProvider) { this.models = []; this.selectedModel = ''; this.status = 'Provider changed. Test the connection.'; this.render(); this.maybeAutoDiscover(); }
+    }
+
+    private autoDiscovered = false;
+
+    private isAccountConnected(): boolean {
+        const descriptor = this.providers.find(item => item.id === this.provider);
+        return descriptor?.configuration === 'oauth-account'
+            && this.credentials.some(item => item.provider === this.provider && item.account === (this.account || 'default'));
+    }
+
+    private maybeAutoDiscover(): void {
+        if (this.autoDiscovered || !this.isAccountConnected() || this.models.length > 0) return;
+        this.autoDiscovered = true;
+        void this.discoverModels();
     }
 
     private renderAccountLogin(): string {
@@ -179,6 +195,13 @@ export class KoggProviderWidget extends BaseWidget {
                 ${login.url ? `<div class="kogg-login-url"><code>${escapeHtml(login.url)}</code><button type="button" data-action="open-login">Open browser</button></div>` : '<p class="kogg-login-hint">The sign-in page is opening…</p>'}
                 ${login.status === 'awaiting-code' ? `<div class="kogg-login-code"><input data-field="login-code" placeholder="Confirmation code" autocomplete="one-time-code"><button type="button" data-action="submit-login-code">Submit code</button></div>` : ''}
                 <button type="button" class="kogg-login-cancel" data-action="cancel-login">Cancel sign-in</button>
+            </div>`;
+        }
+        if (this.isAccountConnected()) {
+            return `<div class="kogg-actions">
+                <button data-action="test" ${this.busy ? 'disabled' : ''}>Test connection</button>
+                <button data-action="models" ${this.busy ? 'disabled' : ''}>Discover models</button>
+                <button type="button" class="kogg-login-secondary" data-action="login" ${this.busy ? 'disabled' : ''}>Sign in again</button>
             </div>`;
         }
         return `<div class="kogg-login-entry">
