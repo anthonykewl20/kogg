@@ -172,7 +172,7 @@ export class KoggProviderWidget extends BaseWidget {
         if (changedProvider) { this.models = []; this.selectedModel = ''; this.status = 'Provider changed. Test the connection.'; this.render(); this.maybeAutoDiscover(); }
     }
 
-    private autoDiscovered = false;
+    private readonly autoDiscovered = new Set<string>();
 
     private isAccountConnected(): boolean {
         const descriptor = this.providers.find(item => item.id === this.provider);
@@ -181,8 +181,8 @@ export class KoggProviderWidget extends BaseWidget {
     }
 
     private maybeAutoDiscover(): void {
-        if (this.autoDiscovered || !this.isAccountConnected() || this.models.length > 0) return;
-        this.autoDiscovered = true;
+        if (this.autoDiscovered.has(this.provider) || !this.isAccountConnected() || this.models.length > 0) return;
+        this.autoDiscovered.add(this.provider);
         void this.discoverModels();
     }
 

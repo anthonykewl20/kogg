@@ -204,7 +204,7 @@ async function testAccountConnection(providerId: string, credential: AccountCred
                 headers: { authorization: `Bearer ${credential.accessToken}`, 'anthropic-beta': 'oauth-2025-04-20' }
             });
             if (response.ok) return { ok: true, detail: 'Connected to the Claude Max account' };
-            return { ok: false, detail: `Anthropic returned HTTP ${response.status}. Run "claude /login" and import again.` };
+            return { ok: false, detail: `Anthropic returned HTTP ${response.status}. Click Sign in again to reconnect.` };
         }
         return { ok: false, detail: `Unknown account provider ${providerId}` };
     } catch (error) {
