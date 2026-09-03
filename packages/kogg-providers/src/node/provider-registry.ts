@@ -160,7 +160,7 @@ function readAccountCredential(providerId: string): AccountCredential {
 }
 
 const ACCOUNT_MODEL_CATALOG: Readonly<Record<string, readonly string[]>> = {
-    'codex-plan': ['gpt-5.6-sol', 'gpt-5.6', 'gpt-5.6-codex'],
+    'codex-plan': ['gpt-5.6-sol'],
     'claude-max': ['claude-sonnet-4-5', 'claude-opus-4-3', 'claude-haiku-4-5']
 };
 
@@ -195,9 +195,9 @@ async function testAccountConnection(providerId: string, credential: AccountCred
                 headers: { authorization: `Bearer ${credential.accessToken}`, 'chatgpt-account-id': credential.accountId }
             });
             // 405 means the endpoint exists and authentication passed; it rejects GET by design.
-            return response.status === 405 || response.ok
-                ? { ok: true, detail: 'Connected to the ChatGPT plan account' }
-                : { ok: false, detail: `ChatGPT plan returned HTTP ${response.status}. Run "codex login" and import again.` };
+            if (response.status === 405 || response.ok) return { ok: true, detail: 'Connected to the ChatGPT plan account' };
+            if (response.status === 403 || response.status === 404) return { ok: false, detail: 'OpenAI is currently refusing requests from this network (edge block or plan limit). Wait a few minutes and test again; a VPN may be required for chatgpt.com on this network.' };
+            return { ok: false, detail: `ChatGPT plan returned HTTP ${response.status}.` };
         }
         if (providerId === 'claude-max') {
             const response = await fetch('https://api.anthropic.com/v1/models', {

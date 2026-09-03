@@ -133,7 +133,12 @@ async function accountChat(request: AdvisoryChatRequest, secret: string): Promis
             }),
             signal: AbortSignal.timeout(120_000)
         });
-        if (!response.ok || !response.body) throw new Error(`Codex plan chat failed with HTTP ${response.status}. Run "codex login" and import the account again.`);
+        if (response.status === 403 || response.status === 404) throw new Error('OpenAI is refusing requests from this network right now (edge block or plan limit). Wait a few minutes and send again.');
+        if (!response.ok || !response.body) {
+            const detail = await response.json().catch(() => undefined) as { detail?: unknown } | undefined;
+            const reason = typeof detail?.detail === 'string' && detail.detail ? `: ${detail.detail}` : '';
+            throw new Error(`Codex plan chat failed with HTTP ${response.status}${reason}`);
+        }
         const text = await response.text();
         for (const line of text.split('\n')) {
             if (!line.startsWith('data: ')) continue;
