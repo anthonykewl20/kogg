@@ -240,6 +240,7 @@ function message(error: unknown): string { return error instanceof Error ? error
 function errorName(error: unknown): string { return error instanceof Error ? error.name : 'UnknownError'; }
 function providerDescription(provider: ProviderDescriptor): string {
     if (provider.configuration === 'local') return 'Runs on this device';
+    if (provider.configuration === 'oauth-account') return 'Signed-in plan account';
     if (provider.configuration === 'oauth') return 'Access token';
     return 'API key';
 }
