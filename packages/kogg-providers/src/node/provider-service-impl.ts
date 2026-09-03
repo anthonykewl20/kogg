@@ -5,7 +5,8 @@ import {
 } from '@kogg/contracts';
 import { KoggOperationRegistry, type OperationRegistryApi } from '@kogg/operations/lib/common/operations-protocol';
 import { runOperation } from '@kogg/operations/lib/node/run-operation';
-import type { AdvisoryChatRequest, KoggProviderService } from '../common/provider-service';
+import { AccountLoginManager } from './account-login-manager';
+import type { AccountLoginState, AdvisoryChatRequest, KoggProviderService } from '../common/provider-service';
 
 // diagnostic-coverage: providers.registry, providers.credentials, operations.registry, operations.cleanup
 
@@ -14,7 +15,8 @@ export class KoggProviderServiceImpl implements KoggProviderService {
     constructor(
         @inject(ProviderRegistryToken) private readonly providers: ProviderRegistry,
         @inject(CredentialStoreToken) private readonly credentials: CredentialStore,
-        @inject(KoggOperationRegistry) private readonly operations: OperationRegistryApi
+        @inject(KoggOperationRegistry) private readonly operations: OperationRegistryApi,
+        @inject(AccountLoginManager) private readonly logins: AccountLoginManager
     ) {}
 
     listProviders() { return this.connection(() => Promise.resolve(this.providers.listProviders())); }
@@ -25,6 +27,10 @@ export class KoggProviderServiceImpl implements KoggProviderService {
     importAccountCredential(provider: string, account: string) {
         return this.connection(() => this.providers.importAccountCredential(provider, account));
     }
+    startAccountLogin(provider: string, account: string): Promise<AccountLoginState> { return this.logins.start(provider, account); }
+    accountLoginState(provider: string): Promise<AccountLoginState> { return Promise.resolve(this.logins.state(provider)); }
+    submitAccountLoginCode(provider: string, code: string): Promise<AccountLoginState> { return Promise.resolve(this.logins.submitCode(provider, code)); }
+    cancelAccountLogin(provider: string): Promise<AccountLoginState> { return this.logins.cancel(provider); }
     discoverModels(provider: string, account: string, endpoint?: string) { return this.connection(() => this.providers.discoverModels(provider, account, endpoint)); }
     testConnection(provider: string, account: string, endpoint?: string) {
         // A reachable service returning a negative connection result (including

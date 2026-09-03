@@ -2,7 +2,7 @@ import { inject, injectable, postConstruct } from '@theia/core/shared/inversify'
 import { BaseWidget } from '@theia/core/lib/browser/widgets/widget';
 import { CommandService, MessageService } from '@theia/core';
 import type { CredentialMetadata, ModelDescriptor, ProviderDescriptor } from '@kogg/contracts';
-import { KoggProviderService } from '../common/provider-service';
+import { KoggProviderService, type AccountLoginState } from '../common/provider-service';
 
 // diagnostic-coverage: providers.registry, providers.credentials
 
@@ -18,6 +18,8 @@ export class KoggProviderWidget extends BaseWidget {
     private endpoint = '';
     private selectedModel = '';
     private status = 'Select a provider and test the connection.';
+    private loginState: AccountLoginState | undefined;
+    private loginPoll: number | undefined;
     private reply = '';
     private lastPrompt = '';
     private promptDraft = '';
@@ -93,11 +95,11 @@ export class KoggProviderWidget extends BaseWidget {
             <label>Endpoint (optional)<input data-field="endpoint" value="${escapeHtml(this.endpoint)}" placeholder="Use provider default"></label>
             ${descriptor?.configuration === 'local' || descriptor?.configuration === 'oauth-account' ? '' : `<label>${descriptor?.configuration === 'oauth' ? 'Access token' : 'API key'}<input data-field="secret" type="password" autocomplete="new-password" placeholder="Paste once; never shown again"></label>`}
             </div>
-            <div class="kogg-actions">
-            ${descriptor?.configuration === 'local' ? '' : descriptor?.configuration === 'oauth-account' ? `<button data-action="import" ${this.busy ? 'disabled' : ''}>Use signed-in account</button>` : `<button data-action="save" ${this.busy ? 'disabled' : ''}>Save credential</button>`}
+            ${descriptor?.configuration === 'oauth-account' ? this.renderAccountLogin() : `<div class="kogg-actions">
+            ${descriptor?.configuration === 'local' ? '' : `<button data-action="save" ${this.busy ? 'disabled' : ''}>Save credential</button>`}
             <button data-action="test" ${this.busy ? 'disabled' : ''}>Test connection</button>
             <button data-action="models" ${this.busy ? 'disabled' : ''}>Discover models</button>
-            </div>
+            </div>`}
             <p role="status" class="kogg-connection-status"><i class="${credentialConfigured ? 'connected' : ''}"></i><strong>${escapeHtml(connectionState)}:</strong> ${escapeHtml(this.status)}</p>
             <section><h3>Stored credentials</h3>${this.credentials.length ? `<ul>${this.credentials.map(item => `<li>${escapeHtml(item.provider)} / ${escapeHtml(item.account)} <span>updated ${escapeHtml(item.updatedAt)}</span> <button data-delete-provider="${escapeHtml(item.provider)}" data-delete-account="${escapeHtml(item.account)}" ${this.busy ? 'disabled' : ''}>Delete</button></li>`).join('')}</ul>` : '<p>None. Secret values are never displayed.</p>'}</section>
             <p><strong>Ranex qualification:</strong> <span class="kogg-blocked">${descriptor?.governedQualification === 'qualified' ? 'Qualified' : 'Advisory only — governed mutation blocked'}</span></p>
@@ -143,6 +145,10 @@ export class KoggProviderWidget extends BaseWidget {
         });
         this.node.querySelector<HTMLElement>('[data-action="save"]')?.addEventListener('click', () => void this.saveCredential());
         this.node.querySelector<HTMLElement>('[data-action="import"]')?.addEventListener('click', () => void this.importAccount());
+        this.node.querySelector<HTMLElement>('[data-action="login"]')?.addEventListener('click', () => void this.startLogin());
+        this.node.querySelector<HTMLElement>('[data-action="open-login"]')?.addEventListener('click', () => { if (this.loginState?.url) window.open(this.loginState.url, '_blank', 'noopener'); });
+        this.node.querySelector<HTMLElement>('[data-action="submit-login-code"]')?.addEventListener('click', () => void this.submitLoginCode());
+        this.node.querySelector<HTMLElement>('[data-action="cancel-login"]')?.addEventListener('click', () => void this.cancelLogin());
         this.node.querySelector<HTMLElement>('[data-action="test"]')?.addEventListener('click', () => void this.testConnection());
         this.node.querySelector<HTMLElement>('[data-action="models"]')?.addEventListener('click', () => void this.discoverModels());
         this.node.querySelector<HTMLElement>('[data-action="chat"]')?.addEventListener('click', () => void this.chat());
@@ -162,6 +168,69 @@ export class KoggProviderWidget extends BaseWidget {
         const changedProvider = read('provider') !== this.provider;
         this.provider = read('provider'); this.account = read('account'); this.endpoint = read('endpoint'); this.selectedModel = read('model'); this.promptDraft = read('prompt');
         if (changedProvider) { this.models = []; this.selectedModel = ''; this.status = 'Provider changed. Test the connection.'; this.render(); }
+    }
+
+    private renderAccountLogin(): string {
+        const brand = this.provider === 'claude-max' ? 'Anthropic' : 'OpenAI';
+        const login = this.loginState;
+        if (login && (login.status === 'running' || login.status === 'awaiting-code')) {
+            return `<div class="kogg-login-flow">
+                <p class="kogg-login-heading">${login.status === 'awaiting-code' ? 'Paste the confirmation code from your browser' : `Waiting for you to finish signing in with ${brand}`}</p>
+                ${login.url ? `<div class="kogg-login-url"><code>${escapeHtml(login.url)}</code><button type="button" data-action="open-login">Open browser</button></div>` : '<p class="kogg-login-hint">The sign-in page is opening…</p>'}
+                ${login.status === 'awaiting-code' ? `<div class="kogg-login-code"><input data-field="login-code" placeholder="Confirmation code" autocomplete="one-time-code"><button type="button" data-action="submit-login-code">Submit code</button></div>` : ''}
+                <button type="button" class="kogg-login-cancel" data-action="cancel-login">Cancel sign-in</button>
+            </div>`;
+        }
+        return `<div class="kogg-login-entry">
+            <button type="button" class="kogg-login-primary" data-action="login" ${this.busy ? 'disabled' : ''}>Sign in with ${brand}</button>
+            <button type="button" class="kogg-login-secondary" data-action="import" ${this.busy ? 'disabled' : ''}>Use an existing CLI sign-in</button>
+            ${login?.status === 'failed' && login.error ? `<p class="kogg-login-error">${escapeHtml(login.error)}</p>` : ''}
+        </div>`;
+    }
+
+    private async submitLoginCode(): Promise<void> {
+        const input = this.node.querySelector<HTMLInputElement>('[data-field="login-code"]');
+        const code = input?.value.trim() ?? '';
+        if (!code) { await this.messages.warn('Paste the confirmation code from the browser first.'); return; }
+        this.loginState = await this.service.submitAccountLoginCode(this.provider, code);
+        this.render();
+        this.scheduleLoginPoll();
+    }
+
+    private async cancelLogin(): Promise<void> {
+        this.stopLoginPoll();
+        this.loginState = await this.service.cancelAccountLogin(this.provider);
+        this.render();
+    }
+
+    private async startLogin(): Promise<void> {
+        console.info('[kogg:providers:widget] login.requested', { providerId: this.provider });
+        this.loginState = await this.service.startAccountLogin(this.provider, this.account || 'default');
+        this.render();
+        this.scheduleLoginPoll();
+    }
+
+    private scheduleLoginPoll(): void {
+        if (this.loginPoll !== undefined || !this.loginState || (this.loginState.status !== 'running' && this.loginState.status !== 'awaiting-code')) return;
+        this.loginPoll = window.setInterval(async () => {
+            const previous = this.loginState;
+            this.loginState = await this.service.accountLoginState(this.provider);
+            if (this.loginState.status !== previous?.status) this.render();
+            if (this.loginState.status === 'succeeded') {
+                this.stopLoginPoll();
+                await this.messages.info(`${this.provider === 'claude-max' ? 'Anthropic' : 'OpenAI'} account connected.`);
+                await this.testConnection();
+                await this.discoverModels();
+            } else if (this.loginState.status === 'failed' || this.loginState.status === 'cancelled') {
+                this.stopLoginPoll();
+                if (this.loginState.status === 'failed') await this.messages.error(this.loginState.error ?? 'Sign-in did not complete.');
+                this.render();
+            }
+        }, 1_200);
+    }
+
+    private stopLoginPoll(): void {
+        if (this.loginPoll !== undefined) { window.clearInterval(this.loginPoll); this.loginPoll = undefined; }
     }
 
     private async importAccount(): Promise<void> {

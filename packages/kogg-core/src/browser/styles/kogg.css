@@ -543,3 +543,19 @@ body.kogg-application :focus-visible {
     animation-duration: .01ms !important; animation-iteration-count: 1 !important;
   }
 }
+
+/* Provider account sign-in flow */
+.kogg-login-entry { display: grid; gap: 8px; margin: 12px 0; }
+.kogg-login-primary { padding: 10px 14px; color: #fff; background: linear-gradient(150deg, #8b5cf6, #7c3aed); border: 1px solid rgba(255,255,255,.14); border-radius: 9px; font: inherit; font-weight: 640; cursor: pointer; box-shadow: inset 0 1px rgba(255,255,255,.16), 0 6px 18px rgba(109,40,217,.25); transition: filter .15s ease, transform .15s ease; }
+.kogg-login-primary:hover { filter: brightness(1.08); } .kogg-login-primary:active { transform: translateY(1px); }
+.kogg-login-secondary { padding: 8px 12px; color: var(--theia-button-foreground); background: transparent; border: 1px solid var(--theia-panel-border); border-radius: 8px; font: inherit; cursor: pointer; }
+.kogg-login-secondary:hover { border-color: rgba(139,92,246,.5); }
+.kogg-login-flow { display: grid; gap: 10px; margin: 12px 0; padding: 12px; border: 1px solid rgba(139,92,246,.35); border-radius: 10px; background: rgba(139,92,246,.06); }
+.kogg-login-heading { margin: 0; font-weight: 640; }
+.kogg-login-hint { margin: 0; color: var(--theia-descriptionForeground); }
+.kogg-login-url { display: grid; grid-template-columns: 1fr auto; gap: 8px; align-items: center; }
+.kogg-login-url code { padding: 6px 8px; border-radius: 6px; background: rgba(0,0,0,.3); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: .82em; }
+.kogg-login-code { display: grid; grid-template-columns: 1fr auto; gap: 8px; }
+.kogg-login-code input { padding: 8px 10px; border-radius: 8px; border: 1px solid var(--theia-input-border, transparent); background: var(--theia-input-background); color: var(--theia-input-foreground); font: inherit; }
+.kogg-login-error { margin: 0; color: #fda4af; font-size: .9em; }
+.kogg-login-cancel { justify-self: start; padding: 6px 10px; color: var(--theia-descriptionForeground); background: transparent; border: 0; text-decoration: underline; cursor: pointer; font: inherit; }
