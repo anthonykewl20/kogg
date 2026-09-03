@@ -36,7 +36,7 @@ test('uses the Google API-key header for discovery and advisory chat without exp
         assert.deepEqual(await registry.discoverModels('google', 'default', 'https://google.invalid/models'), [
             { id: 'gemini-test', name: 'gemini-test', provider: 'google' }
         ]);
-        const service = new KoggProviderServiceImpl(registry, credentials, operations);
+        const service = new KoggProviderServiceImpl(registry, credentials, operations, { state: () => ({ status: 'idle', needsCode: false }) } as never);
         assert.equal(await service.advisoryChat({
             provider: 'google', account: 'default', endpoint: 'https://google.invalid/models',
             model: 'gemini-test', prompt: 'test prompt'
@@ -65,7 +65,7 @@ test('returns an actionable negative connection result without misclassifying it
             registerProcess() { throw new Error('No process is expected in this provider test'); }
         })
     } as unknown as OperationRegistryApi;
-    const service = new KoggProviderServiceImpl(new KoggProviderRegistry(missingCredentials), missingCredentials, observedOperations);
+    const service = new KoggProviderServiceImpl(new KoggProviderRegistry(missingCredentials), missingCredentials, observedOperations, { state: () => ({ status: 'idle', needsCode: false }) } as never);
 
     assert.deepEqual(await service.testConnection('openai', 'default'), { ok: false, detail: 'Credential is not configured' });
     assert.equal(events.includes('complete'), true);
@@ -110,7 +110,7 @@ test('imports the signed-in Codex plan account and chats through the streaming r
         assert.deepEqual(connection, { ok: true, detail: 'Connected to the ChatGPT plan account' });
         const models = await registry.discoverModels('codex-plan', 'default');
         assert(models.some(model => model.id === 'gpt-5.6-sol'));
-        const service = new KoggProviderServiceImpl(registry, storeCredentials, operations);
+        const service = new KoggProviderServiceImpl(registry, storeCredentials, operations, { state: () => ({ status: 'idle', needsCode: false }) } as never);
         assert.equal(await service.advisoryChat({ provider: 'codex-plan', account: 'default', model: 'gpt-5.6-sol', prompt: 'ping' }), 'plan reply');
         assert.equal(store.get('codex-plan/default'), JSON.stringify({ accessToken: 'codex-access-token', accountId: 'acct-1' }));
     } finally {

@@ -5,6 +5,7 @@ import { KoggProviderRegistry } from './provider-registry';
 import { ConnectionHandler, JsonRpcConnectionHandler } from '@theia/core/lib/common/messaging';
 import { KoggProviderService, KoggProviderServicePath } from '../common/provider-service';
 import { KoggProviderServiceImpl } from './provider-service-impl';
+import { AccountLoginManager } from './account-login-manager';
 import { ProviderDiagnosticContributor } from './provider-diagnostic-contributor';
 
 export default new ContainerModule(bind => {
@@ -15,6 +16,7 @@ export default new ContainerModule(bind => {
         : context.container.get(ElectronCredentialStore)).inSingletonScope();
     bind(KoggProviderRegistry).toSelf().inSingletonScope();
     bind(ProviderRegistryToken).toService(KoggProviderRegistry);
+    bind(AccountLoginManager).toSelf().inSingletonScope();
     bind(KoggProviderServiceImpl).toSelf().inSingletonScope();
     bind(ProviderDiagnosticContributor).toSelf().inSingletonScope();
     bind(KoggDiagnosticContribution).toService(ProviderDiagnosticContributor);
