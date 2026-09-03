@@ -159,7 +159,7 @@ async function accountChat(request: AdvisoryChatRequest, secret: string): Promis
             body: JSON.stringify({ model: request.model, max_tokens: 2048, messages: [{ role: 'user', content: request.prompt }] }),
             signal: AbortSignal.timeout(120_000)
         });
-        if (!response.ok) throw new Error(`Claude Max chat failed with HTTP ${response.status}. Run "claude /login" and import the account again.`);
+        if (!response.ok) throw new Error(`Claude Max chat failed with HTTP ${response.status}. Use Sign in again to reconnect.`);
         const result = await response.json() as { content?: Array<{ type?: string; text?: unknown }> };
         const text = (result.content ?? []).find(item => item.type === 'text')?.text;
         if (typeof text !== 'string' || !text.trim()) throw new Error('Claude Max returned no advisory text.');
