@@ -86,15 +86,15 @@ export class KoggProviderWidget extends BaseWidget {
                 return `<button type="button" role="radio" aria-checked="${item.id === this.provider}" data-provider-option="${escapeHtml(item.id)}" class="${item.id === this.provider ? 'selected' : ''}"><span class="kogg-provider-monogram">${escapeHtml(item.name.slice(0, 1))}</span><span><strong>${escapeHtml(item.name)}</strong><small>${escapeHtml(providerDescription(item))}</small></span><i class="${connected ? 'connected' : ''}" title="${connected ? 'Credential or local runtime available' : 'Not connected'}"></i></button>`;
               }).join('')}
             </div>
-            <div class="kogg-provider-step"><span>2</span><div><strong>Connect securely</strong><p>${descriptor?.configuration === 'local' ? 'Kogg connects directly to the runtime on this machine.' : descriptor?.configuration === 'oauth' ? 'Enter an access token. Browser authorization is not enabled yet.' : 'Credentials are encrypted at rest and never displayed again.'}</p></div></div>
+            <div class="kogg-provider-step"><span>2</span><div><strong>Connect securely</strong><p>${descriptor?.configuration === 'local' ? 'Kogg connects directly to the runtime on this machine.' : descriptor?.configuration === 'oauth-account' ? 'Kogg imports the signed-in account from the matching CLI on this machine. The token is encrypted at rest and never displayed.' : descriptor?.configuration === 'oauth' ? 'Enter an access token. Browser authorization is not enabled yet.' : 'Credentials are encrypted at rest and never displayed again.'}</p></div></div>
             <div class="kogg-form-grid">
             <label>Provider<select data-field="provider">${this.providers.map(item => `<option value="${escapeHtml(item.id)}" ${item.id === this.provider ? 'selected' : ''}>${escapeHtml(item.name)}</option>`).join('')}</select></label>
             <label>Account<input data-field="account" value="${escapeHtml(this.account)}"></label>
             <label>Endpoint (optional)<input data-field="endpoint" value="${escapeHtml(this.endpoint)}" placeholder="Use provider default"></label>
-            ${descriptor?.configuration === 'local' ? '' : `<label>${descriptor?.configuration === 'oauth' ? 'Access token' : 'API key'}<input data-field="secret" type="password" autocomplete="new-password" placeholder="Paste once; never shown again"></label>`}
+            ${descriptor?.configuration === 'local' || descriptor?.configuration === 'oauth-account' ? '' : `<label>${descriptor?.configuration === 'oauth' ? 'Access token' : 'API key'}<input data-field="secret" type="password" autocomplete="new-password" placeholder="Paste once; never shown again"></label>`}
             </div>
             <div class="kogg-actions">
-            ${descriptor?.configuration === 'local' ? '' : `<button data-action="save" ${this.busy ? 'disabled' : ''}>Save credential</button>`}
+            ${descriptor?.configuration === 'local' ? '' : descriptor?.configuration === 'oauth-account' ? `<button data-action="import" ${this.busy ? 'disabled' : ''}>Use signed-in account</button>` : `<button data-action="save" ${this.busy ? 'disabled' : ''}>Save credential</button>`}
             <button data-action="test" ${this.busy ? 'disabled' : ''}>Test connection</button>
             <button data-action="models" ${this.busy ? 'disabled' : ''}>Discover models</button>
             </div>
@@ -142,6 +142,7 @@ export class KoggProviderWidget extends BaseWidget {
             if (event.key === 'Enter' && (event.metaKey || event.ctrlKey)) { event.preventDefault(); void this.chat(); }
         });
         this.node.querySelector<HTMLElement>('[data-action="save"]')?.addEventListener('click', () => void this.saveCredential());
+        this.node.querySelector<HTMLElement>('[data-action="import"]')?.addEventListener('click', () => void this.importAccount());
         this.node.querySelector<HTMLElement>('[data-action="test"]')?.addEventListener('click', () => void this.testConnection());
         this.node.querySelector<HTMLElement>('[data-action="models"]')?.addEventListener('click', () => void this.discoverModels());
         this.node.querySelector<HTMLElement>('[data-action="chat"]')?.addEventListener('click', () => void this.chat());
@@ -161,6 +162,15 @@ export class KoggProviderWidget extends BaseWidget {
         const changedProvider = read('provider') !== this.provider;
         this.provider = read('provider'); this.account = read('account'); this.endpoint = read('endpoint'); this.selectedModel = read('model'); this.promptDraft = read('prompt');
         if (changedProvider) { this.models = []; this.selectedModel = ''; this.status = 'Provider changed. Test the connection.'; this.render(); }
+    }
+
+    private async importAccount(): Promise<void> {
+        console.info('[kogg:providers:widget] account.import.requested', { providerId: this.provider });
+        await this.run(async () => {
+            await this.service.importAccountCredential(this.provider, this.account || 'default');
+            this.status = 'Signed-in account imported.';
+        });
+        await this.testConnection();
     }
 
     private async saveCredential(): Promise<void> {

@@ -1,4 +1,7 @@
 import assert from 'node:assert/strict';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
 import test from 'node:test';
 import type { CredentialStore } from '@kogg/contracts';
 import type { OperationRegistryApi } from '@kogg/operations/lib/common/operations-protocol';
@@ -67,4 +70,69 @@ test('returns an actionable negative connection result without misclassifying it
     assert.deepEqual(await service.testConnection('openai', 'default'), { ok: false, detail: 'Credential is not configured' });
     assert.equal(events.includes('complete'), true);
     assert.equal(events.includes('fail'), false);
+});
+
+test('imports the signed-in Codex plan account and chats through the streaming responses API', async () => {
+    const directory = await mkdtemp(path.join(os.tmpdir(), 'kogg-codex-import-'));
+    const authFile = path.join(directory, 'auth.json');
+    await writeFile(authFile, JSON.stringify({ tokens: { access_token: 'codex-access-token', account_id: 'acct-1' } }));
+    const previous = process.env.KOGG_CODEX_AUTH_FILE;
+    process.env.KOGG_CODEX_AUTH_FILE = authFile;
+    const originalFetch = globalThis.fetch;
+    const requests: Array<{ url?: string | URL; init?: RequestInit }> = [];
+    globalThis.fetch = async (input, init) => {
+        requests.push({ url: input instanceof Request ? input.url : String(input), init });
+        const url = String(input);
+        if (url.includes('/backend-api/codex/responses') && init?.method !== 'POST') return new Response('', { status: 405 });
+        if (url.includes('/backend-api/codex/responses')) {
+            assert.equal((init?.headers as Record<string, string>).authorization, 'Bearer codex-access-token');
+            assert.equal((init?.headers as Record<string, string>)['chatgpt-account-id'], 'acct-1');
+            const body = JSON.parse(String(init?.body)) as { model: string; stream: boolean };
+            assert.equal(body.model, 'gpt-5.6-sol');
+            assert.equal(body.stream, true);
+            const event = JSON.stringify({ type: 'response.completed', response: { output: [{ type: 'message', content: [{ type: 'output_text', text: 'plan reply' }] }] } });
+            return new Response(`data: ${event}\n\n`, { status: 200 });
+        }
+        throw new Error(`Unexpected fetch ${url}`);
+    };
+    try {
+        const store = new Map<string, string>();
+        const storeCredentials: CredentialStore = {
+            set: async (provider, account, secret) => { store.set(`${provider}/${account}`, secret); },
+            get: async (provider, account) => store.get(`${provider}/${account}`),
+            delete: async () => true,
+            listMetadata: async () => []
+        };
+        const registry = new KoggProviderRegistry(storeCredentials);
+        await registry.importAccountCredential('codex-plan', 'default');
+        assert.equal(await registry.credentialStatus('codex-plan', 'default'), 'configured');
+        const connection = await registry.testConnection('codex-plan', 'default');
+        assert.deepEqual(connection, { ok: true, detail: 'Connected to the ChatGPT plan account' });
+        const models = await registry.discoverModels('codex-plan', 'default');
+        assert(models.some(model => model.id === 'gpt-5.6-sol'));
+        const service = new KoggProviderServiceImpl(registry, storeCredentials, operations);
+        assert.equal(await service.advisoryChat({ provider: 'codex-plan', account: 'default', model: 'gpt-5.6-sol', prompt: 'ping' }), 'plan reply');
+        assert.equal(store.get('codex-plan/default'), JSON.stringify({ accessToken: 'codex-access-token', accountId: 'acct-1' }));
+    } finally {
+        globalThis.fetch = originalFetch;
+        if (previous === undefined) delete process.env.KOGG_CODEX_AUTH_FILE; else process.env.KOGG_CODEX_AUTH_FILE = previous;
+        await rm(directory, { recursive: true, force: true });
+    }
+});
+
+test('refuses account imports when the CLI sign-in is absent and never stores partial credentials', async () => {
+    const previous = process.env.KOGG_CODEX_AUTH_FILE;
+    const previousClaude = process.env.KOGG_CLAUDE_CREDENTIALS_COMMAND;
+    process.env.KOGG_CODEX_AUTH_FILE = path.join(os.tmpdir(), 'kogg-missing-auth.json');
+    process.env.KOGG_CLAUDE_CREDENTIALS_COMMAND = path.join(os.tmpdir(), 'kogg-missing-security');
+    const storeCredentials: CredentialStore = { set: async () => undefined, get: async () => undefined, delete: async () => true, listMetadata: async () => [] };
+    try {
+        const registry = new KoggProviderRegistry(storeCredentials);
+        await assert.rejects(() => registry.importAccountCredential('codex-plan', 'default'), /codex login/);
+        await assert.rejects(() => registry.importAccountCredential('claude-max', 'default'), /claude/i);
+        await assert.rejects(() => registry.importAccountCredential('openai', 'default'), /signed-in account import/);
+    } finally {
+        if (previous === undefined) delete process.env.KOGG_CODEX_AUTH_FILE; else process.env.KOGG_CODEX_AUTH_FILE = previous;
+        if (previousClaude === undefined) delete process.env.KOGG_CLAUDE_CREDENTIALS_COMMAND; else process.env.KOGG_CLAUDE_CREDENTIALS_COMMAND = previousClaude;
+    }
 });

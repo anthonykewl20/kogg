@@ -62,7 +62,7 @@ export const CredentialStoreToken = Symbol('CredentialStore');
 export interface ProviderDescriptor {
   readonly id: string;
   readonly name: string;
-  readonly configuration: 'api-key' | 'oauth' | 'local';
+  readonly configuration: 'api-key' | 'oauth' | 'oauth-account' | 'local';
   readonly capabilities: {
     readonly streaming: boolean;
     readonly toolCalls: boolean;
@@ -84,6 +84,7 @@ export interface ProviderRegistry {
   discoverModels(provider: string, account: string, endpoint?: string): Promise<readonly ModelDescriptor[]>;
   credentialStatus(provider: string, account: string): Promise<'configured' | 'missing'>;
   testConnection(provider: string, account: string, endpoint?: string): Promise<{ readonly ok: boolean; readonly detail: string }>;
+  importAccountCredential(provider: string, account: string): Promise<void>;
   assertGoverned(provider: string): void;
 }
 
