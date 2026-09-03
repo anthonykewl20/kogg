@@ -70,3 +70,54 @@ test('forwards pasted codes to the provider CLI stdin', { timeout: 20_000 }, asy
 });
 
 import { readFile } from 'node:fs/promises';
+
+test('chat drives the codex CLI and extracts the agent message from JSONL', { timeout: 20_000 }, async () => {
+    const directory = await mkdtemp(path.join(os.tmpdir(), 'kogg-cli-chat-'));
+    const stub = path.join(directory, 'codex-chat.sh');
+    const NL = String.fromCharCode(10);
+    await writeFile(stub, '#!/bin/sh' + NL + 'echo \'{"type":"thread.started"}\'' + NL + 'echo \'{"type":"item.completed","item":{"type":"agent_message","text":"cli reply"}}\'' + NL + 'exit 0' + NL);
+    const previous = process.env.KOGG_CODEX_CHAT_COMMAND;
+    process.env.KOGG_CODEX_CHAT_COMMAND = `/bin/sh ${stub}`;
+    const providers = { importAccountCredential: async () => undefined };
+    const manager = new AccountLoginManager(operations, providers as never);
+    try {
+        assert.equal(await manager.chat('codex-plan', 'gpt-5.6-sol', 'ping'), 'cli reply');
+    } finally {
+        if (previous === undefined) delete process.env.KOGG_CODEX_CHAT_COMMAND; else process.env.KOGG_CODEX_CHAT_COMMAND = previous;
+        await rm(directory, { recursive: true, force: true });
+    }
+});
+
+test('chat drives the claude CLI and extracts the JSON result', { timeout: 20_000 }, async () => {
+    const directory = await mkdtemp(path.join(os.tmpdir(), 'kogg-claude-chat-'));
+    const stub = path.join(directory, 'claude-chat.sh');
+    const NL = String.fromCharCode(10);
+    await writeFile(stub, '#!/bin/sh' + NL + 'echo \'{"result":"claude reply","is_error":false}\'' + NL + 'exit 0' + NL);
+    const previous = process.env.KOGG_CLAUDE_CHAT_COMMAND;
+    process.env.KOGG_CLAUDE_CHAT_COMMAND = `/bin/sh ${stub}`;
+    const providers = { importAccountCredential: async () => undefined };
+    const manager = new AccountLoginManager(operations, providers as never);
+    try {
+        assert.equal(await manager.chat('claude-max', 'claude-sonnet-4-5', 'ping'), 'claude reply');
+    } finally {
+        if (previous === undefined) delete process.env.KOGG_CLAUDE_CHAT_COMMAND; else process.env.KOGG_CLAUDE_CHAT_COMMAND = previous;
+        await rm(directory, { recursive: true, force: true });
+    }
+});
+
+test('chat failures surface the CLI exit and a meaningful stderr line', { timeout: 20_000 }, async () => {
+    const directory = await mkdtemp(path.join(os.tmpdir(), 'kogg-cli-fail-'));
+    const stub = path.join(directory, 'fail.sh');
+    const NL = String.fromCharCode(10);
+    await writeFile(stub, '#!/bin/sh' + NL + 'echo "ERROR: model not supported" >&2' + NL + 'exit 1' + NL);
+    const previous = process.env.KOGG_CODEX_CHAT_COMMAND;
+    process.env.KOGG_CODEX_CHAT_COMMAND = `/bin/sh ${stub}`;
+    const providers = { importAccountCredential: async () => undefined };
+    const manager = new AccountLoginManager(operations, providers as never);
+    try {
+        await assert.rejects(() => manager.chat('codex-plan', 'gpt-5.6-sol', 'ping'), /model not supported/);
+    } finally {
+        if (previous === undefined) delete process.env.KOGG_CODEX_CHAT_COMMAND; else process.env.KOGG_CODEX_CHAT_COMMAND = previous;
+        await rm(directory, { recursive: true, force: true });
+    }
+});
