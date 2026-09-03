@@ -83,6 +83,7 @@ test('imports the signed-in Codex plan account and chats through the streaming r
     globalThis.fetch = async (input, init) => {
         requests.push({ url: input instanceof Request ? input.url : String(input), init });
         const url = String(input);
+        if (url.includes('/backend-api/codex/models')) return new Response(JSON.stringify({ models: [{ slug: 'gpt-5.6-terra', display_name: 'GPT-5.6 Terra' }] }), { status: 200 });
         if (url.includes('/backend-api/codex/responses')) return new Response('', { status: 405 });
         throw new Error(`Unexpected fetch ${url}`);
     };
@@ -100,7 +101,7 @@ test('imports the signed-in Codex plan account and chats through the streaming r
         const connection = await registry.testConnection('codex-plan', 'default');
         assert.deepEqual(connection, { ok: true, detail: 'Connected to the ChatGPT plan account' });
         const models = await registry.discoverModels('codex-plan', 'default');
-        assert(models.some(model => model.id === 'gpt-5.6-sol'));
+        assert.deepEqual(models, [{ id: 'gpt-5.6-terra', name: 'GPT-5.6 Terra', provider: 'codex-plan' }]);
         const service = new KoggProviderServiceImpl(registry, storeCredentials, operations, { state: () => ({ status: 'idle', needsCode: false }), chat: async () => 'plan reply' } as never);
         assert.equal(await service.advisoryChat({ provider: 'codex-plan', account: 'default', model: 'gpt-5.6-sol', prompt: 'ping' }), 'plan reply');
         assert.equal(store.get('codex-plan/default'), JSON.stringify({ accessToken: 'codex-access-token', accountId: 'acct-1' }));

@@ -160,17 +160,39 @@ function readAccountCredential(providerId: string): AccountCredential {
 }
 
 const ACCOUNT_MODEL_CATALOG: Readonly<Record<string, readonly string[]>> = {
-    'codex-plan': ['gpt-5.6-sol'],
+    'codex-plan': ['gpt-5.6-luna', 'gpt-5.5'],
     'claude-max': ['claude-sonnet-4-5', 'claude-opus-4-3', 'claude-haiku-4-5']
 };
 
+async function withRetries<T>(work: () => Promise<T>, attempts = 3): Promise<T> {
+    let lastError: unknown;
+    for (let attempt = 0; attempt < attempts; attempt += 1) {
+        try { return await work(); } catch (error) { lastError = error; await new Promise(resolve => setTimeout(resolve, 800 * (attempt + 1))); }
+    }
+    throw lastError;
+}
+
 async function discoverAccountModels(providerId: string): Promise<readonly ModelDescriptor[]> {
+    if (providerId === 'codex-plan') {
+        try {
+            const credential = readAccountCredential(providerId);
+            const response = await withRetries(() => fetch('https://chatgpt.com/backend-api/codex/models?client_version=0.153.0', {
+                headers: { authorization: `Bearer ${credential.accessToken}`, ...(credential.accountId ? { 'chatgpt-account-id': credential.accountId } : {}) },
+                signal: AbortSignal.timeout(10_000)
+            }));
+            if (response.ok) {
+                const payload = await response.json() as { models?: Array<{ slug?: unknown; display_name?: unknown }> };
+                const models = (payload.models ?? []).flatMap(item => typeof item?.slug === 'string' && item.slug ? [{ id: item.slug, name: String(item.display_name ?? item.slug), provider: providerId }] : []);
+                if (models.length) return models;
+            }
+        } catch { /* observability-exempt: discovery falls back to the closed static catalog; the safe model list carries no provider content. */ }
+    }
     if (providerId === 'claude-max') {
         try {
-            const response = await fetch('https://api.anthropic.com/v1/models', {
+            const response = await withRetries(() => fetch('https://api.anthropic.com/v1/models', {
                 headers: { authorization: `Bearer ${accountBearer(providerId)}`, 'anthropic-beta': 'oauth-2025-04-20' },
                 signal: AbortSignal.timeout(10_000)
-            });
+            }));
             if (response.ok) {
                 const payload = await response.json() as { data?: Array<{ id?: unknown }> };
                 const models = (payload.data ?? []).flatMap(item => typeof item?.id === 'string' ? [{ id: item.id, name: item.id, provider: providerId }] : []);
