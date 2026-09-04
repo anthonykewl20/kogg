@@ -42,7 +42,7 @@ async function createManifest(artifact: Buffer, version: string): Promise<KoggPa
 void Promise.all(['0.1.0', '0.2.0'].map(async version => {
     const artifact = await createArtifact(version);
     return { artifact, manifest: await createManifest(artifact, version) };
-})).then(fixtures => createServer((request, response) => {
+})).then(fixtures => createServer(async (request, response) => {
     const initial = fixtures[0]!;
     const latest = fixtures[1]!;
     const url = new URL(request.url ?? '/', `http://${host}:${port}`);
@@ -50,7 +50,21 @@ void Promise.all(['0.1.0', '0.2.0'].map(async version => {
     if (url.pathname === '/health') return response.end(JSON.stringify({ ok: true, registry: 'Kogg Marketplace development fixture' }));
     if (url.pathname === '/provider/v1/models') return response.end(JSON.stringify({ data: [{ id: 'kogg-fixture-model', name: 'Kogg Fixture Model' }] }));
     if (url.pathname === '/provider/v1/chat/completions' && request.method === 'POST') {
-        return response.end(JSON.stringify({ choices: [{ message: { role: 'assistant', content: 'Kogg provider fixture responded successfully.' } }] }));
+        // Honor the streaming contract so the harness exercises the same SSE
+        // path the production OpenAI-compatible endpoints use.
+        const chunks: Buffer[] = [];
+        request.on('data', chunk => chunks.push(chunk as Buffer));
+        await new Promise<void>(resolve => request.once('end', resolve));
+        const wantsStream = ((): boolean => {
+            try { return (JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}') as { stream?: unknown }).stream === true; }
+            catch { return false; /* observability-exempt: an unreadable fixture request body falls back to the single-shot contract. */ }
+        })();
+        if (!wantsStream) return response.end(JSON.stringify({ choices: [{ message: { role: 'assistant', content: 'Kogg provider fixture responded successfully.' } }] }));
+        response.setHeader('content-type', 'text/event-stream; charset=utf-8');
+        response.write('data: {"choices":[{"delta":{"content":"Kogg provider fixture "}}]}\n\n');
+        response.write('data: {"choices":[{"delta":{"content":"responded successfully."}}]}\n\n');
+        response.write('data: [DONE]\n\n');
+        return response.end();
     }
     if (url.pathname === '/kogg/v1/search') return response.end(JSON.stringify([initial.manifest]));
     if (url.pathname === `/kogg/v1/packages/${latest.manifest.id}/latest`) return response.end(JSON.stringify(latest.manifest));

@@ -160,6 +160,19 @@ test('cancelChat aborts an in-flight provider stream and normalizes the error', 
     }
 });
 
+test('falls back to single-shot parsing when a streaming request gets a JSON answer', { timeout: 10_000 }, async () => {
+    const client = new RecordingChatClient();
+    const stub = stubFetch(() => new Response(JSON.stringify({ choices: [{ message: { role: 'assistant', content: 'Plain reply.' } }] }), { status: 200, headers: { 'content-type': 'application/json' } }));
+    try {
+        const service = serviceWith(client);
+        const reply = await service.advisoryChat({ provider: 'openai', account: 'default', model: 'gpt-x', prompt: 'hi', sessionId: 'session-json' });
+        assert.equal(reply, 'Plain reply.');
+        assert.deepEqual(client.deltas(), ['Plain reply.']);
+    } finally {
+        stub.restore();
+    }
+});
+
 test('cancelChat reports false for unknown sessions', { timeout: 10_000 }, async () => {
     const client = new RecordingChatClient();
     const service = serviceWith(client);

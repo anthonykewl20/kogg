@@ -170,13 +170,19 @@ export class KoggProviderServiceImpl implements KoggProviderService {
         const response = await fetch(target, { method: 'POST', headers, body: JSON.stringify(body), signal: chat.abort.signal });
         activity();
         if (!response.ok) throw new Error(`Kogg advisory chat failed with HTTP ${response.status}`);
-        if (!response.body) {
-            // No stream body: fall back to a single-shot request so chat still
-            // works on endpoints that ignore the stream flag.
-            const plain = await fetch(target, { method: 'POST', headers, body: JSON.stringify({ ...body as Record<string, unknown>, stream: false }), signal: chat.abort.signal });
-            activity();
-            if (!plain.ok) throw new Error(`Kogg advisory chat failed with HTTP ${plain.status}`);
-            const text = extractText(await plain.json());
+        const contentType = response.headers.get('content-type') ?? '';
+        if (!response.body || !contentType.includes('text/event-stream')) {
+            // The endpoint ignored the stream flag (or sent no body): the
+            // current response already carries the complete answer.
+            if (!response.body) {
+                const plain = await fetch(target, { method: 'POST', headers, body: JSON.stringify({ ...body as Record<string, unknown>, stream: false }), signal: chat.abort.signal });
+                activity();
+                if (!plain.ok) throw new Error(`Kogg advisory chat failed with HTTP ${plain.status}`);
+                const text = extractText(await plain.json());
+                emit(text);
+                return text;
+            }
+            const text = extractText(await response.json());
             emit(text);
             return text;
         }
