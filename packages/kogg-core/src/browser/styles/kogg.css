@@ -451,6 +451,59 @@ body.kogg-application .theia-button.secondary:hover:not(:disabled) {
   font: inherit; font-size: 12px; line-height: 1.6;
 }
 .kogg-chat-message.user p { margin-left: 18px; border-color: rgba(139, 92, 246, .2); background: rgba(139, 92, 246, .09); }
+.kogg-chat-thread[aria-busy='true'] { justify-content: flex-start; }
+.kogg-chat-message.assistant.failed > p,
+.kogg-chat-message.assistant.failed pre { border-color: rgba(248, 113, 113, .38); background: rgba(248, 113, 113, .07); }
+.kogg-chat-pending, .kogg-chat-stream-meta { display: flex; align-items: center; gap: 8px; margin: 0; padding: 12px 13px; }
+.kogg-chat-pending small, .kogg-chat-stream-meta { color: var(--kogg-faint); font-size: 11px; }
+.kogg-chat-spinner {
+  width: 12px; height: 12px; border: 2px solid rgba(167, 139, 250, .25); border-top-color: #a78bfa;
+  border-radius: 50%; animation: kogg-chat-spin .8s linear infinite;
+}
+@keyframes kogg-chat-spin { to { transform: rotate(360deg); } }
+.kogg-chat-stream {
+  margin: 0; padding: 12px 13px; border: 1px solid rgba(167, 139, 250, .28); border-radius: 12px;
+  color: var(--kogg-text); background: rgba(139, 92, 246, .05); white-space: pre-wrap;
+  font: inherit; font-size: 12px; line-height: 1.6;
+}
+.kogg-chat-stream.stalled { border-color: rgba(248, 113, 113, .38); color: var(--kogg-muted); }
+.kogg-chat-error {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin: 0 0 14px; padding: 10px 12px;
+  border: 1px solid rgba(248, 113, 113, .38); border-radius: 12px; color: var(--kogg-muted);
+  background: rgba(248, 113, 113, .07); font-size: 12px;
+}
+.kogg-chat-error strong { color: #fca5a5; }
+.kogg-chat-error button { min-height: 25px; padding: 2px 10px; font-size: 11px; }
+.kogg-chat-new {
+  min-height: 26px; margin: 0 0 14px; padding: 2px 10px; border-radius: 8px;
+  color: var(--kogg-muted); background: transparent; font-size: 11px; box-shadow: none;
+}
+.kogg-chat-new:hover { color: #fff; border-color: rgba(167, 139, 250, .34); background: #332254; }
+.kogg-chat-message ul, .kogg-chat-message ol { margin: 6px 0; padding-left: 20px; color: var(--kogg-text); font-size: 12px; line-height: 1.6; }
+.kogg-chat-message h4 { margin: 10px 0 4px; font-size: 12.5px; }
+.kogg-chat-message code {
+  padding: 1px 5px; border: 1px solid var(--kogg-border); border-radius: 5px;
+  background: rgba(255, 255, 255, .05); font-family: 'SF Mono', Menlo, Consolas, monospace; font-size: 11px;
+}
+.kogg-code { margin: 8px 0; border: 1px solid var(--kogg-border); border-radius: 10px; background: rgba(0, 0, 0, .28); overflow: hidden; }
+.kogg-code-bar {
+  display: flex; align-items: center; justify-content: space-between; padding: 5px 10px;
+  border-bottom: 1px solid var(--kogg-border); color: var(--kogg-faint); font-size: 10px;
+  text-transform: uppercase; letter-spacing: .07em;
+}
+.kogg-panel .kogg-code-copy {
+  min-height: 22px; padding: 1px 9px; border-color: transparent; border-radius: 6px;
+  color: var(--kogg-muted); background: transparent; box-shadow: none; font-size: 10px;
+  text-transform: none; letter-spacing: 0;
+}
+.kogg-panel .kogg-code-copy:hover { color: #fff; background: #332254; border-color: rgba(167, 139, 250, .34); }
+.kogg-code pre {
+  margin: 0; padding: 10px 12px; border: 0; border-radius: 0; background: transparent;
+  font-family: 'SF Mono', Menlo, Consolas, monospace; font-size: 11px; line-height: 1.55;
+  overflow-x: auto; white-space: pre;
+}
+.kogg-chat-stop { border-color: rgba(248, 113, 113, .5); color: #fca5a5; background: rgba(248, 113, 113, .1); }
+.kogg-chat-stop:hover:not(:disabled) { border-color: rgba(248, 113, 113, .8); color: #fff; background: rgba(248, 113, 113, .25); }
 .kogg-chat-modes {
   display: flex; align-items: center; gap: 4px; margin: 0 2px 7px; padding: 4px;
   border: 1px solid var(--kogg-border); border-radius: 10px; background: rgba(255, 255, 255, .018);

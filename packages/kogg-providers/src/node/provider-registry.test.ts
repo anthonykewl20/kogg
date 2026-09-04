@@ -24,12 +24,21 @@ const operations = {
 
 test('uses the Google API-key header for discovery and advisory chat without exposing it as a bearer token', async () => {
     const originalFetch = globalThis.fetch;
-    const requests: RequestInit[] = [];
-    globalThis.fetch = async (_input, init) => {
-        requests.push(init ?? {});
+    const requests: Array<{ init: RequestInit; url: string }> = [];
+    globalThis.fetch = async (input, init) => {
+        const url = String(input);
+        requests.push({ init: init ?? {}, url });
         return requests.length === 1
             ? new Response(JSON.stringify({ models: [{ name: 'gemini-test' }] }), { status: 200 })
-            : new Response(JSON.stringify({ candidates: [{ content: { parts: [{ text: 'advisory reply' }] } }] }), { status: 200 });
+            : new Response(new ReadableStream<Uint8Array>({
+                start(controller) {
+                    const encoder = new TextEncoder();
+                    const frame = (payload: unknown): Uint8Array => encoder.encode(`data: ${JSON.stringify(payload)}\n\n`);
+                    controller.enqueue(frame({ candidates: [{ content: { parts: [{ text: 'advisory ' }] } }] }));
+                    controller.enqueue(frame({ candidates: [{ finishReason: 'STOP', content: { parts: [{ text: 'reply' }] } }] }));
+                    controller.close();
+                }
+            }), { status: 200, headers: { 'content-type': 'text/event-stream' } });
     };
     try {
         const registry = new KoggProviderRegistry(credentials);
@@ -43,10 +52,11 @@ test('uses the Google API-key header for discovery and advisory chat without exp
         }), 'advisory reply');
 
         for (const request of requests) {
-            const headers = new Headers(request.headers);
+            const headers = new Headers(request.init.headers);
             assert.equal(headers.get('x-goog-api-key'), 'google-test-secret');
             assert.equal(headers.has('authorization'), false);
         }
+        assert.match(requests[1]!.url, /:streamGenerateContent\?alt=sse/u);
     } finally {
         globalThis.fetch = originalFetch;
     }
