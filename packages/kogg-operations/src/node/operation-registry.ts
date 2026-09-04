@@ -632,7 +632,9 @@ function mapOwnerEvent(database: DatabaseSync, row: SqlRow, ownerInstanceId: str
   const sourceEvent = String(row.event_name); const eventKind = ownerEventKind(sourceEvent, Boolean(processId)); const safePayload: SafeOwnerPayloadV1 = processId
     ? { processKind: String(processRow?.kind ?? 'unknown'), processState: eventKind.slice('process.'.length), cleanupState: processCleanupFor(eventKind), ...(processSafeCodeEvent(sourceEvent) && processRow?.safe_code ? { safeCode: String(processRow.safe_code) } : {}) }
     : { lifecycle: eventKind.slice('operation.'.length), ...(operationSafeCodeEvent(sourceEvent) && operation.safe_code ? { safeCode: String(operation.safe_code) } : {}) };
-  const eventId = `operation-event-${sequence}`;
+  // The event id must be globally unique: sequence numbers restart when a
+  // replay runs under a fresh owner epoch, so the epoch scopes the id.
+  const eventId = `operation-event-${epochId}:${sequence}`;
   const factDigest = createHash('sha256').update(JSON.stringify([sequence, operationId, processId ?? null, eventKind, String(row.created_at)])).digest('hex');
   const unsigned: Omit<OwnerEventV1, 'eventDigest'> = { ownerKind: 'operation', ownerInstanceId, ownerSchemaVersion: 1, epochId, sequence, eventId, eventKind, factId: `${operationId}:${sequence}`, factDigest, previousEventDigest, causalParents: [], correlations: { ...(operation.project_id ? { projectId: String(operation.project_id) } : {}), ...(operation.task_id ? { taskId: String(operation.task_id) } : {}), ...(operation.run_id ? { runId: String(operation.run_id) } : {}), ...(operation.attempt_id ? { attemptId: String(operation.attempt_id) } : {}), operationId, ...(processId ? { processId } : {}) }, observedAt: String(row.created_at), safePayload };
   return { ...unsigned, eventDigest: OperationsReadModel.digest(unsigned) };
