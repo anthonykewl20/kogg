@@ -12,7 +12,7 @@
     "build": "tsc -b",
     "clean": "rimraf lib tsconfig.tsbuildinfo",
     "typecheck": "tsc --noEmit",
-    "test": "node --test lib/node/credential-store.test.js"
+    "test": "node --test 'lib/**/*.test.js'"
   },
   "dependencies": {
     "@kogg/contracts": "0.1.0",

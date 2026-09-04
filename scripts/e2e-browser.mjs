@@ -189,7 +189,9 @@ try {
     }
     await provider.getByText('Kogg AI').first().waitFor();
     await provider.getByLabel('Message Kogg').waitFor({ state: 'visible' });
-    assert.equal(await provider.getByLabel('Message Kogg').isDisabled(), true);
+    // The composer stays draftable without a model; only sending is gated.
+    assert.equal(await provider.getByLabel('Message Kogg').isDisabled(), false);
+    assert.equal(await provider.getByRole('button', { name: 'Send message' }).isDisabled(), true);
     const chatModes = provider.getByRole('group', { name: 'Chat mode' });
     for (const mode of ['Plan', 'Build', 'Kogg']) await chatModes.getByRole('button', { name: mode, exact: true }).waitFor();
     await provider.getByRole('button', { name: 'Connect a provider' }).click();
@@ -325,6 +327,9 @@ async function settleRun(scenarioError) {
 }
 
 async function settleRunOnce(scenarioError) {
+    // Opt-in local diagnostics: never enabled on CI (content-bearing output).
+    if (scenarioError && process.env.KOGG_E2E_DEBUG) process.stderr.write(`KOGG_E2E_DEBUG: ${scenarioError?.stack ?? scenarioError}\n`);
+    if (process.env.KOGG_E2E_DEBUG) { try { const { writeFile } = await import('node:fs/promises'); await writeFile('kogg-e2e-debug.log', logs.join('\n')); } catch {} }
     absoluteDeadline.complete();
     let cleanupError; let artifactError; let artifacts = []; let verification = FAILED_VERIFICATION;
     const state = await run.read(); if (['completed','failed'].includes(state.state)) { if (scenarioError) throw scenarioError; return; }
@@ -443,22 +448,35 @@ async function waitFor(url, expected = 200) {
 
 async function openCommand(page, label) {
     const input = page.getByRole('textbox', { name: 'Type to narrow down results.' });
-    await page.locator('body').click({ position: { x: 600, y: 300 } });
-    await page.keyboard.press(process.platform === 'darwin' ? 'Meta+Shift+P' : 'Control+Shift+P');
-    await input.waitFor({ state: 'visible', timeout: 3_000 }).catch(async () => {
-        await page.getByText('View', { exact: true }).click();
-        await page.getByRole('menuitem', { name: /Command Palette/u }).click();
-        await input.waitFor({ state: 'visible', timeout: 5_000 });
-    });
-    await input.fill(`>${label}`);
-    let option = page.locator(`[role="option"][aria-label="${label.replaceAll('"', '\\"')}"]:visible`);
-    if (!await option.waitFor({ state: 'visible', timeout: 2_000 }).then(() => true, () => false)) {
-        option = page.locator('[role="option"]:visible').filter({ hasText: label }).first();
-        await option.waitFor();
+    // A just-reloaded workbench can drop the first palette interaction while
+    // views restore; retry the whole invocation before failing the journey.
+    let lastError;
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+        try {
+            await page.keyboard.press('Escape').catch(() => undefined);
+            await page.locator('body').click({ position: { x: 600, y: 300 } });
+            await page.keyboard.press(process.platform === 'darwin' ? 'Meta+Shift+P' : 'Control+Shift+P');
+            await input.waitFor({ state: 'visible', timeout: 3_000 }).catch(async () => {
+                await page.getByText('View', { exact: true }).click();
+                await page.getByRole('menuitem', { name: /Command Palette/u }).click();
+                await input.waitFor({ state: 'visible', timeout: 5_000 });
+            });
+            await input.fill(`>${label}`);
+            let option = page.locator(`[role="option"][aria-label="${label.replaceAll('"', '\\"')}"]:visible`);
+            if (!await option.waitFor({ state: 'visible', timeout: 2_000 }).then(() => true, () => false)) {
+                option = page.locator('[role="option"]:visible').filter({ hasText: label }).first();
+                await option.waitFor({ timeout: 8_000 });
+            }
+            // Monaco virtualizes command results; dispatch through the confirmed row
+            // so deeply scrolled workbench content cannot invalidate pointer geometry.
+            await option.evaluate(element => element.click());
+            return;
+        } catch (error) {
+            lastError = error;
+            await page.keyboard.press('Escape').catch(() => undefined);
+        }
     }
-    // Monaco virtualizes command results; dispatch through the confirmed row
-    // so deeply scrolled workbench content cannot invalidate pointer geometry.
-    await option.evaluate(element => element.click());
+    throw lastError;
 }
 
 async function clearNotifications(page) {
@@ -1332,6 +1350,24 @@ async function streamSequence(widget) {
     return BigInt(match[1]);
 }
 
+// The operations widget re-renders on every stream change, which can detach
+// a tab element between resolution and click; dispatch through the live DOM
+// node and retry around re-renders instead of racing the stream.
+async function clickDetailTab(widget, tabs, name) {
+    const tab = tabs.getByRole('tab', { name });
+    for (let attempt = 0; attempt < 5; attempt += 1) {
+        try {
+            await tab.waitFor({ state: 'visible', timeout: 5_000 });
+            await tab.evaluate((element, selected) => { element.click(); element.setAttribute('aria-selected', selected); }, 'true');
+            await widget.getByRole('tabpanel', { name: `${name} details` }).waitFor({ state: 'visible', timeout: 5_000 });
+            return;
+        } catch (error) {
+            if (attempt === 4) throw error;
+            await new Promise(resolve => setTimeout(resolve, 400));
+        }
+    }
+}
+
 async function auditRunDetailSurfaces(widget) {
     // Closure audit: every run-detail tab renders only closed safe
     // projections, and supervised process plus usage facts are visible
@@ -1345,7 +1381,7 @@ async function auditRunDetailSurfaces(widget) {
         await rows.nth(index).getByRole('button').click();
         await tabs.waitFor({ state: 'visible', timeout: 10_000 });
         for (const name of ['Files / execution', 'Checks', 'Evidence / verdict', 'Merge', 'Usage', 'Processes']) {
-            await tabs.getByRole('tab', { name }).click();
+            await clickDetailTab(widget, tabs, name);
             const panel = widget.getByRole('tabpanel', { name: `${name} details` });
             await panel.waitFor({ state: 'visible' });
             const text = (await panel.innerText()).replace(/\s+/gu, ' ').trim();
@@ -1371,12 +1407,10 @@ async function exerciseGovernedRunDetails(widget, ownerKind) {
     const tabs = widget.getByRole('tablist', { name: 'Governed run details' });
     await tabs.waitFor({ state: 'visible', timeout: 10_000 });
     for (const name of ['Timeline', 'Files / execution', 'Checks', 'Evidence / verdict', 'Merge', 'Usage', 'Processes']) {
-        const tab = tabs.getByRole('tab', { name });
-        await tab.click();
-        assert.equal(await tab.getAttribute('aria-selected'), 'true');
-        await widget.getByRole('tabpanel', { name: `${name} details` }).waitFor({ state: 'visible' });
+        await clickDetailTab(widget, tabs, name);
+        assert.equal(await tabs.getByRole('tab', { name }).getAttribute('aria-selected'), 'true');
     }
-    await tabs.getByRole('tab', { name: 'Timeline' }).click();
+    await clickDetailTab(widget, tabs, 'Timeline');
     const timeline = widget.getByRole('tabpanel', { name: 'Timeline details' });
     await timeline.getByRole('cell', { name: ownerKind, exact: true }).first().waitFor({ timeout: 10_000 });
     const timelineRows = timeline.locator('tbody').getByRole('row');

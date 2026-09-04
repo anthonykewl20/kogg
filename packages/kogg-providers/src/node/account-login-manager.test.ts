@@ -121,3 +121,106 @@ test('chat failures surface the CLI exit and a meaningful stderr line', { timeou
         await rm(directory, { recursive: true, force: true });
     }
 });
+
+async function writeCodexAuthFile(directory: string): Promise<string> {
+    const authFile = path.join(directory, 'auth.json');
+    await writeFile(authFile, JSON.stringify({ tokens: { access_token: 'stub-access', account_id: 'stub-account' } }));
+    process.env.KOGG_CODEX_AUTH_FILE = authFile;
+    return authFile;
+}
+
+test('direct codex chat streams deltas and replays conversation history', { timeout: 20_000 }, async () => {
+    const directory = await mkdtemp(path.join(os.tmpdir(), 'kogg-codex-stream-'));
+    await writeCodexAuthFile(directory);
+    const deltas: string[] = [];
+    const requests: Array<{ url: string; body: Record<string, unknown> }> = [];
+    const originalFetch = globalThis.fetch;
+    const encoder = new TextEncoder();
+    globalThis.fetch = (async (input: string | URL, init?: RequestInit) => {
+        requests.push({ url: String(input), body: JSON.parse(String(init?.body ?? '{}')) as Record<string, unknown> });
+        const body = new ReadableStream<Uint8Array>({
+            start(controller) {
+                controller.enqueue(encoder.encode('data: {"type":"response.output_text.delta","delta":"Hel"}\n\n'));
+                controller.enqueue(encoder.encode('data: {"type":"response.output_text.delta","delta":"lo"}\n\n'));
+                controller.enqueue(encoder.encode('data: {"type":"response.output_text.done","text":"Hello"}\n\n'));
+                controller.close();
+            }
+        });
+        return new Response(body, { status: 200, headers: { 'content-type': 'text/event-stream' } });
+    }) as typeof fetch;
+    const providers = { importAccountCredential: async () => undefined };
+    const manager = new AccountLoginManager(operations, providers as never);
+    try {
+        const reply = await manager.chat('codex-plan', 'gpt-5.6-luna', 'again', {
+            sessionId: 'session-stream',
+            history: [{ role: 'user', content: 'hi' }, { role: 'assistant', content: 'hello' }],
+            onDelta: text => deltas.push(text)
+        });
+        assert.equal(reply, 'Hello');
+        // Each frame reports the accumulated text: two deltas grow it, and the
+        // terminal done event must not append a duplicate copy.
+        assert.deepEqual(deltas, ['Hel', 'Hello', 'Hello']);
+        assert.ok(requests[0]!.url.includes('chatgpt.com/backend-api/codex/responses'));
+        const input = requests[0]!.body.input as Array<{ role: string; content: Array<{ type: string }> }>;
+        assert.deepEqual(input.map(turn => ({ role: turn.role, type: turn.content[0]!.type })), [
+            { role: 'user', type: 'input_text' }, { role: 'assistant', type: 'output_text' }, { role: 'user', type: 'input_text' }
+        ]);
+    } finally {
+        globalThis.fetch = originalFetch;
+        const authFile = path.join(directory, 'auth.json');
+        if (process.env.KOGG_CODEX_AUTH_FILE === authFile) delete process.env.KOGG_CODEX_AUTH_FILE;
+        await rm(directory, { recursive: true, force: true });
+    }
+});
+
+test('cancelChat aborts the in-flight direct codex stream with a stop message', { timeout: 20_000 }, async () => {
+    const directory = await mkdtemp(path.join(os.tmpdir(), 'kogg-codex-stop-'));
+    await writeCodexAuthFile(directory);
+    const originalFetch = globalThis.fetch;
+    // Mirror real fetch: the returned promise rejects with an AbortError as
+    // soon as the request signal fires.
+    globalThis.fetch = ((_input: string | URL, init?: RequestInit) => new Promise<Response>((_resolve, reject) => {
+        init?.signal?.addEventListener('abort', () => {
+            const abort = new Error('This operation was aborted');
+            abort.name = 'AbortError';
+            reject(abort);
+        }, { once: true });
+    })) as typeof fetch;
+    const providers = { importAccountCredential: async () => undefined };
+    const manager = new AccountLoginManager(operations, providers as never);
+    try {
+        const pending = manager.chat('codex-plan', 'gpt-5.6-luna', 'slow', { sessionId: 'session-stop' });
+        await new Promise(resolve => setTimeout(resolve, 50));
+        assert.equal(await manager.cancelChat('session-stop'), true);
+        await assert.rejects(() => pending, /Generation stopped\./u);
+        assert.equal(await manager.cancelChat('session-stop'), false);
+    } finally {
+        globalThis.fetch = originalFetch;
+        const authFile = path.join(directory, 'auth.json');
+        if (process.env.KOGG_CODEX_AUTH_FILE === authFile) delete process.env.KOGG_CODEX_AUTH_FILE;
+        await rm(directory, { recursive: true, force: true });
+    }
+});
+
+test('a concurrent duplicate login start does not spawn a second CLI', { timeout: 20_000 }, async () => {
+    const directory = await mkdtemp(path.join(os.tmpdir(), 'kogg-login-race-'));
+    const stub = path.join(directory, 'slow-stub.sh');
+    await writeFile(stub, '#!/bin/sh\nsleep 5\nexit 0\n');
+    const previousCommand = process.env.KOGG_CODEX_LOGIN_COMMAND;
+    process.env.KOGG_CODEX_LOGIN_COMMAND = `/bin/sh ${stub}`;
+    const providers = { importAccountCredential: async () => undefined };
+    const manager = new AccountLoginManager(operations, providers as never);
+    try {
+        const [first, second] = await Promise.all([manager.start('codex-plan', 'default'), manager.start('codex-plan', 'default')]);
+        assert.equal(first.status, 'running');
+        assert.equal(second.status, 'running');
+        await manager.cancel('codex-plan');
+        assert.equal(manager.state('codex-plan').status, 'cancelled');
+        // The cancelled state must survive the child exit event.
+        await new Promise(resolve => setTimeout(resolve, 300));
+        assert.equal(manager.state('codex-plan').status, 'cancelled');
+    } finally {
+        if (previousCommand === undefined) delete process.env.KOGG_CODEX_LOGIN_COMMAND; else process.env.KOGG_CODEX_LOGIN_COMMAND = previousCommand;
+        await rm(directory, { recursive: true, force: true });
+    }
+});

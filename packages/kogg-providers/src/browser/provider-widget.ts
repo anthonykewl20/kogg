@@ -2,9 +2,17 @@ import { inject, injectable, postConstruct } from '@theia/core/shared/inversify'
 import { BaseWidget } from '@theia/core/lib/browser/widgets/widget';
 import { CommandService, MessageService } from '@theia/core';
 import type { CredentialMetadata, ModelDescriptor, ProviderDescriptor } from '@kogg/contracts';
-import { KoggProviderService, type AccountLoginState } from '../common/provider-service';
+import { KoggProviderService, type AccountLoginState, type ChatStreamEvent, type ChatTurn } from '../common/provider-service';
+import { ProviderChatClient } from './chat-client';
+import { renderMarkdown, type RenderedCodeBlock } from './markdown';
 
 // diagnostic-coverage: providers.registry, providers.credentials
+
+interface ThreadMessage extends ChatTurn {
+    readonly failed?: boolean;
+}
+
+const HISTORY_TURN_LIMIT = 20;
 
 @injectable()
 export class KoggProviderWidget extends BaseWidget {
@@ -20,19 +28,30 @@ export class KoggProviderWidget extends BaseWidget {
     private status = 'Select a provider and test the connection.';
     private loginState: AccountLoginState | undefined;
     private loginPoll: number | undefined;
-    private reply = '';
-    private lastPrompt = '';
+    private loginPollBusy = false;
+    private thread: ThreadMessage[] = [];
     private promptDraft = '';
+    private chatError = '';
     private chatMode: 'plan' | 'build' | 'kogg' = 'plan';
     private chatModeState = 'loading';
     private chatModeStage = '';
+    private chatModeProbe: number | undefined;
     private settingsOpen = false;
     private busy = false;
+    private streaming = false;
+    private streamSession = '';
+    private streamingText = '';
+    private streamStartedAt = 0;
+    private streamTimer: number | undefined;
+    private streamTextEl: HTMLElement | undefined;
+    private streamElapsedEl: HTMLElement | undefined;
+    private codeBlocks: readonly RenderedCodeBlock[] = [];
 
     constructor(
         @inject(KoggProviderService) private readonly service: KoggProviderService,
         @inject(MessageService) private readonly messages: MessageService,
-        @inject(CommandService) private readonly commands: CommandService
+        @inject(CommandService) private readonly commands: CommandService,
+        @inject(ProviderChatClient) private readonly chatClient: ProviderChatClient
     ) { super(); }
 
     @postConstruct()
@@ -45,6 +64,7 @@ export class KoggProviderWidget extends BaseWidget {
         const modeListener = (event: Event) => {
             const detail = (event as CustomEvent<{ state?: unknown; selectedMode?: unknown; activeStage?: unknown }>).detail;
             if (!detail || !isChatMode(detail.selectedMode)) return;
+            if (this.chatModeProbe !== undefined) { window.clearInterval(this.chatModeProbe); this.chatModeProbe = undefined; }
             this.chatMode = detail.selectedMode;
             this.chatModeState = typeof detail.state === 'string' ? detail.state : 'unavailable';
             this.chatModeStage = typeof detail.activeStage === 'string' ? detail.activeStage : '';
@@ -52,7 +72,15 @@ export class KoggProviderWidget extends BaseWidget {
         };
         window.addEventListener('kogg:interaction-mode-ui', modeListener);
         this.toDispose.push({ dispose: () => window.removeEventListener('kogg:interaction-mode-ui', modeListener) });
+        this.toDispose.push({ dispose: () => { if (this.chatModeProbe !== undefined) window.clearInterval(this.chatModeProbe); } });
         window.dispatchEvent(new Event('kogg:interaction-mode-ui-request'));
+        // If no interaction-mode extension answers, stop advertising "loading".
+        this.chatModeProbe = window.setTimeout(() => {
+            if (this.chatModeState === 'loading') { this.chatModeState = 'unavailable'; this.render(); }
+        }, 4_000);
+        this.chatClient.listen(event => this.onChatEvent(event));
+        this.toDispose.push({ dispose: () => this.stopStreamTimer() });
+        this.toDispose.push({ dispose: () => this.stopLoginPoll() });
         void this.load();
         this.render();
     }
@@ -72,18 +100,43 @@ export class KoggProviderWidget extends BaseWidget {
         this.render();
     }
 
+    private onChatEvent(event: ChatStreamEvent): void {
+        if (event.sessionId !== this.streamSession || !this.streaming) return;
+        if (event.kind === 'delta' && event.text) {
+            this.streamingText += event.text;
+            if (this.streamTextEl) {
+                this.streamTextEl.textContent = this.streamingText;
+                this.scrollThreadToBottom();
+            }
+        } else if (event.kind === 'error' && event.error) {
+            this.streamTextEl?.classList.add('stalled');
+            if (this.streamElapsedEl) this.streamElapsedEl.textContent = event.error === 'Generation stopped.' ? 'stopped' : 'error';
+        }
+    }
+
+    private scrollThreadToBottom(): void {
+        const view = this.node.querySelector<HTMLElement>('.kogg-chat-thread');
+        if (view) view.scrollTop = view.scrollHeight;
+    }
+
     private render(): void {
-        // Preserve the live details state: re-renders replace the DOM, and a
-        // missed toggle event would otherwise collapse an open settings panel.
-        const liveSettings = this.node.querySelector<HTMLDetailsElement>('.kogg-ai-settings');
-        if (liveSettings) this.settingsOpen = liveSettings.open;
+        // The settings-open state is owned by the toggle listener bound in
+        // bindDom(); reading the live DOM here would overwrite programmatic
+        // opens (e.g. the "Connect a provider" button) with the stale closed
+        // state before the new DOM renders.
         const liveModel = this.node.querySelector<HTMLSelectElement>('select[data-field="model"]')?.value ?? '';
         if (!this.selectedModel && liveModel) this.selectedModel = liveModel;
+        // Preserve focus and caret across the re-render (e.g. the login poll
+        // must not interrupt typing the confirmation code).
+        const active = this.node.ownerDocument.activeElement as HTMLElement | null;
+        const activeField = active?.closest?.('[data-field]')?.getAttribute('data-field');
+        const activeSelectionStart = active instanceof HTMLInputElement || active instanceof HTMLTextAreaElement ? active.selectionStart : null;
         const descriptor = this.providers.find(item => item.id === this.provider);
         const chatReady = !!this.selectedModel;
         const credentialConfigured = descriptor?.configuration === 'local'
             || this.credentials.some(item => item.provider === this.provider && item.account === this.account);
         const connectionState = chatReady ? 'Ready' : credentialConfigured ? 'Connected' : 'Not connected';
+        this.codeBlocks = [];
         this.node.innerHTML = `<div class="kogg-panel kogg-ai-panel">
           <header><h2>Kogg AI</h2><p>Your engineering copilot, grounded in the active workspace.</p></header>
           <details class="kogg-ai-settings" ${this.settingsOpen ? 'open' : ''}>
@@ -113,10 +166,8 @@ export class KoggProviderWidget extends BaseWidget {
             <div class="kogg-provider-step"><span>3</span><div><strong>Select a model</strong><p>Discover models after the connection succeeds.</p></div></div>
             <label>Model<select data-field="model"><option value="">Select a discovered model</option>${this.models.map(item => `<option value="${escapeHtml(item.id)}" ${item.id === this.selectedModel ? 'selected' : ''}>${escapeHtml(item.name)}</option>`).join('')}</select></label>
           </details>
-          <div class="kogg-chat-thread" aria-live="polite">
-            ${this.reply
-                ? `<div class="kogg-chat-message user"><span>You</span><p>${escapeHtml(this.lastPrompt)}</p></div><div class="kogg-chat-message assistant"><span>Kogg</span><pre>${escapeHtml(this.reply)}</pre></div>`
-                : `<div class="kogg-chat-empty"><div class="kogg-chat-mark">K</div><h3>What are we building?</h3><p>${chatReady ? 'Ask about the workspace, plan a change, or investigate a problem.' : 'Connect a provider, verify it, and choose a model to begin.'}</p>${chatReady ? '' : '<button data-open-settings>Connect a provider</button>'}</div>`}
+          <div class="kogg-chat-thread" role="log" aria-live="polite" aria-busy="${this.streaming}">
+            ${this.renderThread()}
           </div>
           <div class="kogg-chat-modes" role="group" aria-label="Chat mode">
             <span>Mode</span>
@@ -124,10 +175,52 @@ export class KoggProviderWidget extends BaseWidget {
             <small>${escapeHtml(this.chatModeState === 'ready' ? this.chatModeStage || 'ready' : this.chatModeState === 'no-task' ? 'No active task' : this.chatModeState)}</small>
           </div>
           <div class="kogg-chat-composer">
-            <label><span class="theia-sr-only">Message Kogg</span><textarea data-field="prompt" rows="3" placeholder="${chatReady ? 'Ask Kogg about your code…' : 'Connect a model to start chatting'}" ${chatReady ? '' : 'disabled'}>${escapeHtml(this.promptDraft)}</textarea></label>
-            <div><span>${chatReady ? `${escapeHtml(this.selectedModel)} · ${navigator.platform.includes('Mac') ? '⌘' : 'Ctrl'}↵ to send` : 'No model selected'}</span><button data-action="chat" aria-label="Send message" ${this.busy || !chatReady ? 'disabled' : ''}>Send</button></div>
+            <label><span class="theia-sr-only">Message Kogg</span><textarea data-field="prompt" rows="3" placeholder="${chatReady ? 'Ask Kogg about your code… Enter to send, Shift+Enter for a new line.' : 'Connect a model to start chatting'}">${escapeHtml(this.promptDraft)}</textarea></label>
+            <div><span>${chatReady ? `${escapeHtml(this.selectedModel)} · ${navigator.platform.includes('Mac') ? '⌘' : 'Ctrl'}↵ also sends` : 'No model selected'}</span>${this.streaming
+                ? `<button data-action="stop" class="kogg-chat-stop" aria-label="Stop generating">Stop</button>`
+                : `<button data-action="chat" aria-label="Send message" ${!chatReady ? 'disabled' : ''}>Send</button>`}</div>
           </div>
         </div>`;
+        this.bindDom();
+        this.restoreFocus(activeField, activeSelectionStart);
+        if (this.streaming) {
+            this.streamTextEl = this.node.querySelector<HTMLElement>('[data-stream-target]') ?? undefined;
+            this.streamElapsedEl = this.node.querySelector<HTMLElement>('.kogg-chat-elapsed') ?? undefined;
+            if (this.streamTextEl) this.streamTextEl.textContent = this.streamingText;
+            this.scrollThreadToBottom();
+        } else {
+            this.streamTextEl = undefined;
+            this.streamElapsedEl = undefined;
+        }
+    }
+
+    private renderThread(): string {
+        const blocks: RenderedCodeBlock[] = [];
+        const bubbles = this.thread.map(turn => {
+            if (turn.role === 'user') return `<div class="kogg-chat-message user"><span>You</span><p>${escapeHtml(turn.content)}</p></div>`;
+            const rendered = renderMarkdown(turn.content);
+            for (const block of rendered.codeBlocks) blocks.push(block);
+            return `<div class="kogg-chat-message assistant${turn.failed ? ' failed' : ''}"><span>Kogg</span>${turn.content ? rendered.html : `<div class="kogg-chat-pending"><i class="kogg-chat-spinner" aria-hidden="true"></i><small>Thinking… <span class="kogg-chat-elapsed">0s</span></small></div>`}</div>`;
+        });
+        if (this.streaming) {
+            const pendingIndex = this.thread.length - 1;
+            if (pendingIndex >= 0 && this.thread[pendingIndex]?.role === 'assistant' && !this.thread[pendingIndex]!.content) {
+                // The placeholder for the in-flight turn already rendered; swap
+                // its pending area for the live streaming target.
+                bubbles[pendingIndex] = `<div class="kogg-chat-message assistant"><span>Kogg</span><pre class="kogg-chat-stream" data-stream-target></pre><small class="kogg-chat-stream-meta"><i class="kogg-chat-spinner" aria-hidden="true"></i><span class="kogg-chat-elapsed">0s</span></small></div>`;
+            }
+        }
+        this.codeBlocks = blocks;
+        if (!this.thread.length) {
+            const chatReady = !!this.selectedModel;
+            return `<div class="kogg-chat-empty"><div class="kogg-chat-mark">K</div><h3>What are we building?</h3><p>${chatReady ? 'Ask about the workspace, plan a change, or investigate a problem.' : 'Connect a provider, verify it, and choose a model to begin.'}</p>${chatReady ? '' : '<button data-open-settings>Connect a provider</button>'}</div>`;
+        }
+        const newChat = this.thread.length && !this.streaming ? '<button type="button" class="kogg-chat-new" data-action="new-chat">New chat</button>' : '';
+        const error = this.chatError ? `<div class="kogg-chat-error" role="alert"><strong>The request failed.</strong> <span>${escapeHtml(this.chatError)}</span> <button type="button" data-action="retry">Retry</button></div>` : '';
+        return `${bubbles.join('')}${error}${newChat}`;
+    }
+
+    private bindDom(): void {
         this.node.querySelectorAll<HTMLInputElement | HTMLSelectElement>('[data-field]').forEach(field => field.addEventListener('change', () => this.capture()));
         this.node.querySelector<HTMLDetailsElement>('.kogg-ai-settings')?.addEventListener('toggle', event => {
             this.settingsOpen = (event.currentTarget as HTMLDetailsElement).open;
@@ -149,6 +242,9 @@ export class KoggProviderWidget extends BaseWidget {
         const prompt = this.node.querySelector<HTMLTextAreaElement>('[data-field="prompt"]');
         prompt?.addEventListener('input', () => { this.promptDraft = prompt.value; });
         prompt?.addEventListener('keydown', event => {
+            // Plain Enter sends; Shift+Enter inserts a newline. Guards keep an
+            // in-flight IME composition (keyCode 229) from sending early.
+            if (event.key === 'Enter' && !event.shiftKey && !event.isComposing && event.keyCode !== 229) { event.preventDefault(); void this.chat(); }
             if (event.key === 'Enter' && (event.metaKey || event.ctrlKey)) { event.preventDefault(); void this.chat(); }
         });
         this.node.querySelector<HTMLElement>('[data-action="save"]')?.addEventListener('click', () => void this.saveCredential());
@@ -160,6 +256,19 @@ export class KoggProviderWidget extends BaseWidget {
         this.node.querySelector<HTMLElement>('[data-action="test"]')?.addEventListener('click', () => void this.testConnection());
         this.node.querySelector<HTMLElement>('[data-action="models"]')?.addEventListener('click', () => void this.discoverModels());
         this.node.querySelector<HTMLElement>('[data-action="chat"]')?.addEventListener('click', () => void this.chat());
+        this.node.querySelector<HTMLElement>('[data-action="stop"]')?.addEventListener('click', () => void this.stopStreaming());
+        this.node.querySelector<HTMLElement>('[data-action="new-chat"]')?.addEventListener('click', () => {
+            this.thread = [];
+            this.chatError = '';
+            this.render();
+        });
+        this.node.querySelector<HTMLElement>('[data-action="retry"]')?.addEventListener('click', () => {
+            const lastUser = [...this.thread].reverse().find(turn => turn.role === 'user');
+            this.chatError = '';
+            if (lastUser) { this.promptDraft = lastUser.content; this.thread = this.thread.slice(0, this.thread.lastIndexOf(lastUser)); }
+            this.render();
+            this.node.querySelector<HTMLTextAreaElement>('[data-field="prompt"]')?.focus();
+        });
         this.node.querySelectorAll<HTMLElement>('[data-chat-mode]').forEach(button => button.addEventListener('click', () => {
             const mode = button.dataset.chatMode;
             if (!isChatMode(mode)) return;
@@ -169,6 +278,24 @@ export class KoggProviderWidget extends BaseWidget {
         this.node.querySelectorAll<HTMLElement>('[data-delete-provider]').forEach(button => button.addEventListener('click', () => {
             void this.deleteCredential(button.dataset.deleteProvider!, button.dataset.deleteAccount!);
         }));
+        this.node.querySelectorAll<HTMLElement>('[data-copy-code]').forEach(button => button.addEventListener('click', () => {
+            const block = this.codeBlocks[Number(button.dataset.copyCode)];
+            if (!block) return;
+            void navigator.clipboard.writeText(block.code).then(() => {
+                button.textContent = 'Copied';
+                window.setTimeout(() => { button.textContent = 'Copy'; }, 1_500);
+            });
+        }));
+    }
+
+    private restoreFocus(field: string | null | undefined, selectionStart: number | null): void {
+        if (!field) return;
+        const target = this.node.querySelector<HTMLElement>(`[data-field="${field}"]`);
+        if (!target) return;
+        target.focus();
+        if (selectionStart !== null && (target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement)) {
+            try { target.setSelectionRange(selectionStart, selectionStart); } catch { /* observability-exempt: inputs without selection APIs simply keep focus; no operational state changes. */ }
+        }
     }
 
     private capture(): void {
@@ -225,41 +352,70 @@ export class KoggProviderWidget extends BaseWidget {
         const input = this.node.querySelector<HTMLInputElement>('[data-field="login-code"]');
         const code = input?.value.trim() ?? '';
         if (!code) { await this.messages.warn('Paste the confirmation code from the browser first.'); return; }
-        this.loginState = await this.service.submitAccountLoginCode(this.provider, code);
+        try {
+            this.loginState = await this.service.submitAccountLoginCode(this.provider, code);
+        } catch (error) {
+            console.warn('[kogg:providers:widget] login.code-submit.failed', { providerId: this.provider, errorType: errorName(error) });
+            await this.messages.error(message(error));
+            return;
+        }
         this.render();
         this.scheduleLoginPoll();
     }
 
     private async cancelLogin(): Promise<void> {
         this.stopLoginPoll();
-        this.loginState = await this.service.cancelAccountLogin(this.provider);
+        try {
+            this.loginState = await this.service.cancelAccountLogin(this.provider);
+        } catch (error) {
+            console.warn('[kogg:providers:widget] login.cancel.failed', { providerId: this.provider, errorType: errorName(error) });
+            await this.messages.error(message(error));
+            return;
+        }
         this.render();
     }
 
     private async startLogin(): Promise<void> {
         console.info('[kogg:providers:widget] login.requested', { providerId: this.provider });
-        this.loginState = await this.service.startAccountLogin(this.provider, this.account || 'default');
+        try {
+            this.loginState = await this.service.startAccountLogin(this.provider, this.account || 'default');
+        } catch (error) {
+            console.warn('[kogg:providers:widget] login.start.failed', { providerId: this.provider, errorType: errorName(error) });
+            await this.messages.error(message(error));
+            return;
+        }
         this.render();
         this.scheduleLoginPoll();
     }
 
     private scheduleLoginPoll(): void {
         if (this.loginPoll !== undefined || !this.loginState || (this.loginState.status !== 'running' && this.loginState.status !== 'awaiting-code')) return;
+        let lastSnapshot = '';
         this.loginPoll = window.setInterval(async () => {
-            const previous = this.loginState;
-            this.loginState = await this.service.accountLoginState(this.provider);
-            if (this.loginState.status !== previous?.status) this.render();
-            if (this.loginState.status === 'succeeded') {
-                this.stopLoginPoll();
-                await this.reloadCredentials();
-                this.render();
-                await this.messages.info(`${this.provider === 'claude-max' ? 'Anthropic' : 'OpenAI'} account connected.`);
-                await this.testConnection();
-                await this.discoverModels();
-            } else if (this.loginState.status === 'failed' || this.loginState.status === 'cancelled') {
-                this.stopLoginPoll();
-                if (this.loginState.status === 'failed') await this.messages.error(this.loginState.error ?? 'Sign-in did not complete.');
-                this.render();
+            if (this.loginPollBusy) return;
+            this.loginPollBusy = true;
+            try {
+                this.loginState = await this.service.accountLoginState(this.provider);
+                const login = this.loginState;
+                if (!login) return;
+                const snapshot = JSON.stringify([login.status, login.url ?? '', login.needsCode]);
+                if (snapshot !== lastSnapshot) { lastSnapshot = snapshot; this.render(); }
+                if (login.status === 'succeeded') {
+                    this.stopLoginPoll();
+                    await this.reloadCredentials();
+                    this.render();
+                    await this.messages.info(`${this.provider === 'claude-max' ? 'Anthropic' : 'OpenAI'} account connected.`);
+                    await this.testConnection();
+                    await this.discoverModels();
+                } else if (login.status === 'failed' || login.status === 'cancelled') {
+                    this.stopLoginPoll();
+                    if (login.status === 'failed') await this.messages.error(login.error ?? 'Sign-in did not complete.');
+                    this.render();
+                }
+            } catch (error) {
+                console.warn('[kogg:providers:widget] login.poll.failed', { providerId: this.provider, errorType: errorName(error) });
+            } finally {
+                this.loginPollBusy = false;
             }
         }, 1_200);
     }
@@ -314,15 +470,60 @@ export class KoggProviderWidget extends BaseWidget {
     }
 
     private async chat(): Promise<void> {
+        if (this.streaming) return;
         this.capture();
         const prompt = this.promptDraft.trim();
         if (!prompt || !this.selectedModel) { await this.messages.warn('Select a model and enter an advisory prompt.'); return; }
-        await this.run(async () => {
-            this.reply = await this.service.advisoryChat({ provider: this.provider, account: this.account, endpoint: this.endpoint || undefined, model: this.selectedModel, prompt });
-            this.lastPrompt = prompt;
-            this.promptDraft = '';
+        const history = this.thread.slice(-HISTORY_TURN_LIMIT);
+        this.thread = [...this.thread, { role: 'user', content: prompt }, { role: 'assistant', content: '' }];
+        this.promptDraft = '';
+        this.chatError = '';
+        this.streaming = true;
+        this.streamingText = '';
+        this.streamSession = `chat-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+        this.streamStartedAt = Date.now();
+        this.render();
+        this.startStreamTimer();
+        this.node.querySelector<HTMLTextAreaElement>('[data-field="prompt"]')?.focus();
+        try {
+            const reply = await this.service.advisoryChat({
+                provider: this.provider, account: this.account, endpoint: this.endpoint || undefined,
+                model: this.selectedModel, prompt, history, sessionId: this.streamSession
+            });
+            this.thread = [...this.thread.slice(0, -1), { role: 'assistant', content: reply || this.streamingText }];
             this.status = 'Advisory response received. Governed mutation remains subject to Ranex qualification.';
-        });
+        } catch (error) {
+            console.error('[kogg:providers:widget] chat.failed', { providerId: this.provider, errorType: errorName(error) });
+            const text = message(error);
+            const stopped = text.includes('stopped');
+            this.thread = [...this.thread.slice(0, -1), { role: 'assistant', content: stopped ? 'Generation stopped.' : '', failed: !stopped }];
+            this.chatError = stopped ? '' : text;
+            if (!stopped) await this.messages.error(text);
+        } finally {
+            this.streaming = false;
+            this.stopStreamTimer();
+            this.streamSession = '';
+            this.render();
+            this.node.querySelector<HTMLTextAreaElement>('[data-field="prompt"]')?.focus();
+        }
+    }
+
+    private async stopStreaming(): Promise<void> {
+        if (!this.streamSession) return;
+        try { await this.service.cancelChat(this.streamSession); }
+        catch (error) { console.warn('[kogg:providers:widget] chat.cancel.failed', { errorType: errorName(error) }); }
+    }
+
+    private startStreamTimer(): void {
+        this.stopStreamTimer();
+        this.streamTimer = window.setInterval(() => {
+            const seconds = Math.round((Date.now() - this.streamStartedAt) / 1_000);
+            if (this.streamElapsedEl) this.streamElapsedEl.textContent = `${seconds}s`;
+        }, 1_000);
+    }
+
+    private stopStreamTimer(): void {
+        if (this.streamTimer !== undefined) { window.clearInterval(this.streamTimer); this.streamTimer = undefined; }
     }
 
     private async run(operation: () => Promise<void>): Promise<void> {

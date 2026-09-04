@@ -152,13 +152,22 @@ export class OperationsReadModel implements BackendApplicationContribution {
       return this.reject(validated, 'OWNER_SEQUENCE_CONFLICT', 'conflict');
     }
     const cursor = database.prepare('SELECT * FROM owner_cursors WHERE owner_instance_id=?').get(validated.ownerInstanceId) as Row | undefined;
+    let reopenedEpoch = false;
     if (cursor) {
-      if (String(cursor.epoch_id) !== validated.epochId) return this.reject(validated, 'OWNER_EPOCH_UNKNOWN', 'conflict');
-      const expected = BigInt(String(cursor.sequence)) + 1n;
-      const supplied = BigInt(validated.sequence);
-      if (supplied < expected) return this.reject(validated, 'OWNER_CURSOR_REWIND', 'rewind');
-      if (supplied > expected) return this.reject(validated, 'OWNER_CURSOR_GAP', 'gap');
-      if (String(cursor.event_digest) !== validated.previousEventDigest) return this.reject(validated, 'OWNER_PREVIOUS_DIGEST_MISMATCH', 'conflict');
+      if (String(cursor.epoch_id) !== validated.epochId) {
+        // A new owner epoch opens a fresh stream: the owner re-opens its
+        // retained history after divergence (prune/projection rebuild), so
+        // accept the epoch only from its first event with a clean chain.
+        if (validated.sequence !== '1' || validated.previousEventDigest !== ZERO_DIGEST) return this.reject(validated, 'OWNER_EPOCH_UNKNOWN', 'conflict');
+        reopenedEpoch = true;
+        console.warn('[kogg:operations:owners] epoch.opened', { ownerKind: safeOwner(validated.ownerKind), epochId: safeOwner(validated.epochId) });
+      } else {
+        const expected = BigInt(String(cursor.sequence)) + 1n;
+        const supplied = BigInt(validated.sequence);
+        if (supplied < expected) return this.reject(validated, 'OWNER_CURSOR_REWIND', 'rewind');
+        if (supplied > expected) return this.reject(validated, 'OWNER_CURSOR_GAP', 'gap');
+        if (String(cursor.event_digest) !== validated.previousEventDigest) return this.reject(validated, 'OWNER_PREVIOUS_DIGEST_MISMATCH', 'conflict');
+      }
     } else if (validated.sequence !== '1' || validated.previousEventDigest !== ZERO_DIGEST) {
       return this.reject(validated, 'OWNER_CURSOR_GAP', 'gap');
     }
@@ -172,8 +181,11 @@ export class OperationsReadModel implements BackendApplicationContribution {
         VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(validated.ownerKind, validated.ownerInstanceId, 1, validated.epochId, validated.sequence, validated.eventId, validated.eventKind, validated.factId, validated.factDigest, validated.previousEventDigest, canonical(validated.correlations), validated.observedAt, canonical(validated.safePayload), validated.eventDigest);
       for (const parent of validated.causalParents) db.prepare('INSERT INTO causal_edges(event_digest,parent_digest) VALUES(?,?)').run(validated.eventDigest, parent.eventDigest);
       db.prepare(`INSERT INTO owner_cursors(owner_kind,owner_instance_id,epoch_id,sequence,event_digest,schema_version,status)
-        VALUES(?,?,?,?,?,1,'available') ON CONFLICT(owner_instance_id) DO UPDATE SET sequence=excluded.sequence,event_digest=excluded.event_digest,status='available'`)
+        VALUES(?,?,?,?,?,1,'available') ON CONFLICT(owner_instance_id) DO UPDATE SET epoch_id=excluded.epoch_id,sequence=excluded.sequence,event_digest=excluded.event_digest,status='available'`)
         .run(validated.ownerKind, validated.ownerInstanceId, validated.epochId, validated.sequence, validated.eventDigest);
+      // The reopened epoch re-verifies the stream from sequence 1, which
+      // resolves the divergence faults recorded under earlier epochs.
+      if (reopenedEpoch) db.prepare('DELETE FROM projection_faults WHERE owner_kind=? AND owner_instance_id=? AND epoch_id<>?').run(validated.ownerKind, validated.ownerInstanceId, validated.epochId);
       db.prepare(`INSERT INTO configured_owners(owner_kind,schema_version,status) VALUES(?,1,'available') ON CONFLICT(owner_kind) DO UPDATE SET schema_version=1,status='available'`).run(validated.ownerKind);
       this.projectEvent(db, validated);
       this.projectMetrics(db, validated);

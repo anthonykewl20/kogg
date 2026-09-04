@@ -257,3 +257,92 @@ test('production operation registry emits a TypeScript source map', async () => 
   const sourceMap = JSON.parse(await readFile(path.join(__dirname, 'operation-registry.js.map'), 'utf8')) as { sources?: string[] };
   assert(sourceMap.sources?.some(source => source.endsWith('/src/node/operation-registry.ts')));
 });
+
+test('reopens the owner stream under a new epoch after projection divergence', async () => {
+    const state = await mkdtemp(path.join(os.tmpdir(), 'kogg-owner-epoch-'));
+    process.env.KOGG_STATE_DIR = state;
+    const registry = new OperationRegistry();
+    const firstAccepted: Array<{ epoch: string; sequence: string }> = [];
+    const firstSink = {
+        registerOwner: () => undefined,
+        ingest: (event: { sequence: string; epochId?: string }) => { firstAccepted.push({ epoch: event.epochId ?? '', sequence: event.sequence }); return 'accepted'; }
+    };
+    try {
+        await registry.onStart();
+        registry.setOwnerSink(firstSink as never);
+        for (let i = 0; i < 5; i++) { const op = await registry.startOperation({ kind: 'check' }); op.start(); op.complete(); }
+        assert.ok(firstAccepted.length >= 5);
+        const oldEpoch = firstAccepted[0]!.epoch;
+        const lastSequence = firstAccepted[firstAccepted.length - 1]!.sequence;
+
+        // Simulate projection divergence: the projection store no longer
+        // continues the owner's accepted cursor at the replay start.
+        const secondAccepted: Array<{ epoch: string; sequence: string }> = [];
+        let diverged = false;
+        const secondSink = {
+            registerOwner: () => undefined,
+            ingest: (event: { sequence: string; epochId?: string }) => {
+                if (!diverged && event.sequence === lastSequence) { diverged = true; throw new Error('OWNER_CURSOR_GAP'); }
+                secondAccepted.push({ epoch: event.epochId ?? '', sequence: event.sequence });
+                return 'accepted';
+            }
+        };
+        registry.setOwnerSink(secondSink as never);
+
+        // The owner re-opens under a fresh epoch: the retained history replays
+        // contiguously from sequence 1 under exactly one new epoch.
+        const newEpochEntries = secondAccepted.filter(entry => entry.epoch !== oldEpoch);
+        const retainedSequences = new Set(firstAccepted.map(entry => entry.sequence));
+        assert.ok(newEpochEntries.length >= retainedSequences.size, 'full retained history replayed under the new epoch');
+        assert.equal(new Set(newEpochEntries.map(entry => entry.epoch)).size, 1);
+        const newEpoch = newEpochEntries[0]!.epoch;
+        assert.notEqual(newEpoch, oldEpoch);
+        assert.equal(newEpochEntries[0]!.sequence, '1');
+        assert.equal(newEpochEntries[newEpochEntries.length - 1]!.sequence, String(newEpochEntries.length));
+    } finally {
+        await registry.onStop();
+        await rm(state, { recursive: true, force: true });
+        delete process.env.KOGG_STATE_DIR;
+    }
+});
+test('a divergence replay with the real read model re-ingests the full history and returns to current', { timeout: 30_000 }, async () => {
+    const state = await mkdtemp(path.join(os.tmpdir(), 'kogg-owner-rebuild-'));
+    process.env.KOGG_STATE_DIR = state;
+    const registry = new OperationRegistry();
+    const model = new OperationsReadModel(path.join(state, 'operations', 'projection.sqlite3'));
+    try {
+        await registry.onStart();
+        registry.setOwnerSink(model as never);
+        for (let i = 0; i < 15; i++) {
+            const op = await registry.startOperation({ kind: 'check' });
+            op.start(); op.complete();
+        }
+        // Force divergence: rewind the projection's cursor so the next live
+        // publish hits a gap, exactly like a rebuilt or pruned projection.
+        const { DatabaseSync } = await import('node:sqlite');
+        const projection = new DatabaseSync(path.join(state, 'operations', 'projection.sqlite3'));
+        projection.exec("UPDATE owner_cursors SET sequence='3'");
+        projection.close();
+
+        // The next publish must detect the divergence, reopen a fresh epoch,
+        // and replay every retained event so the projection is whole again.
+        registry.setOwnerSink(model as never);
+        const op = await registry.startOperation({ kind: 'check' });
+        op.start(); op.complete();
+
+        const diagnostics = model.diagnostics();
+        const operationOwners = JSON.stringify(diagnostics);
+        assert.match(operationOwners, /"lifecycle":"current"/u);
+        const retained = new (await import('node:sqlite')).DatabaseSync(path.join(state, 'operations', 'registry.sqlite3'));
+        const eventCount = (retained.prepare('SELECT COUNT(*) AS count FROM operation_events').get() as { count: number }).count;
+        retained.close();
+        const accepted = new (await import('node:sqlite')).DatabaseSync(path.join(state, 'operations', 'projection.sqlite3'));
+        const acceptedCount = (accepted.prepare("SELECT COUNT(*) AS count FROM accepted_events WHERE owner_kind='operation'").get() as { count: number }).count;
+        accepted.close();
+        assert.ok(acceptedCount >= eventCount, `replayed history covers the retained events (${acceptedCount} >= ${eventCount})`);
+    } finally {
+        await registry.onStop();
+        await rm(state, { recursive: true, force: true });
+        delete process.env.KOGG_STATE_DIR;
+    }
+});

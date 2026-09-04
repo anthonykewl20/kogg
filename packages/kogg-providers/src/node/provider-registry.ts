@@ -164,22 +164,41 @@ const ACCOUNT_MODEL_CATALOG: Readonly<Record<string, readonly string[]>> = {
     'claude-max': ['claude-sonnet-4-5', 'claude-opus-4-3', 'claude-haiku-4-5']
 };
 
+// Auth rejections are deterministic: retrying an expired or refused token
+// only delays the same result, so they abort the retry loop immediately.
+class NonRetryableError extends Error {
+    constructor(readonly status: number) { super(`HTTP ${status}`); this.name = 'NonRetryableError'; }
+}
+
 async function withRetries<T>(work: () => Promise<T>, attempts = 5): Promise<T> {
     let lastError: unknown;
     for (let attempt = 0; attempt < attempts; attempt += 1) {
-        try { return await work(); } catch (error) { lastError = error; await new Promise(resolve => setTimeout(resolve, 1_000 * (attempt + 1))); }
+        try { return await work(); }
+        catch (error) {
+            lastError = error;
+            console.warn('[kogg:providers:registry] discovery.retry', { providerAttempt: attempt + 1, errorType: error instanceof Error ? error.name : 'UnknownError' });
+            if (error instanceof NonRetryableError) break;
+            await new Promise(resolve => setTimeout(resolve, 1_000 * (attempt + 1)));
+        }
     }
     throw lastError;
 }
 
+function fallbackCatalog(providerId: string, status: number | undefined): readonly ModelDescriptor[] {
+    console.warn('[kogg:providers:registry] discovery.fallback.catalog', { providerId, providerStatus: status ?? 'unknown' });
+    return (ACCOUNT_MODEL_CATALOG[providerId] ?? []).map(id => ({ id, name: id, provider: providerId }));
+}
+
 async function discoverAccountModels(providerId: string): Promise<readonly ModelDescriptor[]> {
     if (providerId === 'codex-plan') {
+        let status: number | undefined;
         try {
             const credential = readAccountCredential(providerId);
             const response = await withRetries(() => fetch('https://chatgpt.com/backend-api/codex/models?client_version=0.153.0', {
                 headers: { authorization: `Bearer ${credential.accessToken}`, ...(credential.accountId ? { 'chatgpt-account-id': credential.accountId } : {}) },
                 signal: AbortSignal.timeout(10_000)
             }));
+            status = response.status;
             if (response.ok) {
                 const payload = await response.json() as { models?: Array<{ slug?: unknown; display_name?: unknown; prefer_websockets?: unknown }> };
                 const models = (payload.models ?? []).flatMap(item => {
@@ -189,22 +208,28 @@ async function discoverAccountModels(providerId: string): Promise<readonly Model
                 });
                 if (models.length) return models;
             }
-        } catch { /* observability-exempt: discovery falls back to the closed static catalog; the safe model list carries no provider content. */ }
+            if (response.status === 401 || response.status === 403) throw new NonRetryableError(response.status);
+        } catch { /* observability-exempt: discovery falls back to the closed static catalog with a fallback log; the safe model list carries no provider content. */ }
+        return fallbackCatalog(providerId, status);
     }
     if (providerId === 'claude-max') {
+        let status: number | undefined;
         try {
             const response = await withRetries(() => fetch('https://api.anthropic.com/v1/models', {
                 headers: { authorization: `Bearer ${accountBearer(providerId)}`, 'anthropic-beta': 'oauth-2025-04-20' },
                 signal: AbortSignal.timeout(10_000)
             }));
+            status = response.status;
             if (response.ok) {
                 const payload = await response.json() as { data?: Array<{ id?: unknown }> };
                 const models = (payload.data ?? []).flatMap(item => typeof item?.id === 'string' ? [{ id: item.id, name: item.id, provider: providerId }] : []);
                 if (models.length) return models;
             }
-        } catch { /* observability-exempt: discovery falls back to the closed static catalog; the safe model list carries no provider content. */ }
+            if (response.status === 401 || response.status === 403) throw new NonRetryableError(response.status);
+        } catch { /* observability-exempt: discovery falls back to the closed static catalog with a fallback log; the safe model list carries no provider content. */ }
+        return fallbackCatalog(providerId, status);
     }
-    return (ACCOUNT_MODEL_CATALOG[providerId] ?? []).map(id => ({ id, name: id, provider: providerId }));
+    return fallbackCatalog(providerId, undefined);
 }
 
 function accountBearer(providerId: string): string {
@@ -222,6 +247,7 @@ async function testAccountConnection(providerId: string, credential: AccountCred
             });
             // 405 means the endpoint exists and authentication passed; it rejects GET by design.
             if (response.status === 405 || response.ok) return { ok: true, detail: 'Connected to the ChatGPT plan account' };
+            if (response.status === 401) return { ok: false, detail: 'The saved Codex token was rejected (HTTP 401). Click Sign in again, or import the account after running "codex login".' };
             if (response.status === 403 || response.status === 404) return { ok: false, detail: 'OpenAI is currently refusing requests from this network (edge block or plan limit). Wait a few minutes and test again; a VPN may be required for chatgpt.com on this network.' };
             return { ok: false, detail: `ChatGPT plan returned HTTP ${response.status}.` };
         }

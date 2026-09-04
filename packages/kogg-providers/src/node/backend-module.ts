@@ -3,10 +3,12 @@ import { CredentialStoreToken, KoggDiagnosticContribution, ProviderRegistryToken
 import { BrowserCredentialStore, ElectronCredentialStore } from './credential-store';
 import { KoggProviderRegistry } from './provider-registry';
 import { ConnectionHandler, JsonRpcConnectionHandler } from '@theia/core/lib/common/messaging';
-import { KoggProviderService, KoggProviderServicePath } from '../common/provider-service';
+import { KoggProviderChatClient, KoggProviderServicePath } from '../common/provider-service';
 import { KoggProviderServiceImpl } from './provider-service-impl';
 import { AccountLoginManager } from './account-login-manager';
 import { ProviderDiagnosticContributor } from './provider-diagnostic-contributor';
+
+// diagnostic-exempt: inversify wiring only; the bound services carry the operational coverage.
 
 export default new ContainerModule(bind => {
     bind(BrowserCredentialStore).toSelf().inSingletonScope();
@@ -20,8 +22,14 @@ export default new ContainerModule(bind => {
     bind(KoggProviderServiceImpl).toSelf().inSingletonScope();
     bind(ProviderDiagnosticContributor).toSelf().inSingletonScope();
     bind(KoggDiagnosticContribution).toService(ProviderDiagnosticContributor);
-    bind(ConnectionHandler).toDynamicValue(context => new JsonRpcConnectionHandler<KoggProviderService>(
+    bind(ConnectionHandler).toDynamicValue(context => new JsonRpcConnectionHandler<KoggProviderChatClient>(
         KoggProviderServicePath,
-        () => context.container.get(KoggProviderServiceImpl)
+        client => {
+            // The frontend's chat client rides the same JSON-RPC connection so
+            // the backend can push stream deltas (see KoggOperationsClient).
+            const service = context.container.get(KoggProviderServiceImpl);
+            service.setChatClient(client);
+            return service;
+        }
     )).inSingletonScope();
 });

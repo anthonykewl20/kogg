@@ -15,15 +15,20 @@ export async function discover({ reason, probe, runId, runtime, platform, deadli
     const correlations = { runId, platform, runtime };
     const deadline = now() + deadlineMs;
     let attempt = 0;
-    for (let index = 0; index < DISCOVERY_DELAYS_MS.length; index++) {
-        attempt = index + 1;
+    // Probe until the reason's deadline: the ramp schedule opens the window
+    // and the final step repeats so a slow backend start still converges
+    // instead of exhausting five probes in under four seconds.
+    for (;;) {
+        attempt += 1;
         logger(event('discovery.attempt', { ...correlations, reason, attempt }));
         try {
             const value = await probe({ attempt, remainingMs: Math.max(0, deadline - now()) });
             if (value) { logger(event('discovery.completed', { ...correlations, reason, attempt })); return value; }
         } catch { /* A discovery probe exposes no exception content and may retry. */ }
-        if (attempt === DISCOVERY_DELAYS_MS.length || now() >= deadline) break;
-        await wait(Math.min(DISCOVERY_DELAYS_MS[index], Math.max(0, deadline - now())));
+        const remaining = deadline - now();
+        if (remaining <= 0) break;
+        const step = DISCOVERY_DELAYS_MS[Math.min(attempt, DISCOVERY_DELAYS_MS.length) - 1];
+        await wait(Math.min(step, remaining));
     }
     logger(event('discovery.failed', { ...correlations, reason, attempt, safeCode: reason === 'fixture-readiness' ? 'E2E_APPLICATION_NOT_READY' : 'E2E_VISIBLE_CONTROL_MISSING' }));
     const error = new Error('E2E_DISCOVERY_TIMEOUT'); error.stack = error.message; throw error;

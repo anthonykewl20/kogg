@@ -1,4 +1,5 @@
 import { inject, injectable } from 'inversify';
+import { randomUUID } from 'node:crypto';
 import {
     CredentialStoreToken, ProviderRegistryToken,
     type CredentialStore, type ProviderRegistry
@@ -6,18 +7,35 @@ import {
 import { KoggOperationRegistry, type OperationRegistryApi } from '@kogg/operations/lib/common/operations-protocol';
 import { runOperation } from '@kogg/operations/lib/node/run-operation';
 import { AccountLoginManager } from './account-login-manager';
-import type { AccountLoginState, AdvisoryChatRequest, KoggProviderService } from '../common/provider-service';
+import { consumeSseStream } from './sse';
+import type {
+    AccountLoginState, AdvisoryChatRequest, ChatStreamEvent,
+    KoggProviderChatClient, KoggProviderService
+} from '../common/provider-service';
 
 // diagnostic-coverage: providers.registry, providers.credentials, operations.registry, operations.cleanup
 
+interface ActiveApiChat {
+    readonly abort: AbortController;
+}
+
+const CHAT_STOPPED = 'Generation stopped.';
+
 @injectable()
 export class KoggProviderServiceImpl implements KoggProviderService {
+    private chatClient: KoggProviderChatClient | undefined;
+    private readonly apiChats = new Map<string, ActiveApiChat>();
+
     constructor(
         @inject(ProviderRegistryToken) private readonly providers: ProviderRegistry,
         @inject(CredentialStoreToken) private readonly credentials: CredentialStore,
         @inject(KoggOperationRegistry) private readonly operations: OperationRegistryApi,
         @inject(AccountLoginManager) private readonly logins: AccountLoginManager
     ) {}
+
+    // Invoked by the JSON-RPC connection handler with the frontend's chat
+    // client proxy, mirroring the operations registry wiring.
+    setChatClient(client?: KoggProviderChatClient): void { this.chatClient = client; }
 
     listProviders() { return this.connection(() => Promise.resolve(this.providers.listProviders())); }
     listCredentialMetadata() { return this.connection(() => this.credentials.listMetadata()); }
@@ -39,42 +57,157 @@ export class KoggProviderServiceImpl implements KoggProviderService {
         return runOperation(this.operations, 'provider-connection', () => this.providers.testConnection(provider, account, endpoint));
     }
 
+    cancelChat(sessionId: string): Promise<boolean> {
+        if (this.logins.cancelChat(sessionId)) return Promise.resolve(true);
+        const chat = this.apiChats.get(sessionId);
+        if (!chat) return Promise.resolve(false);
+        this.apiChats.delete(sessionId);
+        chat.abort.abort();
+        console.info('[kogg:providers:service] advisory-chat.cancelled', {});
+        return Promise.resolve(true);
+    }
+
     async advisoryChat(request: AdvisoryChatRequest): Promise<string> {
         return runOperation(this.operations, 'provider-session', async activity => {
-            console.info('[kogg:providers:service] advisory-chat.requested', { providerId: request.provider });
+            const sessionId = request.sessionId ?? randomUUID();
+            console.info('[kogg:providers:service] advisory-chat.requested', { providerId: request.provider, historyTurns: request.history?.length ?? 0 });
             const descriptor = this.providers.getProvider(request.provider);
             if (!descriptor) throw new Error(`Unknown Kogg provider ${request.provider}`);
             const secret = descriptor.configuration === 'local' ? undefined : await this.credentials.get(request.provider, request.account);
             if (descriptor.configuration !== 'local' && !secret) throw new Error('Configure this provider credential before starting advisory chat.');
-            if (descriptor.configuration === 'oauth-account') return await this.logins.chat(request.provider, request.model, request.prompt);
-            const target = chatEndpoint(request.provider, request.endpoint, request.model);
-            const headers: Record<string, string> = { 'content-type': 'application/json' };
-            if (secret) headers.authorization = `Bearer ${secret}`;
-            let body: unknown = { model: request.model, messages: [{ role: 'user', content: request.prompt }], stream: false };
-            if (request.provider === 'anthropic') {
-                delete headers.authorization;
-                headers['x-api-key'] = secret!;
-                headers['anthropic-version'] = '2023-06-01';
-                body = { model: request.model, max_tokens: 2048, messages: [{ role: 'user', content: request.prompt }] };
-            } else if (request.provider === 'google') {
-                delete headers.authorization;
-                headers['x-goog-api-key'] = secret!;
-                body = { contents: [{ role: 'user', parts: [{ text: request.prompt }] }] };
-            } else if (request.provider === 'huggingface') {
-                body = { inputs: request.prompt, parameters: { max_new_tokens: 1024, return_full_text: false } };
+            const emit = (text: string): void => { if (text) this.push({ sessionId, kind: 'delta', text }); };
+            const finish = (text: string): void => { this.push({ sessionId, kind: 'done', text }); };
+            try {
+                let result: string;
+                if (descriptor.configuration === 'oauth-account') {
+                    result = await this.logins.chat(request.provider, request.model, request.prompt, {
+                        history: request.history,
+                        sessionId,
+                        onDelta: emit
+                    });
+                } else {
+                    const chat: ActiveApiChat = { abort: new AbortController() };
+                    this.apiChats.set(sessionId, chat);
+                    try {
+                        result = await this.apiChat(request, secret, chat, emit, () => activity());
+                    } finally {
+                        this.apiChats.delete(sessionId);
+                    }
+                }
+                console.info('[kogg:providers:service] advisory-chat.completed', { providerId: request.provider, streamedCharacters: result.length });
+                finish(result);
+                return result;
+            } catch (error) {
+                // A user stop or an aborted request normalizes to the same
+                // safe message so the UI can render one deterministic state.
+                const stopped = error instanceof Error && (error.message === CHAT_STOPPED || error.name === 'AbortError');
+                this.push({ sessionId, kind: 'error', error: stopped ? CHAT_STOPPED : 'The advisory chat request failed.' });
+                throw stopped ? new Error(CHAT_STOPPED) : error;
             }
-            const response = await fetch(target, { method: 'POST', headers, body: JSON.stringify(body), signal: AbortSignal.timeout(60_000) });
+        });
+    }
+
+    private push(event: ChatStreamEvent): void {
+        try { this.chatClient?.onChatEvent(event); } catch { /* observability-exempt: a dropped stream push must not fail the chat; the request promise is the authoritative terminal signal. */ }
+    }
+
+    private async apiChat(
+        request: AdvisoryChatRequest,
+        secret: string | undefined,
+        chat: ActiveApiChat,
+        emit: (text: string) => void,
+        activity: () => void
+    ): Promise<string> {
+        const provider = request.provider;
+        const headers: Record<string, string> = { 'content-type': 'application/json' };
+        if (secret) headers.authorization = `Bearer ${secret}`;
+        let target = chatEndpoint(provider, request.endpoint, request.model);
+        let body: unknown;
+        let terminal = false;
+        let parse: (data: string) => string | undefined;
+        const history = request.history ?? [];
+        if (provider === 'anthropic') {
+            delete headers.authorization;
+            headers['x-api-key'] = secret!;
+            headers['anthropic-version'] = '2023-06-01';
+            body = { model: request.model, max_tokens: 2048, stream: true, messages: [...history, { role: 'user', content: request.prompt }] };
+            parse = data => {
+                const event = JSON.parse(data) as { type?: string; delta?: { text?: unknown } };
+                if (event.type === 'message_stop') terminal = true;
+                return event.type === 'content_block_delta' && typeof event.delta?.text === 'string' ? event.delta.text : undefined;
+            };
+        } else if (provider === 'google') {
+            delete headers.authorization;
+            headers['x-goog-api-key'] = secret!;
+            target = target.replace(':generateContent', ':streamGenerateContent?alt=sse');
+            body = { contents: [...history.map(turn => ({ role: turn.role === 'assistant' ? 'model' : 'user', parts: [{ text: turn.content }] })), { role: 'user', parts: [{ text: request.prompt }] }] };
+            parse = data => {
+                const event = JSON.parse(data) as { candidates?: Array<{ finishReason?: unknown; content?: { parts?: Array<{ text?: unknown }> } }> };
+                const candidate = event.candidates?.[0];
+                if (candidate?.finishReason) terminal = true;
+                const text = candidate?.content?.parts?.map(part => typeof part.text === 'string' ? part.text : '').join('') ?? '';
+                return text || undefined;
+            };
+        } else if (provider === 'huggingface') {
+            body = { inputs: request.prompt, parameters: { max_new_tokens: 1024, return_full_text: false } };
+            const response = await fetch(target, { method: 'POST', headers, body: JSON.stringify(body), signal: chat.abort.signal });
             activity();
             if (!response.ok) throw new Error(`Kogg advisory chat failed with HTTP ${response.status}`);
-            const result = extractText(await response.json());
-            console.info('[kogg:providers:service] advisory-chat.completed', { providerId: request.provider });
-            return result;
+            const text = extractText(await response.json());
+            emit(text);
+            return text;
+        } else {
+            // OpenAI-compatible chat completions: openai, ollama, llamafile,
+            // copilot, and any custom endpoint speaking the same protocol.
+            body = { model: request.model, stream: true, messages: [...history, { role: 'user', content: request.prompt }] };
+            parse = data => {
+                if (data === '[DONE]') { terminal = true; return undefined; }
+                const event = JSON.parse(data) as { choices?: Array<{ delta?: { content?: unknown } }> };
+                const text = event.choices?.[0]?.delta?.content;
+                return typeof text === 'string' && text ? text : undefined;
+            };
+        }
+        const response = await fetch(target, { method: 'POST', headers, body: JSON.stringify(body), signal: chat.abort.signal });
+        activity();
+        if (!response.ok) throw new Error(`Kogg advisory chat failed with HTTP ${response.status}`);
+        const contentType = response.headers.get('content-type') ?? '';
+        if (!response.body || !contentType.includes('text/event-stream')) {
+            // The endpoint ignored the stream flag (or sent no body): the
+            // current response already carries the complete answer.
+            if (!response.body) {
+                const plain = await fetch(target, { method: 'POST', headers, body: JSON.stringify({ ...body as Record<string, unknown>, stream: false }), signal: chat.abort.signal });
+                activity();
+                if (!plain.ok) throw new Error(`Kogg advisory chat failed with HTTP ${plain.status}`);
+                const text = extractText(await plain.json());
+                emit(text);
+                return text;
+            }
+            const text = extractText(await response.json());
+            emit(text);
+            return text;
+        }
+        let collected = '';
+        await consumeSseStream(response.body, {
+            idleTimeoutMs: 60_000,
+            totalTimeoutMs: 180_000,
+            onEvent: data => {
+                const text = safeParse(data, parse);
+                if (text) { collected += text; emit(text); }
+                return terminal ? 'stop' : undefined;
+            }
         });
+        activity();
+        if (!collected.trim()) throw new Error('Provider response contained no advisory text.');
+        return collected.trim();
     }
 
     private connection<T>(work: () => Promise<T>): Promise<T> {
         return runOperation(this.operations, 'provider-connection', work);
     }
+}
+
+function safeParse(data: string, parse: (data: string) => string | undefined): string | undefined {
+    try { return parse(data); } catch { return undefined; /* observability-exempt: malformed stream frames carry no text and are skipped; the no-text terminal refusal is observable. */ }
 }
 
 function chatEndpoint(provider: string, configured: string | undefined, model: string): string {
@@ -106,4 +239,3 @@ function extractText(payload: unknown): string {
     if (typeof text !== 'string' || !text.trim()) throw new Error('Provider response contained no advisory text.');
     return text.trim();
 }
-
