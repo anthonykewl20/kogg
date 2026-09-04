@@ -258,8 +258,9 @@ body.kogg-application .theia-button.secondary:hover:not(:disabled) {
   scrollbar-gutter: stable; container-type: inline-size;
 }
 .kogg-panel > header {
-  position: relative; margin: 0 0 22px; padding: 0 0 20px 14px;
+  position: sticky; top: 0; z-index: 3; margin: 0 0 22px; padding: 20px 8px 20px 14px;
   border-bottom: 1px solid var(--kogg-border);
+  background: rgb(24, 24, 29);
 }
 .kogg-panel > header::before {
   content: ''; position: absolute; top: 3px; bottom: 21px; left: 0; width: 3px;
@@ -506,7 +507,7 @@ body.kogg-application .theia-button.secondary:hover:not(:disabled) {
 .kogg-chat-stop:hover:not(:disabled) { border-color: rgba(248, 113, 113, .8); color: #fff; background: rgba(248, 113, 113, .25); }
 .kogg-chat-modes {
   display: flex; align-items: center; gap: 4px; margin: 0 2px 7px; padding: 4px;
-  border: 1px solid var(--kogg-border); border-radius: 10px; background: rgba(255, 255, 255, .018);
+  border: 1px solid var(--kogg-border); border-radius: 10px; background: rgb(24, 24, 29);
 }
 .kogg-chat-modes > span {
   padding: 0 5px; color: var(--kogg-faint); font-size: 9px; font-weight: 700;
