@@ -257,3 +257,51 @@ test('production operation registry emits a TypeScript source map', async () => 
   const sourceMap = JSON.parse(await readFile(path.join(__dirname, 'operation-registry.js.map'), 'utf8')) as { sources?: string[] };
   assert(sourceMap.sources?.some(source => source.endsWith('/src/node/operation-registry.ts')));
 });
+
+test('reopens the owner stream under a new epoch after projection divergence', async () => {
+    const state = await mkdtemp(path.join(os.tmpdir(), 'kogg-owner-epoch-'));
+    process.env.KOGG_STATE_DIR = state;
+    const registry = new OperationRegistry();
+    const firstAccepted: Array<{ epoch: string; sequence: string }> = [];
+    const firstSink = {
+        registerOwner: () => undefined,
+        ingest: (event: { sequence: string; epochId?: string }) => { firstAccepted.push({ epoch: event.epochId ?? '', sequence: event.sequence }); return 'accepted'; }
+    };
+    try {
+        await registry.onStart();
+        registry.setOwnerSink(firstSink as never);
+        for (let i = 0; i < 5; i++) { const op = await registry.startOperation({ kind: 'check' }); op.start(); op.complete(); }
+        assert.ok(firstAccepted.length >= 5);
+        const oldEpoch = firstAccepted[0]!.epoch;
+        const lastSequence = firstAccepted[firstAccepted.length - 1]!.sequence;
+
+        // Simulate projection divergence: the projection store no longer
+        // continues the owner's accepted cursor at the replay start.
+        const secondAccepted: Array<{ epoch: string; sequence: string }> = [];
+        let diverged = false;
+        const secondSink = {
+            registerOwner: () => undefined,
+            ingest: (event: { sequence: string; epochId?: string }) => {
+                if (!diverged && event.sequence === lastSequence) { diverged = true; throw new Error('OWNER_CURSOR_GAP'); }
+                secondAccepted.push({ epoch: event.epochId ?? '', sequence: event.sequence });
+                return 'accepted';
+            }
+        };
+        registry.setOwnerSink(secondSink as never);
+
+        // The owner re-opens under a fresh epoch: the retained history replays
+        // contiguously from sequence 1 under exactly one new epoch.
+        const newEpochEntries = secondAccepted.filter(entry => entry.epoch !== oldEpoch);
+        const retainedSequences = new Set(firstAccepted.map(entry => entry.sequence));
+        assert.ok(newEpochEntries.length >= retainedSequences.size, 'full retained history replayed under the new epoch');
+        assert.equal(new Set(newEpochEntries.map(entry => entry.epoch)).size, 1);
+        const newEpoch = newEpochEntries[0]!.epoch;
+        assert.notEqual(newEpoch, oldEpoch);
+        assert.equal(newEpochEntries[0]!.sequence, '1');
+        assert.equal(newEpochEntries[newEpochEntries.length - 1]!.sequence, String(newEpochEntries.length));
+    } finally {
+        await registry.onStop();
+        await rm(state, { recursive: true, force: true });
+        delete process.env.KOGG_STATE_DIR;
+    }
+});

@@ -526,15 +526,42 @@ export class OperationRegistry implements OperationRegistryApi, BackendApplicati
     }
     catch (error) { console.warn('[kogg:operations:registry] client.update.failed', { errorType: errorType(error) }); }
   }
-  publishOwnerEvents(): void {
-    if (!this.ownerSink || !this.database) return;
-    const database = this.requireDatabase(); const meta = database.prepare('SELECT owner_id,owner_epoch_id FROM operation_meta WHERE singleton=1').get() as SqlRow;
-    let previous = '0'.repeat(64);
-    for (const row of database.prepare('SELECT * FROM operation_events ORDER BY sequence').all() as SqlRow[]) {
-      const mapped = mapOwnerEvent(database, row, String(meta.owner_id), String(meta.owner_epoch_id), previous); previous = mapped.eventDigest;
-      try { this.ownerSink.ingest(mapped); }
-      catch (error) { console.warn('[kogg:operations:owners] owner.publish.failed', { ownerKind: 'operation', ownerSequence: mapped.sequence, safeCode: 'OWNER_PUBLISH_FAILED', errorType: errorType(error) }); break; }
+  publishOwnerEvents(attempt = 0): void {
+    if (!this.ownerSink || !this.database || attempt > 1) return;
+    const database = this.requireDatabase();
+    const rows = database.prepare('SELECT * FROM operation_events ORDER BY sequence').all() as SqlRow[];
+    if (!rows.length) return;
+    const meta = database.prepare('SELECT owner_id,owner_epoch_id FROM operation_meta WHERE singleton=1').get() as SqlRow;
+    if (this.replayOwnerEvents(rows, String(meta.owner_id), String(meta.owner_epoch_id))) return;
+    // The retained event history diverged from the read model (prune moved
+    // the replay start, or the projection store was rebuilt). Re-open the
+    // stream under a fresh owner epoch and replay the retained events from
+    // sequence 1 — the projection accepts a new epoch as a fresh stream.
+    const nextEpoch = randomUUID();
+    database.prepare('UPDATE operation_meta SET owner_epoch_id=?, revision=revision+1 WHERE singleton=1').run(nextEpoch);
+    this.bump(database);
+    console.warn('[kogg:operations:registry] owner.epoch.bumped', { reason: 'cursor-diverged' });
+    if (this.replayOwnerEvents(rows, String(meta.owner_id), nextEpoch)) return;
+    console.error('[kogg:operations:registry] owner.replay.failed', { ownerKind: 'operation', safeCode: 'OWNER_UNAVAILABLE' });
+  }
+
+  private replayOwnerEvents(rows: readonly SqlRow[], ownerInstanceId: string, epochId: string): boolean {
+    const database = this.requireDatabase(); const sink = this.ownerSink;
+    if (!sink) return false;
+    let previous = '0'.repeat(64); let failed: { sequence: string; errorType: string } | undefined;
+    let sequence = 0;
+    for (const row of rows) {
+      sequence += 1;
+      const mapped = mapOwnerEvent(database, row, ownerInstanceId, epochId, previous, String(sequence));
+      previous = mapped.eventDigest;
+      try { sink.ingest(mapped); }
+      catch (error) { failed = { sequence: mapped.sequence, errorType: errorType(error) }; console.warn('[kogg:operations:registry] owner.ingest.failed', { ownerSequence: mapped.sequence, errorType: errorType(error) }); break; }
     }
+    if (failed) {
+      const sequence = failed.sequence; const errorType = failed.errorType;
+      console.warn('[kogg:operations:owners] owner.publish.failed', { ownerKind: 'operation', ownerSequence: sequence, safeCode: 'OWNER_PUBLISH_FAILED', errorType });
+    }
+    return !failed;
   }
   private appendEvent(database: DatabaseSync, operationId: string, processId: string | null, eventName: string): void {
     database.prepare('INSERT INTO operation_events(operation_id,process_id,event_name,created_at) VALUES(?,?,?,?)').run(operationId, processId, eventName, new Date().toISOString());
@@ -598,14 +625,14 @@ class DurableProcessLease implements ProcessLease {
   async cancel(): Promise<void> { await this.cancelRun?.(); this.cleanup(); }
 }
 
-function mapOwnerEvent(database: DatabaseSync, row: SqlRow, ownerInstanceId: string, epochId: string, previousEventDigest: string): OwnerEventV1 {
+function mapOwnerEvent(database: DatabaseSync, row: SqlRow, ownerInstanceId: string, epochId: string, previousEventDigest: string, sequence: string): OwnerEventV1 {
   const operationId = String(row.operation_id); const processId = row.process_id ? String(row.process_id) : undefined;
   const operation = database.prepare('SELECT * FROM operations WHERE id=?').get(operationId) as SqlRow;
   const processRow = processId ? database.prepare('SELECT * FROM processes WHERE id=?').get(processId) as SqlRow | undefined : undefined;
   const sourceEvent = String(row.event_name); const eventKind = ownerEventKind(sourceEvent, Boolean(processId)); const safePayload: SafeOwnerPayloadV1 = processId
     ? { processKind: String(processRow?.kind ?? 'unknown'), processState: eventKind.slice('process.'.length), cleanupState: processCleanupFor(eventKind), ...(processSafeCodeEvent(sourceEvent) && processRow?.safe_code ? { safeCode: String(processRow.safe_code) } : {}) }
     : { lifecycle: eventKind.slice('operation.'.length), ...(operationSafeCodeEvent(sourceEvent) && operation.safe_code ? { safeCode: String(operation.safe_code) } : {}) };
-  const sequence = String(row.sequence); const eventId = `operation-event-${sequence}`;
+  const eventId = `operation-event-${sequence}`;
   const factDigest = createHash('sha256').update(JSON.stringify([sequence, operationId, processId ?? null, eventKind, String(row.created_at)])).digest('hex');
   const unsigned: Omit<OwnerEventV1, 'eventDigest'> = { ownerKind: 'operation', ownerInstanceId, ownerSchemaVersion: 1, epochId, sequence, eventId, eventKind, factId: `${operationId}:${sequence}`, factDigest, previousEventDigest, causalParents: [], correlations: { ...(operation.project_id ? { projectId: String(operation.project_id) } : {}), ...(operation.task_id ? { taskId: String(operation.task_id) } : {}), ...(operation.run_id ? { runId: String(operation.run_id) } : {}), ...(operation.attempt_id ? { attemptId: String(operation.attempt_id) } : {}), operationId, ...(processId ? { processId } : {}) }, observedAt: String(row.created_at), safePayload };
   return { ...unsigned, eventDigest: OperationsReadModel.digest(unsigned) };

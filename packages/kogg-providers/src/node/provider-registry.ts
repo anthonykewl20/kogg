@@ -167,7 +167,8 @@ const ACCOUNT_MODEL_CATALOG: Readonly<Record<string, readonly string[]>> = {
 async function withRetries<T>(work: () => Promise<T>, attempts = 5): Promise<T> {
     let lastError: unknown;
     for (let attempt = 0; attempt < attempts; attempt += 1) {
-        try { return await work(); } catch (error) { lastError = error; await new Promise(resolve => setTimeout(resolve, 1_000 * (attempt + 1))); }
+        try { return await work(); }
+        catch (error) { lastError = error; console.warn('[kogg:providers:registry] discovery.retry', { providerAttempt: attempt + 1, errorType: error instanceof Error ? error.name : 'UnknownError' }); await new Promise(resolve => setTimeout(resolve, 1_000 * (attempt + 1))); }
     }
     throw lastError;
 }

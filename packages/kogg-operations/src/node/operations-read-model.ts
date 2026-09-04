@@ -153,12 +153,19 @@ export class OperationsReadModel implements BackendApplicationContribution {
     }
     const cursor = database.prepare('SELECT * FROM owner_cursors WHERE owner_instance_id=?').get(validated.ownerInstanceId) as Row | undefined;
     if (cursor) {
-      if (String(cursor.epoch_id) !== validated.epochId) return this.reject(validated, 'OWNER_EPOCH_UNKNOWN', 'conflict');
-      const expected = BigInt(String(cursor.sequence)) + 1n;
-      const supplied = BigInt(validated.sequence);
-      if (supplied < expected) return this.reject(validated, 'OWNER_CURSOR_REWIND', 'rewind');
-      if (supplied > expected) return this.reject(validated, 'OWNER_CURSOR_GAP', 'gap');
-      if (String(cursor.event_digest) !== validated.previousEventDigest) return this.reject(validated, 'OWNER_PREVIOUS_DIGEST_MISMATCH', 'conflict');
+      if (String(cursor.epoch_id) !== validated.epochId) {
+        // A new owner epoch opens a fresh stream: the owner re-opens its
+        // retained history after divergence (prune/projection rebuild), so
+        // accept the epoch only from its first event with a clean chain.
+        if (validated.sequence !== '1' || validated.previousEventDigest !== ZERO_DIGEST) return this.reject(validated, 'OWNER_EPOCH_UNKNOWN', 'conflict');
+        console.warn('[kogg:operations:owners] epoch.opened', { ownerKind: safeOwner(validated.ownerKind), epochId: safeOwner(validated.epochId) });
+      } else {
+        const expected = BigInt(String(cursor.sequence)) + 1n;
+        const supplied = BigInt(validated.sequence);
+        if (supplied < expected) return this.reject(validated, 'OWNER_CURSOR_REWIND', 'rewind');
+        if (supplied > expected) return this.reject(validated, 'OWNER_CURSOR_GAP', 'gap');
+        if (String(cursor.event_digest) !== validated.previousEventDigest) return this.reject(validated, 'OWNER_PREVIOUS_DIGEST_MISMATCH', 'conflict');
+      }
     } else if (validated.sequence !== '1' || validated.previousEventDigest !== ZERO_DIGEST) {
       return this.reject(validated, 'OWNER_CURSOR_GAP', 'gap');
     }

@@ -158,33 +158,65 @@ export class AccountLoginManager {
             throw new Error(`Codex plan rejected the request with HTTP ${response.status}${reason}`);
         }
         if (!response.ok || !response.body) throw new Error(`Codex plan chat failed with HTTP ${response.status}.`);
-        const text = await response.text();
+        // The stream frequently stays open after the reply text arrives, so
+        // read incrementally and resolve as soon as the output is complete
+        // instead of waiting for the server to close.
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder();
         const parts: string[] = [];
         let streamError = '';
-        for (const line of text.split(LINE)) {
-            if (!line.startsWith('data: ')) continue;
+        let buffer = '';
+        const handleEvent = (raw: string): void => {
+            if (!raw.startsWith('data: ')) return;
             try {
-                const event = JSON.parse(line.slice(6)) as {
+                const event = JSON.parse(raw.slice(6)) as {
                     type?: string; text?: unknown; response?: { output?: Array<{ type?: string; content?: Array<{ type?: string; text?: unknown }> }> };
                     item?: { type?: string; message?: unknown };
                 };
                 if (event.type === 'response.failed' || event.item?.type === 'error') {
                     streamError = typeof event.item?.message === 'string' ? event.item.message.slice(0, 200) : 'the model stream failed';
-                    continue;
+                    return;
                 }
-                // The backend emits delta-style events whose final text arrives
-                // per output part; response.completed may never appear.
                 if (event.type === 'response.output_text.done' && typeof event.text === 'string' && event.text.trim()) parts.push(event.text.trim());
                 if (event.type === 'response.completed') {
                     const message = (event.response?.output ?? []).find(item => item.type === 'message');
                     const output = (message?.content ?? []).find(item => item.type === 'output_text');
                     if (typeof output?.text === 'string' && output.text.trim()) parts.push(output.text.trim());
                 }
-            } catch { /* skip malformed events */ }
-        }
-        if (parts.length) return parts.join('').trim();
-        if (streamError) throw new Error(`Codex plan stream failed: ${streamError}`);
-        throw new Error('Codex plan returned no advisory text.');
+            } catch { /* observability-exempt: malformed SSE events are skipped; the terminal no-text refusal is the observable outcome. */ }
+        };
+        const result = await new Promise<string>((resolve, reject) => {
+            const deadline = setTimeout(() => reject(new Error('Codex plan chat timed out after 180 seconds.')), 180_000);
+            let idleTimer: NodeJS.Timeout | undefined;
+            const resetIdle = (): void => {
+                if (idleTimer) clearTimeout(idleTimer);
+                idleTimer = setTimeout(() => { reader.cancel().catch(() => undefined); reject(new Error('Codex plan stream stalled (no data for 90 seconds).')); }, 90_000);
+                idleTimer.unref();
+            };
+            resetIdle();
+            const pump = async (): Promise<void> => {
+                try {
+                    for (;;) {
+                        const { done, value } = await reader.read();
+                        if (done) break;
+                        resetIdle();
+                        buffer += decoder.decode(value, { stream: true });
+                        const lines = buffer.split(LINE);
+                        buffer = lines.pop() ?? '';
+                        for (const line of lines) {
+                            handleEvent(line);
+                            if (parts.length) { clearTimeout(deadline); resolve(parts.join('').trim()); return; }
+                            if (streamError) { clearTimeout(deadline); reject(new Error(`Codex plan stream failed: ${streamError}`)); return; }
+                        }
+                    }
+                    clearTimeout(deadline);
+                    if (parts.length) resolve(parts.join('').trim());
+                    else reject(new Error(streamError ? `Codex plan stream failed: ${streamError}` : 'Codex plan returned no advisory text.'));
+                } catch (error) { clearTimeout(deadline); console.warn('[kogg:providers:login] stream.read.failed', { errorType: error instanceof Error ? error.name : 'UnknownError' }); reject(error instanceof Error ? error : new Error('stream read failed')); }
+            };
+            void pump().finally(() => { if (idleTimer) clearTimeout(idleTimer); });
+        });
+        return result;
     }
 
     private async cliChat(providerId: string, model: string, prompt: string): Promise<string> {
@@ -277,7 +309,7 @@ function extractReply(stdout: string, providerId: string): string | undefined {
         try {
             const value = JSON.parse(stdout.trim().split(LINE).filter(Boolean).pop() ?? '') as { result?: unknown };
             if (typeof value.result === 'string' && value.result.trim()) return value.result.trim();
-        } catch { /* fall through to JSONL extraction */ }
+        } catch { /* observability-exempt: non-JSON CLI output falls through to JSONL extraction without content disclosure. */ }
     }
     let agentMessage: string | undefined;
     for (const line of stdout.split('\n')) {
@@ -288,7 +320,7 @@ function extractReply(stdout: string, providerId: string): string | undefined {
             if (typeof event.result === 'string' && event.result.trim()) agentMessage = event.result.trim();
             if (typeof event.message === 'string' && event.type === 'agent_message' && event.message.trim()) agentMessage = event.message.trim();
             if (event.item?.type === 'agent_message' && typeof event.item.text === 'string' && event.item.text.trim()) agentMessage = event.item.text.trim();
-        } catch { /* skip non-JSON lines */ }
+        } catch { /* observability-exempt: non-JSON JSONL lines are skipped; the extracted reply or terminal no-reply refusal is observable. */ }
     }
     return agentMessage;
 }
