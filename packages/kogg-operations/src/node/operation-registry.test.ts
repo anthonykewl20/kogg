@@ -305,3 +305,44 @@ test('reopens the owner stream under a new epoch after projection divergence', a
         delete process.env.KOGG_STATE_DIR;
     }
 });
+test('a divergence replay with the real read model re-ingests the full history and returns to current', { timeout: 30_000 }, async () => {
+    const state = await mkdtemp(path.join(os.tmpdir(), 'kogg-owner-rebuild-'));
+    process.env.KOGG_STATE_DIR = state;
+    const registry = new OperationRegistry();
+    const model = new OperationsReadModel(path.join(state, 'operations', 'projection.sqlite3'));
+    try {
+        await registry.onStart();
+        registry.setOwnerSink(model as never);
+        for (let i = 0; i < 15; i++) {
+            const op = await registry.startOperation({ kind: 'check' });
+            op.start(); op.complete();
+        }
+        // Force divergence: rewind the projection's cursor so the next live
+        // publish hits a gap, exactly like a rebuilt or pruned projection.
+        const { DatabaseSync } = await import('node:sqlite');
+        const projection = new DatabaseSync(path.join(state, 'operations', 'projection.sqlite3'));
+        projection.exec("UPDATE owner_cursors SET sequence='3'");
+        projection.close();
+
+        // The next publish must detect the divergence, reopen a fresh epoch,
+        // and replay every retained event so the projection is whole again.
+        registry.setOwnerSink(model as never);
+        const op = await registry.startOperation({ kind: 'check' });
+        op.start(); op.complete();
+
+        const diagnostics = model.diagnostics();
+        const operationOwners = JSON.stringify(diagnostics);
+        assert.match(operationOwners, /"lifecycle":"current"/u);
+        const retained = new (await import('node:sqlite')).DatabaseSync(path.join(state, 'operations', 'registry.sqlite3'));
+        const eventCount = (retained.prepare('SELECT COUNT(*) AS count FROM operation_events').get() as { count: number }).count;
+        retained.close();
+        const accepted = new (await import('node:sqlite')).DatabaseSync(path.join(state, 'operations', 'projection.sqlite3'));
+        const acceptedCount = (accepted.prepare("SELECT COUNT(*) AS count FROM accepted_events WHERE owner_kind='operation'").get() as { count: number }).count;
+        accepted.close();
+        assert.ok(acceptedCount >= eventCount, `replayed history covers the retained events (${acceptedCount} >= ${eventCount})`);
+    } finally {
+        await registry.onStop();
+        await rm(state, { recursive: true, force: true });
+        delete process.env.KOGG_STATE_DIR;
+    }
+});

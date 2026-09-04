@@ -529,7 +529,9 @@ export class OperationRegistry implements OperationRegistryApi, BackendApplicati
   publishOwnerEvents(attempt = 0): void {
     if (!this.ownerSink || !this.database || attempt > 1) return;
     const database = this.requireDatabase();
-    const rows = database.prepare('SELECT * FROM operation_events ORDER BY sequence').all() as SqlRow[];
+    // sequence is TEXT: cast to integer or replay order runs 1,10,11…2 and
+    // breaks the replayed digest chain against the live cursor.
+    const rows = database.prepare('SELECT * FROM operation_events ORDER BY CAST(sequence AS INTEGER)').all() as SqlRow[];
     if (!rows.length) return;
     const meta = database.prepare('SELECT owner_id,owner_epoch_id FROM operation_meta WHERE singleton=1').get() as SqlRow;
     if (this.replayOwnerEvents(rows, String(meta.owner_id), String(meta.owner_epoch_id))) return;
