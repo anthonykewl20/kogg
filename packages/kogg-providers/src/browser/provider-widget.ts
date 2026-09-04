@@ -120,10 +120,10 @@ export class KoggProviderWidget extends BaseWidget {
     }
 
     private render(): void {
-        // Preserve the live details state: re-renders replace the DOM, and a
-        // missed toggle event would otherwise collapse an open settings panel.
-        const liveSettings = this.node.querySelector<HTMLDetailsElement>('.kogg-ai-settings');
-        if (liveSettings) this.settingsOpen = liveSettings.open;
+        // The settings-open state is owned by the toggle listener bound in
+        // bindDom(); reading the live DOM here would overwrite programmatic
+        // opens (e.g. the "Connect a provider" button) with the stale closed
+        // state before the new DOM renders.
         const liveModel = this.node.querySelector<HTMLSelectElement>('select[data-field="model"]')?.value ?? '';
         if (!this.selectedModel && liveModel) this.selectedModel = liveModel;
         // Preserve focus and caret across the re-render (e.g. the login poll

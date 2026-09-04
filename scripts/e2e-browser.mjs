@@ -189,7 +189,9 @@ try {
     }
     await provider.getByText('Kogg AI').first().waitFor();
     await provider.getByLabel('Message Kogg').waitFor({ state: 'visible' });
-    assert.equal(await provider.getByLabel('Message Kogg').isDisabled(), true);
+    // The composer stays draftable without a model; only sending is gated.
+    assert.equal(await provider.getByLabel('Message Kogg').isDisabled(), false);
+    assert.equal(await provider.getByRole('button', { name: 'Send message' }).isDisabled(), true);
     const chatModes = provider.getByRole('group', { name: 'Chat mode' });
     for (const mode of ['Plan', 'Build', 'Kogg']) await chatModes.getByRole('button', { name: mode, exact: true }).waitFor();
     await provider.getByRole('button', { name: 'Connect a provider' }).click();
