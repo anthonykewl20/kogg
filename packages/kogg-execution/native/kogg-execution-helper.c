@@ -210,7 +210,7 @@ static void qualify(const struct object *request) {
     fail("ALLOCATION_QUALIFICATION_INVALID");
   dprintf(STDOUT_FILENO, "{\"schemaVersion\":1,\"ok\":true,\"safeCode\":\"ALLOCATION_OK\",\"filesystemDevice\":\"%ju\",\"filesystemInode\":\"%ju\",\"ownerUid\":\"%ju\",\"mode\":\"0700\",\"mountId\":\"%" PRIu64 "\",\"rootProjectId\":\"%u\",\"quotaProbeProjectId\":\"%u\"}\n",
     (uintmax_t)identity.st_dev, (uintmax_t)identity.st_ino, (uintmax_t)identity.st_uid,
-    extended.stx_mnt_id, attributes.fsx_projid, probe_project);
+    (uint64_t)extended.stx_mnt_id, (uint32_t)attributes.fsx_projid, probe_project);
 }
 
 static bool write_all(int fd, const char *value, size_t length) {
