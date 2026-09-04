@@ -23,11 +23,27 @@ const flags = [
   '-std=c17', '-O2', '-g1', '-fno-omit-frame-pointer', '-D_FORTIFY_SOURCE=3', '-fstack-protector-strong', '-fPIE', '-pie',
   '-Wl,-z,relro,-z,now', '-Wall', '-Wextra', '-Werror', source, '-o', binary
 ];
-const compiled = spawnSync('clang', flags, { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
-if (compiled.status !== 0) {
+// clang is the reference toolchain; cc/gcc are accepted so hosts and CI
+// images without clang still build the pinned helper.
+const compilers = [process.env.KOGG_EXECUTION_HELPER_CC, 'clang', 'cc', 'gcc'].filter(Boolean);
+let compiled;
+for (const compiler of compilers) {
+  compiled = spawnSync(compiler, flags, { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+  if (compiled.status === 0) break;
+  if (compiled.error?.code === 'ENOENT') {
+    process.stdout.write(`Kogg execution helper compiler unavailable: ${compiler} not found.\n`);
+    compiled = undefined;
+    continue;
+  }
+  break;
+}
+if (!compiled || compiled.status !== 0) {
   await rm(outputRoot, { recursive: true, force: true });
   process.stderr.write('Kogg execution helper compilation failed.\n');
-  process.exit(compiled.status ?? 1);
+  if (compiled?.stdout?.trim()) process.stderr.write(compiled.stdout);
+  if (compiled?.stderr?.trim()) process.stderr.write(compiled.stderr);
+  if (compiled?.error) process.stderr.write(`${compiled.error.message}\n`);
+  process.exit(compiled?.status ?? 1);
 }
 await chmod(binary, 0o500);
 const artifact = await readFile(binary);
